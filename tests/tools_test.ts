@@ -100,3 +100,48 @@ Deno.test("start-full.sh that starts nothing is refused, pointing at use_model",
   );
   assertEquals(refuseStartFull("/x/start-qwen.sh", remote), null, "other scripts are not checked");
 });
+
+Deno.test("ssh targets in a command line", async () => {
+  const { sshTargets } = await import("../src/tools.ts");
+  assertEquals(sshTargets("ssh admin@gx10 nvidia-smi"), ["admin@gx10"]);
+  assertEquals(sshTargets("ssh -p 2222 -i ~/.ssh/k -o StrictHostKeyChecking=no gx10 uptime"), [
+    "gx10",
+  ]);
+  assertEquals(sshTargets("ssh -l admin -p22 GX10.local 'ls'"), ["admin@gx10.local"]);
+  assertEquals(sshTargets("ssh -tt ssh://admin@10.0.0.5:2200 top"), ["admin@10.0.0.5"]);
+  assertEquals(sshTargets("timeout 10 /usr/bin/ssh a@b true; ssh c@d true"), ["a@b", "c@d"]);
+  assertEquals(sshTargets("ssh -V"), []);
+  assertEquals(sshTargets("cat ~/.ssh/config | grep gx10"), []);
+});
+
+Deno.test("a second ssh by hand to the same machine is refused, pointing at the ssh tool", async () => {
+  const { Router } = await import("../src/llm.ts");
+  const { Memory } = await import("../src/memory.ts");
+  const { McpManager } = await import("../src/mcp.ts");
+  const { Session } = await import("../src/tools.ts");
+  const dir = await Deno.makeTempDir();
+  try {
+    const s = new Session(
+      new Router({ label: "m", baseUrl: "http://127.0.0.1:9/v1", model: "m", contextChars: 1e4 }),
+      new Memory(`${dir}/mem`),
+      new McpManager(`${dir}/mcp.json`),
+      () => Promise.resolve(null),
+    );
+    await s.init();
+    const ran: string[] = [];
+    (s as any).always = { has: () => true, add() {} };
+    (s as any).check = () => Promise.resolve({ verdict: "writes", checked: true });
+    (s as any).command = (_op: string, cmd: string) => {
+      ran.push(cmd);
+      return Promise.resolve({ code: 0, stdout: "ok\n", stderr: "", cmd });
+    };
+    assertStringIncludes(await s.exec("run", { command: "ssh admin@gx10 nvidia-smi" }), "exit 0");
+    assertStringIncludes(await s.exec("run", { command: "ssh other@box uptime" }), "exit 0");
+    const second = await s.exec("run", { command: "ssh -p 22 root@GX10 df -h" });
+    assertStringIncludes(second, "second command that connects to gx10");
+    assertStringIncludes(second, "ssh tool with destination root@gx10");
+    assertEquals(ran, ["ssh admin@gx10 nvidia-smi", "ssh other@box uptime"]);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});

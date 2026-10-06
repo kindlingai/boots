@@ -56,6 +56,7 @@ const WRAPPERS = new Set([
   "caffeinate",
   "nice",
   "command",
+  "timeout",
 ]);
 
 /** The program each stage runs, past assignments and wrappers, with its arguments. */
@@ -67,7 +68,9 @@ function commands(cmd: string): string[][] {
     while (
       i < words.length &&
       (/^[A-Za-z_][A-Za-z0-9_]*=/.test(words[i]) || WRAPPERS.has(words[i]) ||
-        (i > 0 && WRAPPERS.has(words[i - 1]) && words[i].startsWith("-")))
+        (i > 0 && WRAPPERS.has(words[i - 1]) && words[i].startsWith("-")) ||
+        // timeout's duration
+        (i > 0 && words[i - 1] === "timeout" && /^\d+(\.\d+)?[smhd]?$/.test(words[i])))
     ) i++;
     return words.slice(i).map((w, j) => j === 0 ? w.replace(/^.*\//, "") : w);
   }).filter((w) => w.length);
@@ -99,6 +102,49 @@ export function refuseInRun(cmd: string): string | null {
   }
   return null;
 }
+
+/** ssh options that take a value (the next word, or the rest of the same word). */
+const SSH_VALUE_OPTS = "bcDEeFIiJLlmOoPpQRSWw";
+
+/**
+ * The machines a command line connects to with ssh, as user@host (user
+ * only when given), e.g. `ssh -p 22 admin@gx10 nvidia-smi` -> admin@gx10.
+ */
+export function sshTargets(cmd: string): string[] {
+  const out: string[] = [];
+  for (const words of commands(cmd)) {
+    if (words[0] !== "ssh") continue;
+    let user = "";
+    let dest = "";
+    for (let i = 1; i < words.length && !dest; i++) {
+      const w = words[i];
+      if (w === "--") {
+        dest = words[i + 1] ?? "";
+        break;
+      }
+      if (!w.startsWith("-") || w.length < 2) {
+        dest = w;
+        break;
+      }
+      for (let k = 1; k < w.length; k++) {
+        if (!SSH_VALUE_OPTS.includes(w[k])) continue;
+        const value = k < w.length - 1 ? w.slice(k + 1) : words[++i] ?? "";
+        if (w[k] === "l") user = value;
+        break;
+      }
+    }
+    if (!dest) continue;
+    let d = dest.replace(/^ssh:\/\//, "");
+    if (!d.includes("@") && user) d = `${user}@${d}`;
+    // ssh://user@host:port and [v6]:port: the port is not part of the machine.
+    if (dest.startsWith("ssh://")) d = d.replace(/:\d+$/, "");
+    out.push(d.replace(/^(.*@)?\[(.*)\]$/, "$1$2").toLowerCase());
+  }
+  return out;
+}
+
+/** The host part of a user@host target. */
+const sshHost = (t: string) => t.slice(t.lastIndexOf("@") + 1);
 
 /** The same command again within this window is not run (the model is going in circles). */
 const REPEAT_WINDOW_MS = 60_000;
@@ -484,6 +530,8 @@ export class Session {
     this.router.bootstrapUp() ? this.router.bootstrap : this.router.current()
   );
   private complexTries = new Map<string, number>();
+  /** Machines already reached with ssh inside run, per location: the next one is refused. */
+  private manualSsh = new Set<string>();
 
   /**
    * The read-only list, then the bootstrap model's verdict. "complex" twice in a row
@@ -579,6 +627,16 @@ export class Session {
           say(yellow(`    not run: ${refused.split(":")[0]}`));
           return `Not run: ${refused}`;
         }
+        // One ssh by hand to a machine is fine; a second means it should be a hop.
+        const targets = sshTargets(cmd);
+        const again2 = targets.find((t) => this.manualSsh.has(`${loc}\0${sshHost(t)}`));
+        if (again2) {
+          say(dim(`  [${loc}] $ ${cmd}`));
+          say(yellow(`    not run: ssh to ${sshHost(again2)} again; use the ssh tool`));
+          return `Not run: this is the second command that connects to ${
+            sshHost(again2)
+          } with ssh inside run. To work on that machine, call the ssh tool with destination ${again2} instead: ai-bootstrap connects once, installs itself there, and run, read_file, write_file and sudo then work on that machine directly (no ssh in the command) until ssh_exit. Passwords are handled for you.`;
+        }
         const { verdict, checked } = await this.check(cmd);
         if (verdict === "complex") {
           say(dim(`  [${loc}] $ ${cmd}`));
@@ -597,6 +655,7 @@ export class Session {
           const no = await this.gate(`[${bold(loc)}] $ ${cmd}${label}`, `${loc}\0${cmd}`, kind);
           if (no) return no;
         }
+        for (const t of targets) this.manualSsh.add(`${loc}\0${sshHost(t)}`);
         const r = await this.command("exec", cmd, args, signal);
         this.show(r);
         return r.cancelled ? this.render(r) : this.remember(`${loc}\0${cmd}`, this.render(r));
