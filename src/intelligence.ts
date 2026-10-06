@@ -387,3 +387,14 @@ export async function dirSize(dir: string): Promise<number> {
   }
   return n;
 }
+
+/** "41 of 41 layers on the GPU", from a llama-server log; null when it does not say. */
+export async function gpuOffload(log: string): Promise<string | null> {
+  try {
+    const t = await Deno.readTextFile(log);
+    const m = [...t.matchAll(/offloaded (\d+)\/(\d+) layers to GPU/g)].at(-1);
+    return m ? `${m[1]} of ${m[2]} layers on the GPU` : null;
+  } catch {
+    return null;
+  }
+}

@@ -50,6 +50,12 @@ Deno.test("start-full.sh for a catalog model", () => {
     s,
     "exec '/c/llama-gpu/b1/llama-server' -hf unsloth/Qwen3-30B-A3B-Instruct-2507-GGUF:UD-Q3_K_XL --alias qwen3-30b-a3b --host 127.0.0.1 --port 41234 --jinja -c 32768",
   );
+  // Qwen3 14B thinks before every answer unless told not to.
+  assertStringIncludes(
+    fullScript(CATALOG[1], "/l/llama-server", 41234, 16384, "Vulkan0", false),
+    "--jinja -c 16384 --reasoning off",
+  );
+  assert(!s.includes("--reasoning"), "the 30B-A3B Instruct does not think");
   const w = fullScript(CATALOG[1], "C:\\\\l\\\\llama-server.exe", 41234, 16384, "Vulkan0", true);
   assertStringIncludes(w, "rem endpoint: http://127.0.0.1:41234/v1 qwen3-14b");
 });

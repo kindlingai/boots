@@ -10,6 +10,7 @@ import {
   describeFailure,
   dirSize,
   type FullFailure,
+  gpuOffload as offload,
   logPath,
   scriptPath,
   startFull,
@@ -28,6 +29,8 @@ export interface CatalogModel {
   /** KV cache per 1000 tokens of context, f16. */
   kvMBPer1k: number;
   note: string;
+  /** Hybrid thinking model: start it with thinking off (much faster replies). */
+  thinks?: boolean;
 }
 
 /** Best first. Sizes are approximate. */
@@ -46,7 +49,8 @@ export const CATALOG: CatalogModel[] = [
     hf: "unsloth/Qwen3-14B-GGUF:Q6_K",
     fileGB: 12.1,
     kvMBPer1k: 160,
-    note: "dense; thinks before it answers",
+    note: "dense; slower per token than the 30B-A3B",
+    thinks: true,
   },
   {
     id: "qwen3-14b-q4",
@@ -55,6 +59,7 @@ export const CATALOG: CatalogModel[] = [
     fileGB: 9.0,
     kvMBPer1k: 160,
     note: "the same model, smaller and a little less precise",
+    thinks: true,
   },
   {
     id: "qwen3-8b",
@@ -63,6 +68,7 @@ export const CATALOG: CatalogModel[] = [
     fileGB: 8.7,
     kvMBPer1k: 144,
     note: "the smallest; for GPUs with about 12 GB",
+    thinks: true,
   },
 ];
 
@@ -348,7 +354,10 @@ export function fullScript(
   windows = isWindows,
 ): string {
   const cache = join(modelsDir(), "llama.cpp");
-  const args = `-hf ${m.hf} --alias ${m.id} --host 127.0.0.1 --port ${port} --jinja -c ${ctx}`;
+  // Qwen3 hybrids think at length before every answer, invisibly: too slow for an agent.
+  const args = `-hf ${m.hf} --alias ${m.id} --host 127.0.0.1 --port ${port} --jinja -c ${ctx}${
+    m.thinks ? " --reasoning off" : ""
+  }`;
   const head = `Starts the full model: ${m.label} on llama.cpp (${accel}).`;
   if (windows) {
     return [
@@ -371,17 +380,6 @@ export function fullScript(
 export LLAMA_CACHE=${sq(cache)}
 ${lib}exec ${sq(server)} ${args}
 `;
-}
-
-/** "offloaded 49/49 layers to GPU", from the server's log. */
-async function offload(log: string): Promise<string | null> {
-  try {
-    const t = await Deno.readTextFile(log);
-    const m = [...t.matchAll(/offloaded (\d+)\/(\d+) layers to GPU/g)].at(-1);
-    return m ? `${m[1]} of ${m[2]} layers on the GPU` : null;
-  } catch {
-    return null;
-  }
 }
 
 /** Notes the model in fleet.json and in a full-model memory, with a line in INDEX. */

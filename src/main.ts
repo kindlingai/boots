@@ -11,7 +11,7 @@ import { McpManager } from "./mcp.ts";
 import { type BootstrapControl, Router } from "./llm.ts";
 import { makeNearAsker } from "./secrets.ts";
 import { loadSmart, restoreSmart, saveSmart, Session } from "./tools.ts";
-import { type FullFailure, scriptPath, startFull } from "./intelligence.ts";
+import { type FullFailure, gpuOffload, logPath, scriptPath, startFull } from "./intelligence.ts";
 import { startLlama } from "./llama.ts";
 import { Agent, repl } from "./agent.ts";
 import { boot } from "./boot.ts";
@@ -83,7 +83,12 @@ async function interactive(): Promise<number> {
       );
     }
   }
-  if (smart) console.log(`${bold("smart model:")} ${smart.label} ${dim(smart.baseUrl)}`);
+  if (smart) {
+    const gpu = hasFull ? await gpuOffload(logPath("full")) : null;
+    console.log(
+      `${bold("smart model:")} ${smart.label} ${dim(smart.baseUrl)}${gpu ? dim(` (${gpu})`) : ""}`,
+    );
+  }
 
   const session = new Session(router, memory, new McpManager(), makeNearAsker());
   session.fullFailure = failure;
