@@ -198,6 +198,7 @@ let full: Supervised | null = null;
 export async function startFull(
   fallback: Endpoint | null,
   timeoutMs = Number(Deno.env.get("AIBOOT_FULL_TIMEOUT_S") ?? 1200) * 1000,
+  signal?: AbortSignal,
 ): Promise<{ ep: Endpoint } | { failure: FullFailure } | null> {
   const script = scriptPath("full");
   if (!(await exists(script))) return null;
@@ -227,6 +228,7 @@ export async function startFull(
   let had = await dirSize(modelsDir());
   while (true) {
     if (await answers(ep)) return { ep };
+    if (signal?.aborted) return await fail("stopped by the user");
     if (!full.isRunning()) {
       return await fail(
         `start-full exited with status ${await full.exited} before ${ep.baseUrl} answered`,

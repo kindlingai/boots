@@ -70,9 +70,10 @@ Deno.test("base prompt focuses on a smarter model and opens with the question", 
   const t = await loadTemplates();
   const sys = systemPrompt(t, new Router(ep("qwen3-4b")), vars);
   assertStringIncludes(flat(sys), OPENING);
-  assertStringIncludes(sys, "exactly one job right now");
-  assertStringIncludes(sys, "docs/intermediate-linux");
+  assertStringIncludes(sys, "exactly one job");
   assertStringIncludes(sys, "Ubuntu 24.04.5 LTS on x86_64");
+  // It has no memory tools, so no memory context either.
+  assert(!sys.includes("Memory INDEX"));
   assert(!sys.includes("{{"), "unfilled placeholder");
 });
 
@@ -107,8 +108,9 @@ Deno.test("empty memory adds onboarding; the full prompt offers recipes", async 
   assertStringIncludes(fresh, "learn what hardware they have");
   assertStringIncludes(fresh, "a few DGX Sparks");
   assertStringIncludes(fresh, "Open the session with a one-line greeting");
+  // The base model only sets up a model; onboarding waits for the full one.
   const base = flat(systemPrompt(t, new Router(ep("qwen3-4b")), { ...vars, fresh: true }));
-  assertStringIncludes(base, "ask these after the user agrees to set up a smarter model");
+  assert(!base.includes("learn what hardware they have"));
   assert(!base.includes('"recipe"'));
   assert(!base.includes("{{") && !fresh.includes("{{"));
 });
@@ -127,11 +129,12 @@ Deno.test("fleet.json is shown in the prompt; the full prompt explains its shape
     full,
     "- Location: local\n- Operating system here: Ubuntu 24.04.5 LTS on x86_64\n",
   );
+  // The base model has no memory tools, so it is not shown the fleet.
   const base = systemPrompt(t, new Router(ep("qwen3-4b")), { ...vars, fleet });
-  assertStringIncludes(base, fleet);
+  assert(!base.includes("glm53"));
 });
 
-Deno.test("a failed full model start gets the diagnosis prompt, with the log lines", async () => {
+Deno.test("a failed full model start: the full prompt diagnoses, the base one reports", async () => {
   const t = await loadTemplates();
   const failure = {
     script: "/d/intelligence/start-full.sh",
@@ -140,51 +143,34 @@ Deno.test("a failed full model start gets the diagnosis prompt, with the log lin
     tail: ["loading weights", "CUDA error: out of memory", "exiting"],
     errors: ["CUDA error: out of memory"],
   };
-  const sys = systemPrompt(t, new Router(ep("qwen3-4b")), { ...vars, failure });
-  assertStringIncludes(sys, "The full model failed to start");
-  assertStringIncludes(sys, "start-full exited with status 1");
-  assertStringIncludes(sys, "/d/intelligence/start-full.sh");
-  assertStringIncludes(sys, "loading weights\nCUDA error: out of memory\nexiting");
-  assertStringIncludes(sys, "start_full_model");
-  assertStringIncludes(sys, "small base model");
-  assertStringIncludes(sys, "Ubuntu 24.04.5 LTS on x86_64");
-  assert(!sys.includes(OPENING), "the diagnosis replaces the base opening");
-  assert(!sys.includes("{{"), "unfilled placeholder");
-  // A capable bootstrap (an API model) diagnoses too, without the base-model note.
+  // A capable bootstrap (an API model) gets diagnose.md and the full tools.
   const full = systemPrompt(t, new Router(ep("gpt-oss-120b")), { ...vars, failure });
   assertStringIncludes(full, "The full model failed to start");
-  assert(!full.includes("small base model"));
+  assertStringIncludes(full, "start-full exited with status 1");
+  assertStringIncludes(full, "loading weights\nCUDA error: out of memory\nexiting");
+  assertStringIncludes(full, "start_full_model");
+  assert(!full.includes("{{"), "unfilled placeholder");
+  // The base model reports it and offers what its tools can do, without the opening question.
+  const base = systemPrompt(t, new Router(ep("qwen3-4b")), { ...vars, failure });
+  assertStringIncludes(base, "The full model failed to start this time");
+  assertStringIncludes(base, "CUDA error: out of memory");
+  assertStringIncludes(flat(base), "Skip the opening question");
+  assertStringIncludes(base, "Your only tools are");
+  assert(!base.includes("{{"), "unfilled placeholder");
 });
 
-Deno.test("base prompt on a Mac: use the installed llama.cpp, with a filled-in start script", async () => {
+Deno.test("the base prompt is on rails: setup tools only", async () => {
   const t = await loadTemplates();
-  const sys = systemPrompt(t, new Router(ep("qwen3-4b")), {
-    ...vars,
-    os: "darwin",
-    os_name: "macOS 15.3",
-    models: "/Users/m/Library/Application Support/ai-bootstrap/models",
-    llama_server: "/Users/m/Library/Caches/ai-bootstrap/llama/b9000/llama-server",
-  });
+  const sys = flat(systemPrompt(t, new Router(ep("qwen3-4b")), vars));
+  assertStringIncludes(sys, "Call list_models");
+  assertStringIncludes(sys, "Call set_up_model with the recommended model");
   assertStringIncludes(
     sys,
-    "On this Mac use llama.cpp: already installed at /Users/m/Library/Caches",
+    "Your only tools are reply, list_models, set_up_model and start_full_model",
   );
-  assertStringIncludes(sys, "Do not install Ollama");
-  assertStringIncludes(sys, "# endpoint: http://127.0.0.1:41234/v1 <name>");
-  assertStringIncludes(
-    sys,
-    "export LLAMA_CACHE='/Users/m/Library/Application Support/ai-bootstrap/models/llama.cpp'",
-  );
-  assertStringIncludes(
-    sys,
-    "exec '/Users/m/Library/Caches/ai-bootstrap/llama/b9000/llama-server' -hf",
-  );
-  assertStringIncludes(sys, "--port 41234");
-  assertStringIncludes(flat(sys), "Never start a server with run");
+  assertStringIncludes(sys, "You are served at http://x/v1");
+  assertStringIncludes(sys, "NVIDIA RTX 4090");
   assert(!sys.includes("{{"), "unfilled placeholder");
-  // Linux suggests vLLM in Docker for NVIDIA, on the same free port.
-  const linux = systemPrompt(t, new Router(ep("qwen3-4b")), vars);
-  assertStringIncludes(linux, "docker run --rm --gpus all -p 41234:8000");
 });
 
 Deno.test("hardware summaries", async () => {

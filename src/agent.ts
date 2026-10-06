@@ -3,22 +3,24 @@
 
 import type { Message, Reply } from "./llm.ts";
 import { type ChatShape, type Endpoint, LLMError } from "./llm.ts";
-import { describe, renderPlan, REPLY_TOOL, type Session, TOOLS } from "./tools.ts";
+import { BASE_TOOLS, describe, renderPlan, type Session, TOOLS } from "./tools.ts";
 import { currentTier, loadTemplates, systemPrompt, type Templates, tierOf } from "./prompts.ts";
 import { secrets } from "./secrets.ts";
-import { installedServer } from "./llama.ts";
 import { ask, bold, cyan, dim, Interrupted, plain, red, warn, write } from "./ui.ts";
 
 const MAX_STEPS = 60;
 
 /**
- * The small base model must answer every step with a tool call (llama.cpp
- * enforces it), talking to the user through reply; others get the tools as is.
- * AIBOOT_FORCE_TOOLS=0 turns that off.
+ * The small base model runs on rails: only the setup tools, and every step
+ * must be a tool call (llama.cpp enforces it), talking to the user through
+ * reply. AIBOOT_FORCE_TOOLS=0 drops the forcing. Others get the full tools.
  */
 function shape(ep: Endpoint): ChatShape {
-  if (tierOf(ep) === "base" && Deno.env.get("AIBOOT_FORCE_TOOLS") !== "0") {
-    return { tools: [...TOOLS, REPLY_TOOL], toolChoice: "required" };
+  if (tierOf(ep) === "base") {
+    return {
+      tools: BASE_TOOLS,
+      toolChoice: Deno.env.get("AIBOOT_FORCE_TOOLS") === "0" ? undefined : "required",
+    };
   }
   return { tools: TOOLS };
 }
@@ -63,14 +65,13 @@ export class Agent {
   async system(): Promise<() => string> {
     this.templates ??= await loadTemplates();
     const t = this.templates;
-    const [index, fleet, docs, memories, remote, fresh, llama] = await Promise.all([
+    const [index, fleet, docs, memories, remote, fresh] = await Promise.all([
       this.s.memory.index(),
       this.s.memory.fleet(),
       this.s.memory.docNames(),
       this.s.memory.list(),
       this.s.memory.remote(),
       this.s.memory.isEmpty(),
-      installedServer(),
     ]);
     const extra = this.extraContext();
     // Rendered lazily: the router may fall back to the bootstrap model mid-request.
@@ -95,8 +96,6 @@ export class Agent {
         plan: this.s.plan.length ? plain(renderPlan(this.s.plan)) : "(none yet)",
         fresh,
         failure: this.s.fullFailure,
-        // Installed here, so only of use while working on this machine.
-        llama_server: this.s.stack.length === 1 ? llama : null,
       });
   }
 
@@ -156,8 +155,20 @@ export class Agent {
       });
       if (!reply.toolCalls.length) return;
       let replied = false;
+      // Only what the answering model was offered (the base model is on rails).
+      const offered = new Set(shape(this.s.router.current()).tools.map((t) => t.function.name));
       for (const [n, tc] of reply.toolCalls.entries()) {
         let result: string;
+        if (!offered.has(tc.function.name)) {
+          this.history.push({
+            role: "tool",
+            tool_call_id: tc.id,
+            content: `${tc.function.name} is not available to you. Your tools: ${
+              [...offered].join(", ")
+            }.`,
+          });
+          continue;
+        }
         if (tc.function.name === "reply") {
           let msg = "";
           try {

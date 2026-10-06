@@ -22,22 +22,35 @@ export { dirSize };
 const PINNED_TAG = "b9000";
 const DEFAULT_MODEL = "unsloth/Qwen3-4B-Instruct-2507-GGUF:Q4_K_M";
 
-function platformAsset(): { stem: string; ext: string } {
+/**
+ * "cpu" is the bootstrap build (Metal on macOS anyway). "gpu" is the
+ * hardware-accelerated one for the full model: Vulkan on Linux and
+ * Windows, which covers NVIDIA, AMD and Intel GPUs, and Metal on macOS.
+ */
+export type Flavor = "cpu" | "gpu";
+
+function platformAsset(flavor: Flavor = "cpu"): { stem: string; ext: string } {
   const a = Deno.build.arch === "aarch64" ? "arm64" : "x64";
+  const gpu = flavor === "gpu";
   switch (Deno.build.os) {
     case "linux":
-      return { stem: `ubuntu-${a}`, ext: "tar.gz" };
+      return { stem: gpu ? `ubuntu-vulkan-${a}` : `ubuntu-${a}`, ext: "tar.gz" };
     case "darwin":
       return { stem: `macos-${a}`, ext: "tar.gz" };
     case "windows":
-      return { stem: `win-cpu-${a}`, ext: "zip" };
+      return { stem: gpu && a === "x64" ? "win-vulkan-x64" : `win-cpu-${a}`, ext: "zip" };
     default:
       throw new Error(`no prebuilt llama.cpp for ${Deno.build.os}`);
   }
 }
 
-async function latest(): Promise<{ tag: string; url: string } | null> {
-  const { stem } = platformAsset();
+/** macOS builds are the same for both. */
+function rootFor(flavor: Flavor): string {
+  return join(cacheDir(), flavor === "gpu" && Deno.build.os !== "darwin" ? "llama-gpu" : "llama");
+}
+
+async function latest(flavor: Flavor): Promise<{ tag: string; url: string } | null> {
+  const { stem } = platformAsset(flavor);
   try {
     const r = await fetch("https://api.github.com/repos/ggml-org/llama.cpp/releases/latest", {
       signal: AbortSignal.timeout(5000),
@@ -70,22 +83,22 @@ async function findServer(dir: string): Promise<string | null> {
 }
 
 /** An already-installed llama-server, if any. */
-export async function installedServer(): Promise<string | null> {
-  const root = join(cacheDir(), "llama");
+export async function installedServer(flavor: Flavor = "cpu"): Promise<string | null> {
+  const root = rootFor(flavor);
   if (!(await exists(root))) return null;
   return await findServer(root);
 }
 
-export async function installLlama(): Promise<string> {
-  const have = await installedServer();
+export async function installLlama(flavor: Flavor = "cpu"): Promise<string> {
+  const have = await installedServer(flavor);
   if (have) return have;
   const pinned = Deno.env.get("AIBOOT_LLAMA_TAG");
-  const { stem, ext } = platformAsset();
-  const rel = pinned ? null : await latest();
+  const { stem, ext } = platformAsset(flavor);
+  const rel = pinned ? null : await latest(flavor);
   const tag = pinned ?? rel?.tag ?? PINNED_TAG;
   const url = rel?.url ??
     `https://github.com/ggml-org/llama.cpp/releases/download/${tag}/llama-${tag}-bin-${stem}.${ext}`;
-  const dir = join(cacheDir(), "llama", tag);
+  const dir = join(rootFor(flavor), tag);
   await ensureDir(dir);
   const archive = join(dir, `llama.${ext}`);
   info(`downloading llama.cpp ${tag}: ${url}`);

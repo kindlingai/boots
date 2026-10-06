@@ -33,6 +33,8 @@ export interface Endpoint {
   keyInMemory?: boolean;
   /** Rough context budget in characters. */
   contextChars: number;
+  /** Overrides the tier guessed from the model name (see prompts.ts tierOf). */
+  tier?: "base" | "full";
 }
 
 export class LLMError extends Error {

@@ -56,6 +56,26 @@ export interface Hit {
   score: number;
 }
 
+/** Memories ai-bootstrap writes by itself. */
+const AUTOMATIC = ["INDEX", "local-setup", "full-model"];
+
+/** Empty, or only full-model entries that set_up_model recorded. */
+function automaticFleet(text: string): boolean {
+  if (!text.trim()) return true;
+  try {
+    const f = JSON.parse(text);
+    const keys = Object.keys(f ?? {});
+    if (!keys.length) return true;
+    if (keys.length !== 1 || keys[0] !== "hosts") return false;
+    return Object.values(f.hosts ?? {}).every((h: any) =>
+      Object.keys(h ?? {}).every((k) => k === "models") &&
+      (h.models ?? []).every((m: any) => m?.role === "full model")
+    );
+  } catch {
+    return false;
+  }
+}
+
 export class Memory {
   readonly dir: string;
 
@@ -86,11 +106,15 @@ export class Memory {
    * True until the user's setup is recorded: no memories besides the
    * automatic local-setup, and INDEX as seeded.
    */
+  /**
+   * Nothing from the user yet: only what ai-bootstrap records by itself (the
+   * local setup, and the full model the base model set up).
+   */
   async isEmpty(): Promise<boolean> {
-    const own = (await this.list()).filter((n) => n !== "INDEX" && n !== "local-setup");
-    const fleet = (await this.fleet()).replace(/\s/g, "");
-    return !own.length && (fleet === "" || fleet === "{}") &&
-      (await this.index()).trim() === SEED.trim();
+    const own = (await this.list()).filter((n) => !AUTOMATIC.includes(n));
+    const index = (await this.index()).split("\n").filter((l) => !/^- full-model:/.test(l))
+      .join("\n");
+    return !own.length && automaticFleet(await this.fleet()) && index.trim() === SEED.trim();
   }
 
   /** fleet.json as stored, or "" when there is none yet. */

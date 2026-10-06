@@ -17,6 +17,7 @@ export type Tier = "base" | "full";
 export function tierOf(ep: Endpoint): Tier {
   const forced = Deno.env.get("AIBOOT_TIER");
   if (forced === "base" || forced === "full") return forced;
+  if (ep.tier) return ep.tier;
   if (ep.keyEnv || ep.keyInMemory) return "full";
   const b = sizeFromName(ep.model);
   return b > 0 && b <= 8 ? "base" : "full";
@@ -62,8 +63,6 @@ export interface PromptVars {
   scripts: string;
   free_port: number;
   hardware: string;
-  /** The installed llama-server, if ai-bootstrap downloaded one. */
-  llama_server?: string | null;
   docs: string[];
   memories: string[];
   memory_sync: string | null;
@@ -106,7 +105,31 @@ export function systemPrompt(t: Templates, router: Router, v: PromptVars): strin
     plan: v.plan,
   });
   const base = tierOf(ep) === "base";
-  if (v.failure) {
+  const block = (l: string[], empty: string) => l.join("\n") || empty;
+  // On rails, the base model reports a failed start and offers what its tools can do.
+  const failure = v.failure && base
+    ? `
+## The full model failed to start this time
+
+ai-bootstrap ran ${v.failure.script} and it failed: ${v.failure.reason}.
+The last lines of ${v.failure.log}:
+
+\`\`\`text
+${block(v.failure.tail, "(the log is empty)")}
+\`\`\`
+
+Lines that mention errors:
+
+\`\`\`text
+${block(v.failure.errors, "(none)")}
+\`\`\`
+
+Skip the opening question. Open by telling the user, with reply, that the full model did not start
+and what the lines above suggest, in plain words. Then offer, as in step 4: try again
+(start_full_model), a smaller model (list_models, set_up_model), or a hosted model.
+`
+    : "";
+  if (v.failure && !base) {
     const f = v.failure;
     return render(t.diagnose, {
       model: ep.label,
@@ -129,20 +152,6 @@ export function systemPrompt(t: Templates, router: Router, v: PromptVars): strin
         : "\nOpen the session with a one-line greeting, mention recipes, and ask the first of these questions.",
     }).trim()
     : "";
-  const server = v.llama_server ?? (v.os === "windows" ? "llama-server.exe" : "llama-server");
-  const sep = v.os === "windows" ? "\\" : "/";
-  const cache = `${v.models}${sep}llama.cpp`;
-  const args =
-    `-hf <huggingface repo>:<quant> --alias <name> --host 127.0.0.1 --port ${v.free_port} --jinja -c 32768 -ngl 99`;
-  const fullScriptExample = v.os === "windows"
-    ? `@echo off\nrem endpoint: http://127.0.0.1:${v.free_port}/v1 <name>\nset "LLAMA_CACHE=${cache}"\n"${server}" ${args}`
-    : `#!/bin/sh\n# endpoint: http://127.0.0.1:${v.free_port}/v1 <name>\nexport LLAMA_CACHE='${cache}'\nexec '${server}' ${args}`;
-  const llamaWhere = v.llama_server ? `already installed at ${v.llama_server}` : "llama-server";
-  const serverAdvice = v.os === "darwin"
-    ? `On this Mac use llama.cpp: ${llamaWhere}, it runs on the GPU (Metal), and the template in step 6 uses it. Do not install Ollama or anything else. Pick a GGUF model from ${osDoc} that leaves at least a quarter of the memory free.`
-    : v.os === "windows"
-    ? `Use llama.cpp: ${llamaWhere}, and the template in step 6 uses it. Pick a GGUF model from ${osDoc} that fits.`
-    : `With an NVIDIA GPU and Docker, vLLM is best: replace the exec line in the template with \`exec docker run --rm --gpus all -p ${v.free_port}:8000 -v '${v.models}/huggingface:/root/.cache/huggingface' vllm/vllm-openai:latest --model <huggingface repo> --served-model-name <name>\`. Otherwise use llama.cpp (${llamaWhere}; the template uses it). Pick the model from ${osDoc}.`;
   return render(base ? t.base : t.main, {
     onboarding,
     model: ep.label,
@@ -151,8 +160,10 @@ export function systemPrompt(t: Templates, router: Router, v: PromptVars): strin
     smart: router.smart?.label ?? "none",
     fallback_note: fallback,
     os_doc: osDoc,
-    server_advice: serverAdvice,
-    full_script_example: fullScriptExample,
+    failure,
+    os_name: v.os_name,
+    arch: v.arch,
+    hardware: v.hardware,
     context,
   }).trim();
 }

@@ -28,9 +28,11 @@ async function session(model: string, script: Scripted[]) {
 
 const toolNames = (req: any) => req.tools.map((t: any) => t.function.name);
 
-Deno.test("base model: tool calls are required, and reply ends the turn", async () => {
+Deno.test("base model: on rails, tool calls required, reply ends the turn", async () => {
+  const marker = await Deno.makeTempFile();
+  await Deno.remove(marker);
   const { m, agent, done } = await session("qwen3-4b", [
-    { calls: [{ name: "run", args: { command: "echo hi" } }] },
+    { calls: [{ name: "run", args: { command: `touch ${marker}` } }] },
     { calls: [{ name: "reply", args: { message: "All checked." } }] },
     { content: "never reached" },
   ]);
@@ -39,10 +41,12 @@ Deno.test("base model: tool calls are required, and reply ends the turn", async 
     const asks = m.seen.filter((b) => b.tools);
     assertEquals(asks.length, 2, "the turn ends at reply");
     assertEquals(asks[0].tool_choice, "required");
-    assert(toolNames(asks[0]).includes("reply"));
+    assertEquals(toolNames(asks[0]), ["reply", "list_models", "set_up_model", "start_full_model"]);
+    // A tool it was not offered is refused, not run.
     const last = asks[1].messages.at(-1);
     assertEquals(last.role, "tool");
-    assert(last.content.includes("hi"));
+    assert(last.content.includes("run is not available to you"));
+    assertEquals(await Deno.stat(marker).then(() => true, () => false), false);
   } finally {
     await done();
   }

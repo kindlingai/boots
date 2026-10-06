@@ -22,6 +22,7 @@ import {
   yellow,
 } from "./ui.ts";
 import { Classifier, type Verdict } from "./classify.ts";
+import { CATALOG, describePlan, plan, setUpModel } from "./rails.ts";
 
 /** Wrappers that run the command after them. */
 const WRAPPERS = new Set([
@@ -265,6 +266,24 @@ export const REPLY_TOOL = fn(
   { message: str("what to say, in plain text") },
   ["message"],
 );
+
+/** The base model's rails: it sets up a catalog model on this machine, and that is all. */
+export const BASE_TOOLS = [
+  REPLY_TOOL,
+  fn(
+    "list_models",
+    "List ai-bootstrap's model catalog, best first, marking which models fit this machine's GPU memory. Installs the GPU build of llama.cpp first if needed, to measure the GPU.",
+    {},
+    [],
+  ),
+  fn(
+    "set_up_model",
+    "Set up a catalog model as the full model on this machine and switch to it. The user is asked to confirm. It installs the GPU build of llama.cpp, writes start-full.sh, downloads the model (several GB: this can take many minutes) and starts it. Returns what happened, or the end of the log if it failed.",
+    { model: str("a model id from list_models") },
+    ["model"],
+  ),
+  ...TOOLS.filter((t) => t.function.name === "start_full_model"),
+];
 
 export class Session {
   readonly host: Host;
@@ -609,6 +628,32 @@ export class Session {
       }
       case "use_model":
         return await this.useModel(args);
+      case "list_models": {
+        if (this.stack.length > 1) return "models are set up on the local machine only";
+        console.log(dim("  checking the GPU and the model catalog"));
+        return describePlan(await plan(this.here.info.hardware));
+      }
+      case "set_up_model": {
+        if (this.stack.length > 1) return "models are set up on the local machine only";
+        const id = String(args.model ?? "");
+        const m = CATALOG.find((c) => c.id === id);
+        if (!m) return `no model ${id}; the catalog has ${CATALOG.map((c) => c.id).join(", ")}`;
+        const no = await this.gate(
+          `set up ${bold(m.label)} as the full model (~${m.fileGB} GB download)`,
+          `setup\0${id}`,
+        );
+        if (no) return no;
+        const r = await setUpModel(id, this.here.info.hardware, this.memory, signal);
+        if ("error" in r) {
+          console.log(red(`  ${r.error.split("\n")[0]}`));
+          return r.error;
+        }
+        this.fullFailure = null;
+        this.router.setSmart(r.ep);
+        await saveSmart(r.ep);
+        console.log(green(`  ${r.summary}`));
+        return `${r.summary} You are now replaced by it: tell the user it is ready, in one sentence.`;
+      }
       case "start_full_model": {
         if (this.stack.length > 1) {
           return "start_full_model runs on the local machine; ssh_exit back there first";
