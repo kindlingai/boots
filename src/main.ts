@@ -8,13 +8,22 @@ import { askpassMain } from "./askpass.ts";
 import { farMain } from "./far.ts";
 import { Memory } from "./memory.ts";
 import { McpManager } from "./mcp.ts";
-import { Router } from "./llm.ts";
+import { type BootstrapControl, Router } from "./llm.ts";
 import { makeNearAsker } from "./secrets.ts";
 import { loadSmart, restoreSmart, saveSmart, Session } from "./tools.ts";
-import { type FullFailure, startFull } from "./intelligence.ts";
+import { type FullFailure, scriptPath, startFull } from "./intelligence.ts";
+import { startLlama } from "./llama.ts";
 import { Agent, repl } from "./agent.ts";
 import { boot } from "./boot.ts";
-import { cacheDir, currentTarget, dataDir, modelsDir, scriptsDir, VERSION } from "./platform.ts";
+import {
+  cacheDir,
+  currentTarget,
+  dataDir,
+  exists,
+  modelsDir,
+  scriptsDir,
+  VERSION,
+} from "./platform.ts";
 import { bold, dim, red, warn } from "./ui.ts";
 
 async function interactive(): Promise<number> {
@@ -26,18 +35,38 @@ async function interactive(): Promise<number> {
   const pulled = await memory.pull();
   if (pulled) console.log(dim(pulled));
   const booted = await boot(memory);
-  const router = new Router(booted.bootstrap);
+  // The local bootstrap is stopped while the full model runs (handover), and
+  // started again if that fails or stops answering.
+  let llama = booted.llama;
+  const control: BootstrapControl | undefined = llama
+    ? {
+      running: () => llama !== null,
+      stop: async () => {
+        const l = llama;
+        llama = null;
+        l?.stop();
+        await l?.exited;
+      },
+      start: async () => {
+        llama = await startLlama(booted.llama!.server);
+        return llama.endpoint;
+      },
+    }
+    : undefined;
+  const router = new Router(booted.bootstrap, control);
   router.onNotice = (s) => warn(s);
   let smart = await restoreSmart(router);
   let failure: FullFailure | null = null;
-  if (!smart) {
-    // Nothing answering: start the full model if there is a start-full script.
+  if (!smart && (await exists(scriptPath("full")))) {
+    // Nothing answering: hand over to the full model's start script.
+    const handed = await router.handover();
     const r = await startFull((await loadSmart()).find((e) => !e.keyInMemory) ?? null).catch(
       (e) => {
         warn(`could not start the full model: ${(e as Error).message}`);
         return null;
       },
     );
+    if (handed && !(r && "ep" in r)) await router.ensureBootstrap();
     if (r && "ep" in r) {
       smart = r.ep;
       router.setSmart(smart);
@@ -77,7 +106,7 @@ async function interactive(): Promise<number> {
   // terminal is raw, and the line reader sees ^C itself.)
   const onSigint = () => {
     if (!agent.interrupt()) {
-      booted.llama?.stop();
+      llama?.stop();
       Deno.exit(130);
     }
   };
@@ -90,7 +119,7 @@ async function interactive(): Promise<number> {
     await repl(agent);
   } finally {
     await session.closeAll();
-    booted.llama?.stop();
+    llama?.stop();
   }
   return 0;
 }

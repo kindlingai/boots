@@ -234,12 +234,44 @@ export async function reachable(ep: Endpoint, ms = 4000): Promise<boolean> {
  * whenever the smarter one stops answering. A failed smart model is retried
  * after a cool-down.
  */
+/** A local bootstrap model that can be stopped to make room and started again. */
+export interface BootstrapControl {
+  running(): boolean;
+  stop(): Promise<void>;
+  start(): Promise<Endpoint>;
+}
+
 export class Router {
   smart: Endpoint | null = null;
   private smartDownUntil = 0;
   onNotice: (s: string) => void = () => {};
 
-  constructor(public bootstrap: Endpoint) {}
+  constructor(public bootstrap: Endpoint, private control?: BootstrapControl) {}
+
+  /** The bootstrap is answering (or is not ours to stop). */
+  bootstrapUp(): boolean {
+    return !this.control || this.control.running();
+  }
+
+  /**
+   * Stops the local bootstrap so the full model gets its memory. True if it
+   * was running, so the caller knows to bring it back if the full model fails.
+   */
+  async handover(): Promise<boolean> {
+    if (!this.control?.running()) return false;
+    this.onNotice(`handing over: stopping ${this.bootstrap.label} to make room for the full model`);
+    await this.control.stop();
+    return true;
+  }
+
+  /** Starts the bootstrap again if it was handed over. */
+  async ensureBootstrap(): Promise<Endpoint> {
+    if (this.control && !this.control.running()) {
+      this.onNotice(`starting ${this.bootstrap.label} again`);
+      this.bootstrap = await this.control.start();
+    }
+    return this.bootstrap;
+  }
 
   current(): Endpoint {
     return this.smart && Date.now() >= this.smartDownUntil ? this.smart : this.bootstrap;
@@ -281,7 +313,7 @@ export class Router {
         );
       }
     }
-    return await send(this.bootstrap);
+    return await send(await this.ensureBootstrap());
   }
 }
 

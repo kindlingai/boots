@@ -127,7 +127,11 @@ export interface Running {
   endpoint: Endpoint;
   /** The script that starts it; the user can run it by hand too. */
   script: string;
+  /** The llama-server it runs, to start it again. */
+  server: string;
   stop(): void;
+  /** Resolves once it has exited (and freed its memory). */
+  exited: Promise<number>;
 }
 
 const sq = (s: string) => `'${s.replaceAll("'", `'\\''`)}'`;
@@ -203,7 +207,9 @@ export async function startLlama(server: string): Promise<Running> {
       contextChars: contextFor(4, false),
     },
     script,
+    server,
     stop: () => proc.stop(),
+    exited: proc.exited,
   };
   const t0 = Date.now();
   let shown = 0;

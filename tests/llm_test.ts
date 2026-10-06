@@ -110,3 +110,46 @@ Deno.test("a server that rejects tool_choice is asked again without it", async (
     await server.shutdown();
   }
 });
+
+Deno.test("handover: the bootstrap stops for the full model and comes back when it fails", async () => {
+  const { Router } = await import("../src/llm.ts");
+  const { serveMock } = await import("./fixtures/mock_llm.ts");
+  const small = serveMock([{ content: "small here" }]);
+  let up = true;
+  let starts = 0;
+  const ep = (url: string, model: string) => ({
+    label: model,
+    baseUrl: url,
+    model,
+    contextChars: 1e4,
+  });
+  const r = new Router(ep(small.url, "small-4b"), {
+    running: () => up,
+    stop: () => {
+      up = false;
+      return Promise.resolve();
+    },
+    start: () => {
+      up = true;
+      starts++;
+      return Promise.resolve(ep(small.url, "small-4b"));
+    },
+  });
+  try {
+    assertEquals(await r.handover(), true);
+    assertEquals(r.bootstrapUp(), false);
+    assertEquals(await r.handover(), false, "already handed over");
+    // The full model is down: asking falls back, which starts the small model again.
+    r.setSmart(ep("http://127.0.0.1:9/v1", "big-30b"));
+    const tool = {
+      type: "function" as const,
+      function: { name: "t", description: "", parameters: { type: "object", properties: {} } },
+    };
+    const reply = await r.chat(() => [{ role: "user", content: "hi" }], [tool], {});
+    assertEquals(reply.content, "small here");
+    assertEquals(starts, 1);
+    assertEquals(r.bootstrapUp(), true);
+  } finally {
+    await small.close();
+  }
+});

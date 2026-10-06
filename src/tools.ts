@@ -394,6 +394,21 @@ export class Session {
     else if (r.code !== 0) console.log(red(`    (exit ${r.code})`));
   }
 
+  /**
+   * Starts the full model with the local bootstrap stopped (its memory goes to
+   * the full model), and brings the bootstrap back if that did not work.
+   */
+  private async handedOver<T>(start: () => Promise<T>, ok: (r: T) => boolean): Promise<T> {
+    const handed = await this.router.handover();
+    let r: T | undefined;
+    try {
+      r = await start();
+      return r;
+    } finally {
+      if (handed && (r === undefined || !ok(r))) await this.router.ensureBootstrap();
+    }
+  }
+
   /** A failed model start, as the user sees it: why, and the end of the log. */
   private showFailure(f: FullFailure): void {
     console.log(red(`  the full model did not start: ${f.reason}`));
@@ -406,7 +421,10 @@ export class Session {
 
   /** The user allowed every read-only command for this session. */
   allowReadonly = false;
-  readonly classifier = new Classifier(() => this.router.bootstrap);
+  // The small model checks commands; while it is handed over, the full model does.
+  readonly classifier = new Classifier(() =>
+    this.router.bootstrapUp() ? this.router.bootstrap : this.router.current()
+  );
   private complexTries = new Map<string, number>();
 
   /**
@@ -721,7 +739,10 @@ export class Session {
           `setup\0${id}`,
         );
         if (no) return no;
-        const r = await setUpModel(id, this.here.info.hardware, this.memory, signal);
+        const r = await this.handedOver(
+          () => setUpModel(id, this.here.info.hardware, this.memory, signal),
+          (x) => "ep" in x,
+        );
         if ("error" in r) {
           if (r.failure) this.showFailure(r.failure);
           else console.log(red(`  ${r.error.split("\n")[0]}`));
@@ -741,7 +762,10 @@ export class Session {
         const no = await this.gate(`start the full model with ${bold(script)}`, `full\0${script}`);
         if (no) return no;
         const saved = (await loadSmart()).find((e) => !e.keyInMemory) ?? null;
-        const r = await startFull(saved);
+        const r = await this.handedOver(
+          () => startFull(saved, undefined, signal),
+          (x) => !!x && "ep" in x,
+        );
         if (!r) return `there is no ${script}; write it first`;
         if ("failure" in r) {
           this.fullFailure = r.failure;
