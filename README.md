@@ -1,5 +1,7 @@
 # ai-bootstrap
 
+_🧠 human written docs_
+
 A single, offline-friendly binary that you can use to bootstrap your local AI.
 
 ## Usage
@@ -35,7 +37,7 @@ Some other ways to get started:
  - Nvidia GPUs on Linux (including unified-memory systems like the DGX Spark)
  - AMD GPUs on Linux (including AMD unified-memory systems)
  - macOS
- - Windows (via `msl`)
+ - Windows (via `wsl`)
 
  It knows how to configure common infrastructure like `docker`. It can `ssh` and `sudo` (with your
  permission) as needed to set things up.
