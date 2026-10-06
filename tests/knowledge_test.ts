@@ -14,6 +14,12 @@ const EXPECTED = [
   "intermediate-windows",
   "llama-cpp",
   "mentat",
+  "models-deepseek",
+  "models-gemma",
+  "models-glm",
+  "models-kimi",
+  "models-others",
+  "models-qwen",
   "ollama",
   "ray",
   "sglang",
@@ -62,7 +68,13 @@ Deno.test("search finds each topic, by whole words", async () => {
       ["mlx", "docs/intermediate-macos:"],
       ["nvidia container toolkit", "docs/docker:"],
       ["OLLAMA_CONTEXT_LENGTH", "docs/ollama:"],
-      ["tool-call-parser", "docs/vllm:"],
+      ["enable-auto-tool-choice hermes", "docs/vllm:"],
+      ["qwen3.8", "docs/models-qwen:"],
+      ["glm-5.3-flash", "docs/models-glm:"],
+      ["kimi k3", "docs/models-kimi:"],
+      ["deepseek-v4-flash", "docs/models-deepseek:"],
+      ["diffusiongemma", "docs/models-gemma:"],
+      ["harmony gpt-oss", "docs/models-others:"],
     ]
   ) {
     const r = await run(["--search", ...q.split(" ")]);

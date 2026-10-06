@@ -215,7 +215,7 @@ export const TOOLS: ToolDef[] = [
   ),
   fn(
     "memory_search",
-    "Search your memories and the bundled knowledge base (docs on llama.cpp, vLLM, SGLang, Ollama, TensorFold, Ray, mentat, Docker, and per-OS guides to hardware-accelerated models). Returns matching lines as source:line; read a whole doc with memory_read docs/<name>.",
+    "Search your memories and the bundled knowledge base (docs on llama.cpp, vLLM, SGLang, Ollama, TensorFold, Ray, mentat, Docker, per-OS guides to hardware-accelerated models, and open model families: Qwen, GLM, Kimi, DeepSeek, Gemma/DiffusionGemma, gpt-oss, Llama/Muse, Mistral, MiniMax, Nemotron, Phi, Granite, OLMo — versions, sizes, memory needs, Hugging Face/GitHub links, serving flags). Returns matching lines as source:line; read a whole doc with memory_read docs/<name>.",
     { query: str("a few keywords, e.g. 'dgx spark vllm' or 'ray multi-node'") },
     ["query"],
   ),
