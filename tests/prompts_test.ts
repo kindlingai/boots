@@ -209,3 +209,16 @@ Deno.test("goals.json is in the full prompt, with its shape", async () => {
   assertStringIncludes(empty, "[] (empty: no goals recorded yet)");
   assert(!full.includes("{{"), "unfilled placeholder");
 });
+
+Deno.test("with nothing set up, the prompt points the full model at the Docker guide", async () => {
+  const t = await loadTemplates();
+  const full = new Router(ep("mock-30b"));
+  const empty = systemPrompt(t, full, vars);
+  assertStringIncludes(empty, "## Nothing is set up yet");
+  assertStringIncludes(empty, "memory_read docs/docker");
+  assertStringIncludes(systemPrompt(t, full, { ...vars, fleet: "{ }" }), "Nothing is set up yet");
+  const known = systemPrompt(t, full, { ...vars, fleet: '{"hosts": {"box": {}}}' });
+  assert(!known.includes("Nothing is set up yet"), "not once something is recorded");
+  const base = systemPrompt(t, new Router(ep("qwen3-4b")), vars);
+  assert(!base.includes("Nothing is set up yet"), "the base model is on rails");
+});

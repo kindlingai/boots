@@ -86,10 +86,30 @@ export interface PromptVars {
 
 export function systemPrompt(t: Templates, router: Router, v: PromptVars): string {
   let prompt = basePrompt(t, router, v);
+  if (!fleetRecorded(v.fleet) && tierOf(router.current()) !== "base") {
+    prompt += `\n\n${NOTHING_SET_UP}`;
+  }
   if (v.restored) prompt += `\n\n${restoredNote(v.restored)}`;
   if (v.update) prompt += `\n\n${updateNote(v.update)}`;
   return prompt;
 }
+
+/** fleet.json holds something (not missing, not an empty object). */
+function fleetRecorded(fleet: string): boolean {
+  const t = fleet.trim();
+  return t !== "" && !/^\{\s*\}$/.test(t);
+}
+
+/** With nothing recorded yet, steer the first installs towards Docker. */
+export const NOTHING_SET_UP = `## Nothing is set up yet
+
+fleet.json is empty: you have not installed anything for this user. Before installing the first
+model server or tool, read docs/docker (memory_read docs/docker). Prefer running each service as a
+Docker container: it is hermetic (nothing installed into the host), removed with one command, and
+traceable (labelled with what made it and why). Put a small MCP server inside each service's
+container, as that doc shows, and add it with mcp_add so the service can be managed through tools.
+Install directly on the host only where Docker cannot do the job (the Mac GPU) or the user prefers
+it.`;
 
 /** The conversation starts with turns restored from the previous session. */
 export function restoredNote(at: string): string {
