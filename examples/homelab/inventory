@@ -1,0 +1,5 @@
+# name      destination              options
+nas         root@192.168.1.10        roles=storage
+node-1      admin@192.168.1.21       roles=worker sudo
+node-2      admin@192.168.1.22       roles=worker sudo
+gpu-1       root@192.168.1.30:2222   roles=worker gpu

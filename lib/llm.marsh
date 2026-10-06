@@ -1,0 +1,172 @@
+# OpenAI-compatible chat over curl + jq, plus model scrounging.
+#
+# Anything speaking /v1/chat/completions works: llama.cpp's llama-server,
+# Ollama, vLLM, SGLang, LM Studio, LiteLLM, or a hosted API.
+
+use std/fs { read, write }
+use std/str { trim, split, split_once, starts_with }
+use std/list { push, join }
+use std/collect { collector, feeder, send, drain }
+use std/os { env }
+
+define error LLM
+
+struct Endpoint {
+  url: string,
+  model: string,
+  key_env: string,
+  size: string,
+  source: string,
+}
+
+fn no_endpoint() -> Endpoint {
+  return Endpoint { url: "", model: "", key_env: "", size: "0", source: "none" }
+}
+
+fn label(e: Endpoint) -> string {
+  return "${e.model} at ${e.url} (${e.source})"
+}
+
+# Default ports of local inference servers.
+fn common_ports() -> array<string> {
+  return ["11434", "8080", "8000", "1234", "4000", "5000", "5001", "30000", "18080", "18081"]
+}
+
+# Billions of parameters, guessed from a model name: "qwen3:4b" 4,
+# "Qwen3-30B-A3B" 30, "mixtral-8x7b" 56, "smol-360m" 0.36, unknown 0.
+fn size_jq() -> string {
+  return '''
+    def size_b: ascii_downcase as $s
+      | ([ $s | scan("([0-9]+)x([0-9]+(?:\\.[0-9]+)?)b(?![a-z])") | (.[0]|tonumber) * (.[1]|tonumber) ]
+         + [ $s | scan("(?<![a-z0-9.x])([0-9]+(?:\\.[0-9]+)?)b(?![a-z])") | .[0] | tonumber ]
+         + [ $s | scan("(?<![a-z0-9.])([0-9]+)m(?![a-z])") | (.[0]|tonumber) / 1000 ])
+      | max // 0;
+    '''
+}
+
+# One `size<TAB>model<TAB>url<TAB>source` line per model served at host:port.
+fn _probe(dir: string, host: string, port: string) -> string {
+  f := "${dir}/probe-${host}-${port}.json"
+  base := "http://${host}:${port}"
+  if !?(curl -sf --connect-timeout 1 -m 4 -o $f "${base}/v1/models") {
+    return ""
+  }
+  prog := size_jq() + '''
+    (.data // .models // [])[] | (.id // .name // .model) | select(type == "string")
+    | "\(size_b)\t\(.)\t\($base)/v1\tscrounged:\($port)"
+    '''
+  if !?(jq -r --arg base $base --arg port $port $prog $f > "${f}.tsv" 2>/dev/null) {
+    return ""
+  }
+  return trim(read("${f}.tsv"))
+}
+
+# Probes every host:port pair in parallel. Writes sorted TSV to `out`,
+# largest model first, and returns how many models were found.
+fn scrounge(dir: string, hosts: array<string>, out: string) -> int {
+  ports := common_ports()
+  extra := env("AIBOOT_SCROUNGE_PORTS") ?? ""
+  if extra != "" {
+    ports = split(extra, ",")
+  }
+  c := collector()
+  tx := feeder(c)
+  n := 0
+  for h in hosts {
+    for p in ports {
+      start {
+        send(tx, "\x01${_probe(dir, h, p)}")
+      }
+      n = n + 1
+    }
+  }
+  rows := []
+  seen := 0
+  if n > 0 {
+    for m in drain(c) {
+      body := m
+      if starts_with(body, "\x01") {
+        _, b, _ := split_once(body, "\x01")
+        body = b
+      }
+      if trim(body) != "" {
+        push(rows, body)
+      }
+      seen = seen + 1
+      if seen == n {
+        break
+      }
+    }
+  }
+  write(out, join(rows, "\n") + "\n")
+  sort -t "\t" -k1,1 -rn -o $out $out
+  sed -i.bak "/^\$/d" $out
+  return int(trim($(wc -l < $out)))
+}
+
+fn endpoint_from_row(row: string) -> Endpoint {
+  f := split(row, "\t")
+  return Endpoint { url: f[2], model: f[1], key_env: "", size: f[0], source: f[3] }
+}
+
+# "http://host:port/v1#model", optionally "...#model#KEY_ENV".
+fn endpoint_from_spec(spec: string) -> Endpoint {
+  url, rest, _ := split_once(spec, "#")
+  model, key_env, _ := split_once(rest, "#")
+  if model == "" {
+    model = "default"
+  }
+  size := trim($(jq -rn --arg m $model "${size_jq()} \$m | size_b"))
+  return Endpoint { url: url, model: model, key_env: key_env, size: size, source: "configured" }
+}
+
+fn healthy(e: Endpoint) -> bool {
+  return ?(curl -sf --connect-timeout 2 -m 5 -o /dev/null "${e.url}/models")
+}
+
+fn _hdr(dir: string, e: Endpoint) -> string {
+  h := "${dir}/hdr"
+  key := ""
+  if e.key_env != "" {
+    key = env(e.key_env) ?? ""
+  }
+  if key != "" {
+    write(h, "authorization: Bearer ${key}")
+  } else {
+    write(h, "x-aiboot: 1")
+  }
+  return h
+}
+
+# POSTs `req` and leaves the body in `resp`. Throws LLM on transport or
+# API errors.
+fn post(dir: string, e: Endpoint, req: string, resp: string) {
+  h := _hdr(dir, e)
+  ok := ?(curl -sS -m 1800 --connect-timeout 10 -H "content-type: application/json" -H "@${h}" --data-binary "@${req}" -o $resp "${e.url}/chat/completions" 2> "${dir}/curl.err")
+  if !ok {
+    throw err("LLM", "${e.url}: ${trim(read("${dir}/curl.err"))}")
+  }
+  if ?(jq -e '.error' $resp > /dev/null 2>&1) {
+    throw err("LLM", "${e.url}: ${trim($(jq -r '.error.message // (.error | tostring)' $resp))}")
+  }
+}
+
+# One question, one answer, no tools.
+fn ask(dir: string, e: Endpoint, system: string, user: string) -> string {
+  req := "${dir}/ask.req.json"
+  resp := "${dir}/ask.resp.json"
+  jq -n --arg model ${e.model} --arg sys $system --arg user $user '{model: $model, temperature: 0.2, messages: [{role: "system", content: $sys}, {role: "user", content: $user}]}' > $req
+  post(dir, e, req, resp)
+  # Reasoning models may wrap thoughts in <think>; the advice is after it.
+  return trim($(jq -r '.choices[0].message.content // "" | sub("^[\\s\\S]*</think>"; "")' $resp))
+}
+
+fn works(dir: string, e: Endpoint) -> bool {
+  try {
+    reply := ask(dir, e, "Reply with the single word: ok", "ping")
+    return reply != ""
+  } catch e2 {
+    echo "  advisor candidate ${label(e)} failed: ${e2.message}" >&2
+  }
+  return false
+}

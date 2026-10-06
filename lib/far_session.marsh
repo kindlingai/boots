@@ -1,0 +1,286 @@
+# One persistent far shell per hop.
+#
+# Vendored from marsh/examples/heron_session.marsh (MIT OR Apache-2.0).
+# Local change: far_worker takes `elevate` to run the shell under `sudo -n`.
+
+use std/remote { remote_rx, remote_tx, send, recv, _next }
+use std/io { fd, open, write, read_line, close }
+use std/tmp { make_temp_fifo, path }
+use std/str { starts_with, substr, split_once, ends_with, _drop_literal_suffix }
+use std/convert { int }
+use std/shell { quote }
+use std/proc { wait, kill, id, _termpg }
+use std/signal { defer_interrupt }
+use std/time { sleep }
+
+extern global __MSL_CLOSE: string default = "__msl_closed__"
+
+# A message, false once closed.
+fn recv_one(rx: remote_rx) -> (string, bool) {
+  m := _next(rx)
+  if m == __MSL_CLOSE {
+    return ("", false)
+  }
+  return (m, true)
+}
+
+# ---- near side --------------------------------------------------------------
+
+# Replies owed to abandoned requests, per channel.
+extern fn _stale_reset(rx: remote_rx) {
+  posix {
+    __msl_hsk=$(printf '%s' "${1#* }" | tr ' /.' '___')
+    eval "__hs_st_$__msl_hsk=0"
+    __msl_r=
+  }
+}
+
+extern fn _stale_bump(rx: remote_rx) {
+  posix {
+    __msl_hsk=$(printf '%s' "${1#* }" | tr ' /.' '___')
+    eval "__hs_st_$__msl_hsk=\$(( \${__hs_st_$__msl_hsk:-0} + 1 ))"
+    __msl_r=
+  }
+}
+
+extern fn _stale_take(rx: remote_rx) -> bool {
+  posix {
+    __msl_hsk=$(printf '%s' "${1#* }" | tr ' /.' '___')
+    eval "__msl_hsn=\${__hs_st_$__msl_hsk:-0}"
+    if [ "$__msl_hsn" -gt 0 ]; then
+      eval "__hs_st_$__msl_hsk=$((__msl_hsn - 1))"
+      __msl_r=1
+    else
+      __msl_r=0
+    fi
+  }
+}
+
+# Reply is "rc dropped\ncwd\nbody", `\x01int` or `\x01gone`.
+fn session_call(cmd_tx: remote_tx, res_rx: remote_rx, req: string) -> string {
+  return session_call(cmd_tx, res_rx, req, 135_s)
+}
+
+# The same call, waiting `d` for the reply.
+fn session_call(cmd_tx: remote_tx, res_rx: remote_rx, req: string, d: duration) -> string {
+  send(cmd_tx, req)
+  while true {
+    sh := defer_interrupt(-1)
+    m := ""
+    more := true
+    status := ""
+    try {
+      m2, more2 := recv(res_rx, d, sh)
+      m = m2
+      more = more2
+    } catch e {
+      if e.kind == "Interrupted" {
+        status = "\x01int"
+      } else {
+        status = "\x01gone"
+      }
+    }
+    if status != "" {
+      _stale_bump(res_rx)
+      return status
+    }
+    if !more {
+      return ""
+    }
+    # An abandoned wait's reply arrives later. Skipping it keeps
+    # request and reply paired.
+    if !_stale_take(res_rx) {
+      return m
+    }
+  }
+  return ""
+}
+
+# ---- far side ---------------------------------------------------------------
+
+# `substr` is quadratic on bash 3.2.
+fn _rstrip_nl(s: string) -> string {
+  out := s
+  while ends_with(out, "\n") {
+    out = _drop_literal_suffix(out, "\n")
+  }
+  return out
+}
+
+# `limit` caps the body, 0 keeps all.
+fn _run(w: fd, r: fd, g: group, d: duration, cmd: string, limit: int) -> (string, string, string, int, bool) {
+  # Overrun kill makes the read EOF.
+  pg := id(g)
+  gw := process_group {
+    sleep(d)
+    _termpg(pg)
+  }
+  # Output from an earlier command stops here.
+  write(w, "printf '\\n\\001BOC\\n'\n")
+  # `/dev/null`, or a reader eats the sentinel.
+  write(w, "{\n${cmd}\n} < /dev/null\n")
+  write(w, "printf '\\n\\001EOC %s %s\\n' \"\$?\" \"\$(pwd)\"\n")
+  body := ""
+  kept := 0
+  dropped := 0
+  rc := "0"
+  cwd := ""
+  ok := true
+  started := false
+  try {
+    while ok {
+      line := read_line(r)
+      if !started {
+        if line == "\x01BOC" {
+          started = true
+        }
+        continue
+      }
+      if starts_with(line, "\x01EOC ") {
+        info := substr(line, 5, line.len - 5)
+        st, wd, _ := split_once(info, " ")
+        rc = st
+        cwd = wd
+        break
+      }
+      room := limit - kept
+      if limit <= 0 || room > line.len {
+        body = "${body}${line}\n"
+        kept = kept + line.len + 1
+      } else {
+        body = "${body}${substr(line, 0, room)}"
+        kept = limit
+        dropped = dropped + line.len + 1 - room
+      }
+    }
+  } catch e {
+    ok = false
+  }
+  kill(gw)
+  wait(gw)
+  if !ok {
+    msg := "the far shell died or hit the ${d} limit; a fresh one opened (cwd and env cleared) -- use screen_start for long commands"
+    return ("124", "", msg, 0, false)
+  }
+  out := _rstrip_nl(body)
+  if dropped > 0 {
+    out = "${out}\n[truncated ${dropped} bytes]"
+  }
+  return (rc, cwd, out, dropped, true)
+}
+
+# One head field, and the rest.
+fn _num(head: string) -> (int, string) {
+  a, b, _ := split_once(head, " ")
+  if a == "" {
+    return (0, b)
+  }
+  return (int(a), b)
+}
+
+# Request head: "op limit [off cnt]".
+fn _handle(w: fd, r: fd, g: group, d: duration, req: string) -> (string, bool) {
+  head, rest, ok := split_once(req, "\n")
+  if !ok {
+    return ("1 0\n\nmalformed request", true)
+  }
+  op, tail, _ := split_once(head, " ")
+  limit, tail2 := _num(tail)
+  off, tail3 := _num(tail2)
+  cnt, _ := _num(tail3)
+
+  if op == "bash" {
+    rc, cwd, body, drop, alive := _run(w, r, g, d, rest, limit)
+    return ("${rc} ${drop}\n${cwd}\n${body}", alive)
+  }
+
+  # `cnt` 0 reads the whole file.
+  if op == "read" {
+    cmd := "cat -- ${quote([rest])}"
+    if cnt > 0 {
+      last := off + cnt - 1
+      # BSD sed has no `--`.
+      cmd = "sed -n ${quote(["${off},${last}p"])} < ${quote([rest])}"
+    }
+    rc, cwd, body, drop, alive := _run(w, r, g, d, cmd, limit)
+    return ("${rc} ${drop}\n${cwd}\n${body}", alive)
+  }
+
+  # base64 keeps a trailing newline or NUL.
+  if op == "edit" {
+    pathv, r2, okp := split_once(rest, "\n")
+    oldb, r3, oko := split_once(r2, "\n")
+    newb, scr, oks := split_once(r3, "\n")
+    if !okp || !oko || !oks {
+      return ("1 0\n\nmalformed edit", true)
+    }
+    rc, cwd, body, drop, alive := _run(w, r, g, d, _edit_cmd(pathv, oldb, newb, scr), limit)
+    return ("${rc} ${drop}\n${cwd}\n${body}", alive)
+  }
+
+  if op == "write" {
+    pathv, b64, ok2 := split_once(rest, "\n")
+    if !ok2 {
+      return ("1 0\n\nmalformed write", true)
+    }
+    cmd := "base64 -d > ${quote([pathv])} <<'.EOD.'\n${b64}\n.EOD."
+    rc, cwd, body, drop, alive := _run(w, r, g, d, cmd, limit)
+    if rc == "0" {
+      return ("0 0\n${cwd}\nwrote ${pathv}", alive)
+    }
+    return ("${rc} ${drop}\n${cwd}\n${body}", alive)
+  }
+
+  return ("1 0\n\nunknown opcode", true)
+}
+
+# `\x01` in a heredoc trips bash CTLESC.
+fn _edit_cmd(pathv: string, oldb: string, newb: string, scr: string) -> string {
+  q := quote([pathv])
+  return "__he_d=\$(mktemp -d) || exit 1\n" +
+    "base64 -d > \"\$__he_d/o\" <<'.EOD.'\n${oldb}\n.EOD.\n" +
+    "base64 -d > \"\$__he_d/n\" <<'.EOD.'\n${newb}\n.EOD.\n" +
+    "base64 -d > \"\$__he_d/e.pl\" <<'.EOD.'\n${scr}\n.EOD.\n" +
+    "perl \"\$__he_d/e.pl\" ${q} \"\$__he_d/o\" \"\$__he_d/n\"\n" +
+    "__he_rc=\$?\n" +
+    "rm -rf \"\$__he_d\"\n" +
+    # A bare `exit` ends the shared shell.
+    "( exit \$__he_rc )"
+}
+
+# One shell persists. A dead one respawns.
+fn far_worker(move cmd_rx: remote_rx, res_tx: remote_tx, d: duration, elevate: bool) {
+  going := true
+  while going {
+    cf := make_temp_fifo()
+    of := make_temp_fifo()
+    cp := path(cf)
+    op := path(of)
+    # `?()` keeps the shell's exit status out of the group.
+    # A failing group reports as an error near-side.
+    g := process_group {
+      if elevate {
+        _su := ?(sudo -n sh < $cp > $op 2>&1)
+      } else {
+        _sh := ?(sh < $cp > $op 2>&1)
+      }
+    }
+    w := open(cp, "w")
+    r := open(op, "r")
+    live := true
+    while going && live {
+      req, more := recv_one(cmd_rx)
+      if !more {
+        going = false
+      } else {
+        reply, ok := _handle(w, r, g, d, req)
+        send(res_tx, reply)
+        live = ok
+      }
+    }
+    close(w)
+    close(r)
+    kill(g)
+    wait(g)
+  }
+}
