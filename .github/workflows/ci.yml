@@ -6,6 +6,11 @@ on:
     tags: ["v*"]
   pull_request:
   workflow_dispatch:
+    inputs:
+      release:
+        description: "Tag v<deno.json version> on this commit and publish the release (main only)"
+        type: boolean
+        default: false
 
 jobs:
   test:
@@ -89,18 +94,31 @@ jobs:
       - name: Knowledge base is embedded and searchable
         run: deno test -A tests/knowledge_test.ts
 
+  # Publishes on a pushed v* tag, or on a manual run with release: true,
+  # which creates the v<version> tag on the commit that was tested.
   release:
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: >-
+      startsWith(github.ref, 'refs/tags/v') ||
+      (github.event_name == 'workflow_dispatch' && inputs.release && github.ref == 'refs/heads/main')
     needs: smoke
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
-      - name: Tag matches deno.json version
+        with:
+          fetch-tags: true
+          fetch-depth: 0
+      - name: Work out the tag
+        id: tag
         run: |
-          v=$(jq -r .version deno.json)
-          [ "v$v" = "${GITHUB_REF_NAME}" ] || { echo "tag ${GITHUB_REF_NAME} != v$v"; exit 1; }
+          v="v$(jq -r .version deno.json)"
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            [ "$v" = "$GITHUB_REF_NAME" ] || { echo "tag $GITHUB_REF_NAME != $v from deno.json"; exit 1; }
+          elif git rev-parse -q --verify "refs/tags/$v" >/dev/null; then
+            echo "$v already exists; bump the version in deno.json first"; exit 1
+          fi
+          echo "name=$v" >> "$GITHUB_OUTPUT"
       - uses: actions/download-artifact@v4
         with:
           path: dist
@@ -108,5 +126,8 @@ jobs:
       - run: cd dist && sha256sum ai-bootstrap-* > SHA256SUMS && cat SHA256SUMS
       - uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ steps.tag.outputs.name }}
+          target_commitish: ${{ github.sha }}
+          name: ai-bootstrap ${{ steps.tag.outputs.name }}
           files: dist/*
           generate_release_notes: true
