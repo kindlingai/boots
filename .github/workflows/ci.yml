@@ -5,50 +5,97 @@ on:
     branches: [main]
     tags: ["v*"]
   pull_request:
+  workflow_dispatch:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/checkout@v4
+      - uses: denoland/setup-deno@v2
         with:
-          repository: mmastrac/marsh
-          path: .marsh
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Build marsh
-        run: cargo build --release --manifest-path .marsh/Cargo.toml
-      - name: Check and test
-        run: |
-          export PATH="$PWD/.marsh/target/release:$PATH"
-          marsh check aiboot.marsh
-          tests/e2e.sh
-      - name: Build the portable script
-        run: .marsh/target/release/marsh build aiboot.marsh -o aiboot.sh
-      - uses: actions/upload-artifact@v4
-        with:
-          name: aiboot.sh
-          path: aiboot.sh
+          deno-version: v2.x
+      - run: deno fmt --check
+      - run: deno lint
+      - run: deno check src/main.ts
+      - run: deno test -A tests/
 
-  worker-image:
-    if: github.event_name == 'push'
+  build:
     needs: test
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
+    strategy:
+      matrix:
+        target:
+          - x86_64-unknown-linux-gnu
+          - aarch64-unknown-linux-gnu
+          - x86_64-apple-darwin
+          - aarch64-apple-darwin
+          - x86_64-pc-windows-msvc
     steps:
       - uses: actions/checkout@v4
-      - uses: docker/setup-qemu-action@v3
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
+      - uses: denoland/setup-deno@v2
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: docker/build-push-action@v6
+          deno-version: v2.x
+      - name: Compile
+        shell: bash
+        run: |
+          ext=""; [[ "${{ matrix.target }}" == *windows* ]] && ext=".exe"
+          deno compile -A --include docs --target ${{ matrix.target }} \
+            -o "dist/ai-bootstrap-${{ matrix.target }}${ext}" src/main.ts
+      - uses: actions/upload-artifact@v4
         with:
-          context: container
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ghcr.io/${{ github.repository_owner }}/ai-bootstrap-worker:latest
+          name: ai-bootstrap-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  smoke:
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, target: x86_64-unknown-linux-gnu }
+          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu }
+          - { os: macos-13, target: x86_64-apple-darwin }
+          - { os: macos-latest, target: aarch64-apple-darwin }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: ai-bootstrap-${{ matrix.target }}
+          path: dist
+      - name: Run the binary
+        shell: bash
+        run: |
+          bin=$(ls dist/ai-bootstrap-*)
+          chmod +x "$bin"
+          "$bin" --version | tee version.txt
+          grep -q "${{ matrix.target }}" version.txt
+          "$bin" --paths
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: smoke
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tag matches deno.json version
+        run: |
+          v=$(jq -r .version deno.json)
+          [ "v$v" = "${GITHUB_REF_NAME}" ] || { echo "tag ${GITHUB_REF_NAME} != v$v"; exit 1; }
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - run: cd dist && sha256sum ai-bootstrap-* > SHA256SUMS && cat SHA256SUMS
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true

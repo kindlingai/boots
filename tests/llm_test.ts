@@ -1,0 +1,74 @@
+import { assertEquals, assertStringIncludes } from "@std/assert";
+import { chat, type Endpoint, normalize, Router } from "../src/llm.ts";
+import { sizeFromName } from "../src/discover.ts";
+import { serveMock } from "./fixtures/mock_llm.ts";
+
+const ep = (url: string, label = "m"): Endpoint => ({
+  label,
+  baseUrl: url,
+  model: label,
+  contextChars: 40000,
+});
+
+Deno.test("streams content and reassembles tool calls", async () => {
+  const m = serveMock([{
+    content: "checking the GPU",
+    calls: [{ name: "run", args: { command: "nvidia-smi -L" } }],
+  }]);
+  try {
+    let streamed = "";
+    const r = await chat(ep(m.url), [{ role: "user", content: "hi" }], [{
+      type: "function",
+      function: { name: "run", description: "", parameters: {} },
+    }], {
+      content: (t) => (streamed += t),
+    });
+    assertEquals(r.content, "checking the GPU");
+    assertEquals(streamed, "checking the GPU");
+    assertEquals(r.toolCalls.length, 1);
+    assertEquals(JSON.parse(r.toolCalls[0].function.arguments), { command: "nvidia-smi -L" });
+  } finally {
+    await m.close();
+  }
+});
+
+Deno.test("recovers <tool_call> text and strips <think>", () => {
+  const n = normalize(
+    '<think>hmm</think>Sure.\n<tool_call>\n{"name": "run", "arguments": {"command": "ls"}}\n</tool_call>',
+    [],
+  );
+  assertEquals(n.content, "Sure.");
+  assertEquals(n.reasoning, "hmm");
+  assertEquals(n.calls[0].function.name, "run");
+  assertEquals(JSON.parse(n.calls[0].function.arguments), { command: "ls" });
+});
+
+Deno.test("router falls back to the bootstrap model", async () => {
+  const smart = serveMock(["down"]);
+  const boot = serveMock([{ content: "from bootstrap" }]);
+  try {
+    const r = new Router(ep(boot.url, "boot"));
+    r.setSmart(ep(smart.url, "smart"));
+    let notice = "";
+    r.onNotice = (s) => (notice = s);
+    const reply = await r.chat(() => [{ role: "user", content: "x" }], [{
+      type: "function",
+      function: { name: "t", description: "", parameters: {} },
+    }], {});
+    assertEquals(reply.content, "from bootstrap");
+    assertStringIncludes(notice, "falling back");
+    assertEquals(r.current().label, "boot");
+    assertEquals(r.usingFallback(), true);
+  } finally {
+    await smart.close();
+    await boot.close();
+  }
+});
+
+Deno.test("model sizes from names", () => {
+  assertEquals(sizeFromName("qwen3:4b"), 4);
+  assertEquals(sizeFromName("Qwen3-30B-A3B-Instruct"), 30);
+  assertEquals(sizeFromName("mixtral-8x7b"), 56);
+  assertEquals(sizeFromName("smol-360m"), 0.36);
+  assertEquals(sizeFromName("llama"), 0);
+});
