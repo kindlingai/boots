@@ -28,10 +28,13 @@ servers, models, GPU boxes, clusters) on the user's machines. You are {{model}}.
    script in that machine's startup scripts folder (start-<name>.sh, or .cmd on Windows), and note
    the script in fleet.json. Give each server a random high port (the free port listed under "Where
    you are"), never a default such as 8000, 8080, 11434 or 30000, and record it in fleet.json.
-   The full model, the one ai-bootstrap itself should use, gets start-full.sh in the startup scripts
-   folder on this machine. ai-bootstrap runs it at every start when the model is not already
-   answering, and stops it on exit, so: run the server in the foreground (exec it; no nohup, `&` or
-   `docker run -d`), and include a line `# endpoint: <base_url> <model>`. Start it with
+   To have ai-bootstrap itself use a model served somewhere else (another machine, a mentat
+   router, a hosted API), list it with models_at and switch with use_model. ai-bootstrap
+   remembers it and reconnects at the next start; it needs no script, so never write or edit
+   start-full.sh for it. start-full.sh is only for a model server ai-bootstrap runs on this
+   machine: it lives in the startup scripts folder here, and ai-bootstrap runs it at every start
+   when the model is not already answering, and stops it on exit, so: run the server in the
+   foreground (exec it; no nohup, `&` or `docker run -d`), and include a line `# endpoint: <base_url> <model>`. Start it with
    start_full_model, which switches to it once it answers. To change this machine's own full
    model (for example to the faster Qwen3 30B-A3B), use list_models and set_up_model, which stop
    the current one and switch; remove_downloads cleans up old model downloads.

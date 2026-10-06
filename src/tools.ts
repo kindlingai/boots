@@ -277,7 +277,7 @@ export const TOOLS: ToolDef[] = [
   }, ["base_url"]),
   fn(
     "use_model",
-    "Switch to a smarter model once one is reachable (asks the user). The bootstrap model stays as the fallback.",
+    "Connect ai-bootstrap itself to a model at an OpenAI-compatible URL (another machine, a mentat router at http://<node>:6381/v1, a hosted API) and use it from now on (asks the user). This is how to switch or reconnect to any model not started by start-full.sh on this machine: check the id with models_at first. It is remembered and reconnected at the next start, so no script is needed; never edit start-full.sh for it. The bootstrap model stays as the fallback.",
     {
       base_url: str("OpenAI-compatible base URL ending in /v1"),
       model: str("model id"),
@@ -629,6 +629,8 @@ export class Session {
       }
       case "write_file": {
         const content = String(args.content ?? "");
+        const refused = refuseStartFull(String(args.path ?? ""), content);
+        if (refused) return refused;
         const preview = content.split("\n").slice(0, 12).map((l) => dim(`    ${l}`)).join("\n");
         const no = await this.gate(
           `[${bold(this.where())}] write ${args.path} (${content.length} bytes${
@@ -985,6 +987,19 @@ export class Session {
     await this.host.closeAll();
     await this.mcp.closeAll();
   }
+}
+
+/**
+ * start-full.sh must start a server here. A script that only names an
+ * endpoint (the model reaching for a remote model) would fail at every start.
+ */
+export function refuseStartFull(path: string, content: string): string | null {
+  if (!/(^|[\\/])start-full\.(sh|cmd)$/i.test(path)) return null;
+  const commands = content.split(/\r?\n/).map((l) => l.trim()).filter((l) =>
+    l && !l.startsWith("#") && !/^(rem\b|::|@echo off$|set -e\w*$)/i.test(l)
+  );
+  if (commands.length) return null;
+  return "Not written: start-full.sh must run a model server on this machine in the foreground; this one runs nothing, so the full model would fail at every start. To use a model served elsewhere (another machine, mentat, a hosted API), call use_model with its base_url and model instead (models_at lists them). ai-bootstrap remembers it; no script is needed.";
 }
 
 export function describe(i: HostInfo): string {

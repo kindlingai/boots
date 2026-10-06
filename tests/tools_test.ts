@@ -84,3 +84,19 @@ Deno.test("ssh goes out from the local machine unless hop is asked for", async (
     await Deno.remove(dir, { recursive: true });
   }
 });
+
+Deno.test("start-full.sh that starts nothing is refused, pointing at use_model", async () => {
+  const { refuseStartFull } = await import("../src/tools.ts");
+  const remote =
+    "#!/bin/sh\n# Starts the full model: qwen on mentat.\n# endpoint: http://192.168.3.7:8000/v1 qwen36-a3b-128k\n";
+  assertStringIncludes(refuseStartFull("/x/intelligence/start-full.sh", remote)!, "use_model");
+  assertEquals(
+    refuseStartFull("C:\\x\\start-full.cmd", "@echo off\r\nrem endpoint: a b\r\n") !== null,
+    true,
+  );
+  assertEquals(
+    refuseStartFull("/x/start-full.sh", remote + "exec llama-server -m m.gguf --port 9\n"),
+    null,
+  );
+  assertEquals(refuseStartFull("/x/start-qwen.sh", remote), null, "other scripts are not checked");
+});
