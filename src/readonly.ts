@@ -96,7 +96,79 @@ const READONLY = new Set([
   "mpstat",
   "getent",
   "lsb_release",
+  "pgrep",
+  "pidof",
+  "tree",
+  "dig",
+  "nslookup",
+  "host",
+  "zcat",
+  "zgrep",
+  "xzcat",
+  "bzcat",
+  "base64",
+  "sha1sum",
+  "sha512sum",
+  "shasum",
+  "cksum",
+  "md5",
+  "ulimit",
+  "lsattr",
+  "lsns",
+  "lslocks",
+  "lsipc",
+  "findmnt",
+  "blkid",
+  "nm",
+  "objdump",
+  "readelf",
+  "otool",
+  "tty",
+  "systemd-detect-virt",
+  "virt-what",
+  "mdfind",
+  "mdls",
 ]);
+
+/** Hosts a GET request may go to without asking: this machine and private networks. */
+function localUrl(u: string): boolean {
+  let host: string;
+  try {
+    host = new URL(/^[a-z]+:\/\//i.test(u) ? u : `http://${u}`).hostname.replace(/^\[|\]$/g, "");
+  } catch {
+    return false;
+  }
+  return host === "localhost" || host === "::1" || host.endsWith(".local") ||
+    /^127\./.test(host) || /^10\./.test(host) || /^192\.168\./.test(host) ||
+    /^172\.(1[6-9]|2\d|3[01])\./.test(host) || /^169\.254\./.test(host) ||
+    (!host.includes(".") && !host.includes(":") && /^[a-z0-9-]+$/i.test(host));
+}
+
+/** curl that only fetches from a local or private address and prints it. */
+function curlReadonly(toks: string[]): boolean {
+  const safe =
+    /^(-[sSfLiIvkg46]+|--(silent|show-error|fail|fail-with-body|location|include|head|verbose|insecure|compressed|globoff|no-progress-meter|ipv4|ipv6|http1\.1|http2))$/;
+  const withValue =
+    /^(-[mHwAe]|--(max-time|connect-timeout|header|write-out|user-agent|referer|retry|retry-delay|max-redirs|resolve))$/;
+  let urls = 0;
+  for (let i = 1; i < toks.length; i++) {
+    const t = toks[i];
+    if (safe.test(t)) continue;
+    if (withValue.test(t)) {
+      i++;
+      continue;
+    }
+    if (/^--(max-time|connect-timeout|header|write-out|retry|user-agent)=/.test(t)) continue;
+    if (t === "-X" || t === "--request") {
+      if (!/^(GET|HEAD)$/i.test(toks[++i] ?? "")) return false;
+      continue;
+    }
+    if (t.startsWith("-")) return false;
+    if (!localUrl(t)) return false;
+    urls++;
+  }
+  return urls > 0;
+}
 
 const GIT_READONLY = new Set([
   "show",
@@ -303,6 +375,35 @@ function stageReadonly(toks: string[]): boolean {
       /^(-L|--list-gpus|-q|--query|--query-gpu=.*|--query-compute-apps=.*|--format=.*|-i|--id=.*|-d|--display=.*|topo|-m|nvlink|-s|--status|dmon|pmon|\d+|[A-Z,]+|csv.*|noheader|nounits)$/
         .test(t)
     );
+  }
+  if (head === "curl") return curlReadonly(toks);
+  if (head === "ping") {
+    return toks.some((t) => /^-c\d*$/.test(t)) && !toks.some((t) => /^-f/.test(t));
+  }
+  if (head === "ifconfig") {
+    return toks.length <= 2 &&
+      toks.every((t, i) => i === 0 || t === "-a" || !/^(up|down)$/.test(t));
+  }
+  if (head === "mount") return toks.length === 1;
+  if (head === "arp") return toks.slice(1).every((t) => /^-(a|n|an|na)$/.test(t));
+  if (head === "route") {
+    return toks.slice(1).every((t) => t === "-n" || t === "print") && toks.length > 1;
+  }
+  if (head === "ulimit") return toks.slice(1).every((t) => /^-[a-zA-Z]+$/.test(t));
+  if (head === "smartctl") {
+    return toks.slice(1).every((t) =>
+      /^(-[aiHAx]+|--(all|info|health|scan|xall)|\/dev\/\S+)$/.test(t)
+    );
+  }
+  if (head === "nvme") {
+    return ["list", "smart-log", "id-ctrl", "id-ns", "error-log"].includes(toks[1] ?? "");
+  }
+  if (head === "scutil") {
+    return toks.slice(1).every((t) => /^--(get|dns|proxy|nwi)$/.test(t) || /^[A-Za-z]+$/.test(t)) &&
+      !toks.includes("--set");
+  }
+  if (head === "xcode-select") {
+    return toks.slice(1).every((t) => /^(-p|--print-path|-v|--version)$/.test(t));
   }
   if (head === "sysctl") return !toks.some((t) => t === "-w" || t.includes("=") || t === "-p");
   if (head === "nvram") return toks.slice(1).every((t) => !t.includes("=") && !/^-(d|c|f)/.test(t));

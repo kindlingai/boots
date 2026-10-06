@@ -22,7 +22,7 @@ cat > "$work/script.json" <<JSON
   {"content": "Planning.", "calls": [{"name": "plan", "args": {"steps": [{"step": "inspect", "status": "in_progress"}]}}, {"name": "run", "args": {"command": "uname -s"}}]},
   {"calls": [{"name": "ssh", "args": {"destination": "$HOP1", "port": $PORT}}]},
   {"calls": [{"name": "sudo", "args": {"command": "id -u"}}]},
-  {"calls": [{"name": "ssh", "args": {"destination": "$HOP2", "port": $PORT}}]},
+  {"calls": [{"name": "ssh", "args": {"destination": "$HOP2", "port": $PORT, "hop": true}}]},
   {"calls": [{"name": "run", "args": {"command": "id -un"}}]},
   {"calls": [{"name": "write_file", "args": {"path": "$target", "content": "hi\\n"}}]},
   {"calls": [{"name": "ssh_exit", "args": {}}]},

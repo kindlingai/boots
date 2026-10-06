@@ -167,10 +167,15 @@ export const TOOLS: ToolDef[] = [
   ),
   fn(
     "ssh",
-    "Move to another machine over ssh. ai-bootstrap installs itself there and every tool then runs on that machine until ssh_exit. Hops nest: ssh from a remote host goes one level deeper. Passwords are asked for and remembered by ai-bootstrap; never ask the user for them yourself.",
+    "Move to another machine over ssh. ai-bootstrap installs itself there and every tool then runs on that machine until ssh_exit. The connection goes out from the local machine: if you are on a remote host, ai-bootstrap first leaves it (and any hosts above it) and connects from local. Set hop only when the user explicitly asks to go through the current remote host (multi-hop, e.g. a jump host or a machine on its private network). Passwords are asked for and remembered by ai-bootstrap; never ask the user for them yourself.",
     {
       destination: str("user@host"),
       port: { type: "integer" },
+      hop: {
+        type: "boolean",
+        description:
+          "connect from the current remote host instead of from the local machine; only when the user asked for multi-hop",
+      },
     },
     ["destination"],
   ),
@@ -641,12 +646,35 @@ export class Session {
       }
       case "ssh": {
         const dest = String(args.destination);
+        const hop = args.hop === true && this.stack.length > 1;
+        if (!hop && this.stack.length === 2 && this.stack[1].label === dest) {
+          return `already on ${dest}. Location: ${this.where()}`;
+        }
+        const from = hop ? this.where() : this.stack[0].label;
         const no = await this.gate(
-          `[${bold(this.where())}] ssh to ${bold(dest)} (ai-bootstrap installs itself there)`,
-          `ssh\0${this.where()}\0${dest}`,
+          `[${bold(from)}] ssh to ${bold(dest)}${
+            hop ? ` ${yellow("(multi-hop, through " + this.here.label + ")")}` : ""
+          } (ai-bootstrap installs itself there)`,
+          `ssh\0${from}\0${dest}`,
         );
         if (no) return no;
-        const r = await this.call("ssh_open", { dest, port: args.port });
+        // Not a hop: go back to the local machine first and connect from there.
+        const left: string[] = [];
+        while (!hop && this.stack.length > 1) {
+          const leaving = this.stack.pop()!;
+          await this.host.handle("ssh_close", { id: leaving.via.at(-1) }, this.here.via).catch(
+            () => {},
+          );
+          left.push(leaving.label);
+        }
+        if (left.length) say(dim(`  left ${left.join(", ")}; connecting from ${this.where()}`));
+        const r = await this.call("ssh_open", { dest, port: args.port }).catch((e) => {
+          throw new Error(
+            `${(e as Error).message}${
+              left.length ? ` (left ${left.join(", ")} first: now on ${this.where()})` : ""
+            }`,
+          );
+        });
         const top = this.here;
         this.stack.push({ label: dest, via: [...top.via, r.id], info: r.info });
         say(

@@ -31,8 +31,35 @@ Deno.test("read-only commands pass", () => {
       "rocm-smi --showmeminfo vram",
       "ls &>/dev/null",
       "vm_stat; sw_vers",
+      "curl -s http://127.0.0.1:8080/v1/models",
+      "curl -sf -m 5 localhost:11434/api/tags | jq .",
+      "curl -s -H 'Authorization: Bearer x' http://192.168.1.211:8021/v1/models",
+      "curl -sI http://gx10-efcd:8000/health",
+      "pgrep -af llama-server",
+      "ping -c 3 192.168.1.211",
+      "tree -L 2 ~/models",
+      "mount",
+      "findmnt -T /data",
+      "dig +short gx10.local",
     ]
   ) assert(isReadonly(c), c);
+});
+
+Deno.test("curl beyond this machine and private networks, or sending, asks", () => {
+  for (
+    const c of [
+      "curl -s https://example.com",
+      "curl -s -o model.gguf http://127.0.0.1/x",
+      "curl -X POST http://127.0.0.1:8080/v1/chat/completions",
+      "curl -d '{}' http://localhost:8080/x",
+      "curl --upload-file f http://10.0.0.2/",
+      "curl -sK cfg http://localhost/",
+      "curl -s",
+      "ping 192.168.1.1",
+      "ifconfig eth0 down",
+      "route add default gw 10.0.0.1",
+    ]
+  ) assertFalse(isReadonly(c), c);
 });
 
 Deno.test("anything that writes or escapes asks", () => {

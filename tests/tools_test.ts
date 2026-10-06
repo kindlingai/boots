@@ -41,3 +41,46 @@ Deno.test("fetch_url turns HTML into readable text", () => {
   assertStringIncludes(t, "Use <vllm> & ray");
   assert(!t.includes("x()") && !t.includes("<p>"));
 });
+
+Deno.test("ssh goes out from the local machine unless hop is asked for", async () => {
+  const { Router } = await import("../src/llm.ts");
+  const { Memory } = await import("../src/memory.ts");
+  const { McpManager } = await import("../src/mcp.ts");
+  const { Session } = await import("../src/tools.ts");
+  const dir = await Deno.makeTempDir();
+  try {
+    const s = new Session(
+      new Router({ label: "m", baseUrl: "http://127.0.0.1:9/v1", model: "m", contextChars: 1e4 }),
+      new Memory(`${dir}/mem`),
+      new McpManager(`${dir}/mcp.json`),
+      () => Promise.resolve(null),
+    );
+    await s.init();
+    const opened: string[] = [];
+    const closed: string[] = [];
+    let n = 0;
+    // No real ssh: record what would be opened from where, and closed.
+    (s as any).call = (op: string, a: any) => {
+      assertEquals(op, "ssh_open");
+      opened.push(`${s.where()} -> ${a.dest}`);
+      return Promise.resolve({ id: `c${++n}`, info: { ...s.here.info, hostname: a.dest } });
+    };
+    (s.host as any).handle = (op: string, a: any) => {
+      closed.push(`${op} ${a.id}`);
+      return Promise.resolve(null);
+    };
+    (s as any).always = { has: () => true, add() {} };
+    await s.exec("ssh", { destination: "a@one" });
+    await s.exec("ssh", { destination: "b@two" });
+    assertEquals(s.where(), "local > b@two", "back to local, then out");
+    await s.exec("ssh", { destination: "c@three", hop: true });
+    assertEquals(s.where(), "local > b@two > c@three", "an explicit hop nests");
+    assertEquals(opened, ["local -> a@one", "local -> b@two", "local > b@two -> c@three"]);
+    assertEquals(closed, ["ssh_close c1"]);
+    assertStringIncludes(await s.exec("ssh", { destination: "a@one" }), "connected");
+    assertEquals(s.where(), "local > a@one");
+    assertStringIncludes(await s.exec("ssh", { destination: "a@one" }), "already on a@one");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});

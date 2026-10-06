@@ -26,6 +26,31 @@ Deno.test("parseVerdict and the hard rules", () => {
   assertEquals(guard("curl -s http://127.0.0.1:1234/v1/models", "readonly"), "readonly");
   assertEquals(guard("ls 2>/dev/null", "readonly"), "readonly");
   assertEquals(guard("x".repeat(700), "readonly"), "complex");
+  // Only the program of each stage counts, not names in its arguments.
+  for (
+    const c of [
+      "ps aux | grep -v grep | grep ollama",
+      "ls ~/.ssh ~/models/python3",
+      "which python3 ollama docker",
+      "grep -c install /var/log/dpkg.log",
+      "cat ~/start-full.sh",
+      "awk '{print $1}' /proc/meminfo",
+      "nvidia-smi pmon -c 1",
+    ]
+  ) assertEquals(guard(c, "readonly"), "readonly", c);
+  for (
+    const c of [
+      "ls | xargs rm",
+      "/bin/rm -f x",
+      "FOO=1 python3 script.py",
+      "cat x | sh",
+      "sed -i s/a/b/ f",
+      "find . -name '*.tmp' -delete",
+      "awk '{ system(\"rm \" $1) }' list",
+      "cat <<EOF\nx\nEOF",
+      "ls > out.txt",
+    ]
+  ) assertEquals(guard(c, "readonly"), "writes", c);
 });
 
 Deno.test("run refuses sudo and model servers, not mentions of them", () => {
