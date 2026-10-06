@@ -24,6 +24,7 @@ const vars: PromptVars = {
   shell: "/bin/bash",
   models: "/home/u/.local/share/ai-bootstrap/models",
   scripts: "/home/u/.local/share/ai-bootstrap/intelligence",
+  free_port: 41234,
   docs: ["vllm", "ray"],
   memories: ["local-setup"],
   memory_sync: null,
@@ -126,4 +127,29 @@ Deno.test("fleet.json is shown in the prompt; the full prompt explains its shape
   );
   const base = systemPrompt(t, new Router(ep("qwen3-4b")), { ...vars, fleet });
   assertStringIncludes(base, fleet);
+});
+
+Deno.test("a failed full model start gets the diagnosis prompt, with the log lines", async () => {
+  const t = await loadTemplates();
+  const failure = {
+    script: "/d/intelligence/start-full.sh",
+    log: "/d/intelligence/full.log",
+    reason: "start-full exited with status 1 before http://127.0.0.1:8000/v1 answered",
+    tail: ["loading weights", "CUDA error: out of memory", "exiting"],
+    errors: ["CUDA error: out of memory"],
+  };
+  const sys = systemPrompt(t, new Router(ep("qwen3-4b")), { ...vars, failure });
+  assertStringIncludes(sys, "The full model failed to start");
+  assertStringIncludes(sys, "start-full exited with status 1");
+  assertStringIncludes(sys, "/d/intelligence/start-full.sh");
+  assertStringIncludes(sys, "loading weights\nCUDA error: out of memory\nexiting");
+  assertStringIncludes(sys, "start_full_model");
+  assertStringIncludes(sys, "small base model");
+  assertStringIncludes(sys, "Ubuntu 24.04.5 LTS on x86_64");
+  assert(!sys.includes(OPENING), "the diagnosis replaces the base opening");
+  assert(!sys.includes("{{"), "unfilled placeholder");
+  // A capable bootstrap (an API model) diagnoses too, without the base-model note.
+  const full = systemPrompt(t, new Router(ep("gpt-oss-120b")), { ...vars, failure });
+  assertStringIncludes(full, "The full model failed to start");
+  assert(!full.includes("small base model"));
 });

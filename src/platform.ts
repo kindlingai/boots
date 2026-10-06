@@ -119,3 +119,23 @@ export async function exists(p: string): Promise<boolean> {
     return false;
   }
 }
+
+/**
+ * A random free TCP port in 20000-59999, so servers ai-bootstrap starts or
+ * suggests never sit on a well-known default (8000, 8080, 11434, ...).
+ */
+export function randomFreePort(): number {
+  for (let i = 0; i < 50; i++) {
+    const port = 20000 + Math.floor(Math.random() * 40000);
+    try {
+      Deno.listen({ hostname: "0.0.0.0", port }).close();
+      return port;
+    } catch {
+      // taken
+    }
+  }
+  const l = Deno.listen({ hostname: "127.0.0.1", port: 0 });
+  const port = (l.addr as Deno.NetAddr).port;
+  l.close();
+  return port;
+}

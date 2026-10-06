@@ -2,10 +2,19 @@
 // serving a small Qwen downloaded from Hugging Face on first use.
 
 import { join } from "@std/path";
-import { cacheDir, ensureDir, exists, isWindows, modelsDir, scriptsDir } from "./platform.ts";
+import {
+  cacheDir,
+  ensureDir,
+  exists,
+  isWindows,
+  modelsDir,
+  randomFreePort,
+  scriptsDir,
+} from "./platform.ts";
 import type { Endpoint } from "./llm.ts";
 import { contextFor } from "./discover.ts";
 import { info } from "./ui.ts";
+import { logPath, logSummary, scriptPath, supervise } from "./intelligence.ts";
 
 /** A release known to ship CPU builds for every platform below. */
 const PINNED_TAG = "b9000";
@@ -99,20 +108,6 @@ export async function installLlama(): Promise<string> {
   return server;
 }
 
-function freePort(prefer: number): number {
-  for (const p of [prefer, 0]) {
-    try {
-      const l = Deno.listen({ hostname: "127.0.0.1", port: p });
-      const port = (l.addr as Deno.NetAddr).port;
-      l.close();
-      return port;
-    } catch {
-      // taken
-    }
-  }
-  throw new Error("no free port");
-}
-
 export interface Running {
   endpoint: Endpoint;
   /** The script that starts it; the user can run it by hand too. */
@@ -122,22 +117,24 @@ export interface Running {
 
 const sq = (s: string) => `'${s.replaceAll("'", `'\\''`)}'`;
 
-/**
- * The script that starts the base model: llama-server on PORT (default
- * 18080). Given PID, it stops the server when that process is gone, so
- * the server never outlives ai-bootstrap, even if ai-bootstrap is killed.
- */
-export function baseScript(server: string, model: string, cache: string, windows = isWindows) {
+/** start-bootstrap.sh: llama-server for the base model, in the foreground, on PORT (default `port`). */
+export function bootstrapScript(
+  server: string,
+  model: string,
+  cache: string,
+  port: number,
+  windows = isWindows,
+) {
   const args = `-hf ${model} --host 127.0.0.1 --jinja -c 16384`;
   if (windows) {
     return [
       "@echo off",
-      `rem Starts the base intelligence: llama.cpp serving ${model}.`,
+      `rem Starts the bootstrap model: llama.cpp serving ${model}.`,
       "rem Written by ai-bootstrap each time it starts the model; edits are overwritten.",
-      "rem usage: start-base.cmd [PORT]",
+      "rem usage: start-bootstrap.cmd [PORT]",
       `set "LLAMA_CACHE=${cache}"`,
       'set "port=%~1"',
-      'if "%port%"=="" set "port=18080"',
+      `if "%port%"=="" set "port=${port}"`,
       `"${server}" ${args} --port %port%`,
       "",
     ].join("\r\n");
@@ -146,44 +143,12 @@ export function baseScript(server: string, model: string, cache: string, windows
     ? `export LD_LIBRARY_PATH=${sq(join(server, ".."))}\${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}\n`
     : "";
   return `#!/bin/sh
-# Starts the base intelligence: llama.cpp serving ${model}.
+# Starts the bootstrap model: llama.cpp serving ${model}.
 # Written by ai-bootstrap each time it starts the model; edits are overwritten.
-# usage: start-base.sh [PORT] [PID]   (with PID: stop when that process exits)
+# usage: start-bootstrap.sh [PORT]
 export LLAMA_CACHE=${sq(cache)}
-${lib}port=\${1:-18080}
-watch=\${2:-}
-${sq(server)} ${args} --port "$port" &
-pid=$!
-trap 'kill "$pid" 2>/dev/null' INT TERM HUP
-while kill -0 "$pid" 2>/dev/null; do
-  if [ -n "$watch" ] && ! kill -0 "$watch" 2>/dev/null; then kill "$pid" 2>/dev/null; fi
-  sleep 1
-done
-wait "$pid"
+${lib}exec ${sq(server)} ${args} --port "\${1:-${port}}"
 `;
-}
-
-/** Started models, stopped when ai-bootstrap exits, however it exits. */
-const running = new Set<Running>();
-let hooked = false;
-
-function stopAllOnExit() {
-  if (hooked) return;
-  hooked = true;
-  const all = () => [...running].forEach((r) => r.stop());
-  globalThis.addEventListener("unload", all);
-  if (!isWindows) {
-    for (const sig of ["SIGTERM", "SIGHUP"] as const) {
-      try {
-        Deno.addSignalListener(sig, () => {
-          all();
-          Deno.exit(128 + (sig === "SIGTERM" ? 15 : 1));
-        });
-      } catch {
-        // not supported here
-      }
-    }
-  }
 }
 
 /** Models from before models/ existed were in the cache; move them rather than download again. */
@@ -199,28 +164,22 @@ async function moveOldModels(to: string) {
   }
 }
 
-/** Writes the start script and runs it; waits until the model is downloaded and loaded. */
+/** Writes start-bootstrap and runs it; waits until the model is downloaded and loaded. */
 export async function startLlama(server: string): Promise<Running> {
   const model = Deno.env.get("AIBOOT_BOOTSTRAP_MODEL") ?? DEFAULT_MODEL;
-  const port = freePort(18080);
+  const port = randomFreePort();
   const models = join(modelsDir(), "llama.cpp");
   await moveOldModels(models);
   await ensureDir(models);
   await ensureDir(scriptsDir());
-  const script = join(scriptsDir(), isWindows ? "start-base.cmd" : "start-base.sh");
-  await Deno.writeTextFile(script, baseScript(server, model, models));
+  await Deno.remove(join(scriptsDir(), isWindows ? "start-base.cmd" : "start-base.sh"))
+    .catch(() => {});
+  const script = scriptPath("bootstrap");
+  await Deno.writeTextFile(script, bootstrapScript(server, model, models, port));
   if (!isWindows) await Deno.chmod(script, 0o755);
-  await ensureDir(join(cacheDir(), "llama"));
-  const logPath = join(cacheDir(), "llama", "server.log");
-  const log = await Deno.open(logPath, { write: true, create: true, truncate: true });
-  info(`starting ${model} on 127.0.0.1:${port} with ${script} (log: ${logPath})`);
-  const proc = new Deno.Command(isWindows ? "cmd.exe" : "sh", {
-    args: isWindows ? ["/d", "/c", script, String(port)] : [script, String(port), String(Deno.pid)],
-    stdin: "null",
-    stdout: "piped",
-    stderr: "piped",
-  }).spawn();
-  let exited = false;
+  const log = logPath("bootstrap");
+  info(`starting ${model} on 127.0.0.1:${port} with ${script} (log: ${log})`);
+  const proc = await supervise(script, [String(port)], log);
   const run: Running = {
     endpoint: {
       label: `${model.split("/").pop()} (local llama.cpp)`,
@@ -229,37 +188,14 @@ export async function startLlama(server: string): Promise<Running> {
       contextChars: contextFor(4, false),
     },
     script,
-    stop: () => {
-      running.delete(run);
-      if (exited) return;
-      try {
-        if (isWindows) {
-          // cmd.exe does not pass a kill on to llama-server: end the whole tree.
-          new Deno.Command("taskkill", {
-            args: ["/pid", String(proc.pid), "/t", "/f"],
-            stdout: "null",
-            stderr: "null",
-          }).outputSync();
-        } else proc.kill("SIGTERM");
-      } catch {
-        // gone
-      }
-    },
+    stop: () => proc.stop(),
   };
-  running.add(run);
-  stopAllOnExit();
-  const tee = async (s: ReadableStream<Uint8Array>) => {
-    for await (const c of s) await log.write(c).catch(() => {});
-  };
-  tee(proc.stdout);
-  tee(proc.stderr);
-  proc.status.then(() => (exited = true));
   const t0 = Date.now();
   let shown = 0;
   let had = await dirSize(models);
   try {
     while (true) {
-      if (exited) throw new Error(`llama-server exited; see ${logPath}`);
+      if (!proc.isRunning()) throw new Error(`llama-server exited; see ${log}`);
       try {
         const r = await fetch(`http://127.0.0.1:${port}/health`, {
           signal: AbortSignal.timeout(2000),
@@ -281,7 +217,7 @@ export async function startLlama(server: string): Promise<Running> {
             ? `  downloading the model (${el}s): ${gb(size)} so far, ${
               (rate / 1e6).toFixed(1)
             } MB/s`
-            : `  waiting for the model (${el}s): ${await lastLine(logPath)}`,
+            : `  waiting for the model (${el}s): ${(await logSummary(log, 1)).tail[0] ?? ""}`,
         );
       }
       await new Promise((r) => setTimeout(r, 1000));
@@ -310,14 +246,4 @@ export async function dirSize(dir: string): Promise<number> {
     // not there yet
   }
   return n;
-}
-
-async function lastLine(p: string): Promise<string> {
-  try {
-    const t = await Deno.readTextFile(p);
-    const lines = t.split(/[\r\n]+/).filter((l) => l.trim());
-    return (lines.at(-1) ?? "").slice(0, 120);
-  } catch {
-    return "";
-  }
 }

@@ -5,6 +5,7 @@ import { join } from "@std/path";
 import type { Endpoint, Router } from "./llm.ts";
 import { sizeFromName } from "./discover.ts";
 import { docsDir } from "./platform.ts";
+import type { FullFailure } from "./intelligence.ts";
 
 export type Tier = "base" | "full";
 
@@ -31,14 +32,15 @@ export interface Templates {
   main: string;
   context: string;
   onboarding: string;
+  diagnose: string;
 }
 
 export async function loadTemplates(dir = join(docsDir(), "prompts")): Promise<Templates> {
   const read = (n: string) => Deno.readTextFile(join(dir, `${n}.md`));
-  const [base, main, context, onboarding] = await Promise.all(
-    ["base", "main", "context", "onboarding"].map(read),
+  const [base, main, context, onboarding, diagnose] = await Promise.all(
+    ["base", "main", "context", "onboarding", "diagnose"].map(read),
   );
-  return { base, main, context, onboarding };
+  return { base, main, context, onboarding, diagnose };
 }
 
 /** Fills {{name}} placeholders. Unknown names are an error, so typos surface in tests. */
@@ -58,6 +60,7 @@ export interface PromptVars {
   shell: string;
   models: string;
   scripts: string;
+  free_port: number;
   docs: string[];
   memories: string[];
   memory_sync: string | null;
@@ -68,6 +71,8 @@ export interface PromptVars {
   plan: string;
   /** Memory holds nothing about the user yet: onboard them. */
   fresh: boolean;
+  /** The full model's start script failed at boot: diagnose that first. */
+  failure?: FullFailure | null;
 }
 
 export function systemPrompt(t: Templates, router: Router, v: PromptVars): string {
@@ -86,6 +91,7 @@ export function systemPrompt(t: Templates, router: Router, v: PromptVars): strin
     host: v.host,
     models: v.models,
     scripts: v.scripts,
+    free_port: String(v.free_port),
     shell_note: v.shell === "powershell" ? "Commands here run in PowerShell.\n" : "",
     docs: v.docs.join(", ") || "none",
     memories: v.memories.join(", ") || "none",
@@ -96,6 +102,21 @@ export function systemPrompt(t: Templates, router: Router, v: PromptVars): strin
     plan: v.plan,
   });
   const base = tierOf(ep) === "base";
+  if (v.failure) {
+    const f = v.failure;
+    return render(t.diagnose, {
+      model: ep.label,
+      tier_note: base
+        ? "This is the small base model: it is limited, so be careful and check each step."
+        : "",
+      reason: f.reason,
+      script: f.script,
+      log: f.log,
+      tail: f.tail.join("\n") || "(the log is empty)",
+      errors: f.errors.join("\n") || "(none)",
+      context,
+    }).trim();
+  }
   const onboarding = v.fresh
     ? render(t.onboarding, {
       onboarding_timing: base

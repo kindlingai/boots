@@ -5,7 +5,14 @@
 import { dirname, isAbsolute, join } from "@std/path";
 import { decodeBase64, encodeBase64 } from "@std/encoding/base64";
 import type { Asker } from "./secrets.ts";
-import { currentTarget, isWindows, modelsDir, scriptsDir, VERSION } from "./platform.ts";
+import {
+  currentTarget,
+  isWindows,
+  modelsDir,
+  randomFreePort,
+  scriptsDir,
+  VERSION,
+} from "./platform.ts";
 import { openSsh, type SshChild } from "./ssh.ts";
 
 export interface HostInfo {
@@ -23,6 +30,8 @@ export interface HostInfo {
   /** Where model weights and startup scripts belong on this machine. */
   models: string;
   scripts: string;
+  /** A random free high port here, for the next server set up on this machine. */
+  freePort: number;
 }
 
 export interface ExecResult {
@@ -91,6 +100,7 @@ export class Host {
       version: VERSION,
       models: modelsDir(),
       scripts: scriptsDir(),
+      freePort: randomFreePort(),
     };
   }
 

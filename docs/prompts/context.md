@@ -6,6 +6,7 @@
 - Host details: {{host}}
 - Models folder here (keep model weights in it): {{models}}
 - Startup scripts folder here: {{scripts}}
+- A random free port here, for the next server you set up: {{free_port}}
 {{shell_note}}
 ## Knowledge and memory
 

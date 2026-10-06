@@ -6,6 +6,7 @@ import { chat, type Endpoint, reachable, type Router, type ToolDef } from "./llm
 import type { Memory } from "./memory.ts";
 import type { McpManager } from "./mcp.ts";
 import { isReadonly } from "./readonly.ts";
+import { describeFailure, type FullFailure, scriptPath, startFull } from "./intelligence.ts";
 import { secrets } from "./secrets.ts";
 import { contextFor, sizeFromName } from "./discover.ts";
 import { dataDir, ensureDir } from "./platform.ts";
@@ -171,6 +172,12 @@ export const TOOLS: ToolDef[] = [
     },
     ["base_url", "model"],
   ),
+  fn(
+    "start_full_model",
+    "(Re)start the full model with the start-full script in this machine's startup scripts folder, wait until it answers, and switch to it. The script must run the server in the foreground and contain a line `# endpoint: <base_url> <model>`. If it fails, returns the end of its log and its error lines.",
+    {},
+    [],
+  ),
 ];
 
 export class Session {
@@ -178,6 +185,8 @@ export class Session {
   stack: Location[] = [];
   plan: PlanStep[] = [];
   private always = new Set<string>();
+  /** The full model's start script failed at boot (cleared once it starts). */
+  fullFailure: FullFailure | null = null;
 
   constructor(
     readonly router: Router,
@@ -393,6 +402,26 @@ export class Session {
       }
       case "use_model":
         return await this.useModel(args);
+      case "start_full_model": {
+        if (this.stack.length > 1) {
+          return "start_full_model runs on the local machine; ssh_exit back there first";
+        }
+        const script = scriptPath("full");
+        const no = await this.gate(`start the full model with ${bold(script)}`, `full\0${script}`);
+        if (no) return no;
+        const saved = (await loadSmart()).find((e) => !e.keyInMemory) ?? null;
+        const r = await startFull(saved);
+        if (!r) return `there is no ${script}; write it first`;
+        if ("failure" in r) {
+          this.fullFailure = r.failure;
+          return `the full model did not start: ${describeFailure(r.failure)}`;
+        }
+        this.fullFailure = null;
+        this.router.setSmart(r.ep);
+        await saveSmart(r.ep);
+        console.log(green(`  the full model ${r.ep.model} is up; switched to it`));
+        return `the full model ${r.ep.model} is answering at ${r.ep.baseUrl}; switched to it.`;
+      }
       default:
         return `unknown tool ${name}`;
     }
@@ -507,7 +536,7 @@ export async function loadSmart(): Promise<Endpoint[]> {
   }
 }
 
-async function saveSmart(ep: Endpoint): Promise<void> {
+export async function saveSmart(ep: Endpoint): Promise<void> {
   const all = (await loadSmart()).filter((e) =>
     !(e.baseUrl === ep.baseUrl && e.model === ep.model)
   );

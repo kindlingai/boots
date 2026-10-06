@@ -33,10 +33,12 @@ JSON
 (cd "$root" && MOCK_LOG=1 exec deno run -A tests/fixtures/mock_llm.ts "$work/script.json" 18997) > "$work/mock.log" 2>&1 &
 mock=$!
 sleep 2
-# Answers: bootstrap choice, task, uname (allow read-only), ssh ok, password,
+# Answers: bootstrap choice, uname (allow read-only), ssh ok, password,
 # remember, sudo ok, ssh ok, host key, password, remember, write ok, quit.
-# id -un on the second hop is read-only, so it runs without asking.
-printf '%s\n' 1 "go" r y "$HOP1_PW" y y y yes "$HOP2_PW" y y /quit |
+# Memory is empty, so the model speaks first: no task line. id -un on the
+# second hop is read-only, so it runs without asking. The first hop must not
+# know the second's host key yet.
+printf '%s\n' 1 r y "$HOP1_PW" y y y yes "$HOP2_PW" y y /quit |
   AIBOOT_HOME="$work/h" AIBOOT_CACHE="$work/c" OPENAI_BASE_URL=http://127.0.0.1:18997/v1 OPENAI_MODEL=mock \
   "$bin" > "$work/out.txt" 2>&1 || { cat "$work/out.txt"; exit 1; }
 

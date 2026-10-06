@@ -14,6 +14,9 @@ export function serveMock(script: Scripted[], port = 0) {
     seen.push(body);
     const last = body.messages?.at(-1);
     if (last?.role === "tool" && Deno.env.get("MOCK_LOG")) console.error(`tool> ${last.content}`);
+    if (body.tools && Deno.env.get("MOCK_SYSTEM") && body.messages?.[0]?.role === "system") {
+      console.error(`system> ${body.messages[0].content}`);
+    }
     if (!body.tools) return sse([{ choices: [{ delta: { content: "ok" } }] }]);
     const r = script[Math.min(i++, script.length - 1)];
     if (r === "down") return new Response("overloaded", { status: 503 });

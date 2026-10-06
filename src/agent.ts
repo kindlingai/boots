@@ -70,6 +70,7 @@ export class Agent {
         shell: this.s.here.info.shell,
         models: this.s.here.info.models,
         scripts: this.s.here.info.scripts,
+        free_port: this.s.here.info.freePort,
         docs,
         memories,
         memory_sync: remote,
@@ -78,6 +79,7 @@ export class Agent {
         fleet,
         plan: this.s.plan.length ? plain(renderPlan(this.s.plan)) : "(none yet)",
         fresh,
+        failure: this.s.fullFailure,
       });
   }
 
@@ -171,9 +173,10 @@ const HELP = `commands:
 
 export async function repl(agent: Agent): Promise<void> {
   const s = agent.s;
-  if (currentTier(s.router) === "base" || (await s.memory.isEmpty())) {
-    // The model speaks first: the base model asks to set up a smarter one, and
-    // a new user is asked about their hardware (docs/prompts).
+  if (s.fullFailure || currentTier(s.router) === "base" || (await s.memory.isEmpty())) {
+    // The model speaks first: it reports a full model that failed to start, the
+    // base model asks to set up a smarter one, and a new user is asked about
+    // their hardware (docs/prompts).
     console.log(dim("(/help for commands)"));
     await agent.turn("(New session. Open as your instructions say.)");
   } else {

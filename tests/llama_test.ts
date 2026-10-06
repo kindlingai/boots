@@ -1,6 +1,6 @@
 import { join } from "@std/path";
 import { assertEquals } from "@std/assert";
-import { baseScript, dirSize } from "../src/llama.ts";
+import { bootstrapScript, dirSize } from "../src/llama.ts";
 
 Deno.test("dirSize counts files in nested directories, and 0 for a missing one", async () => {
   const dir = await Deno.makeTempDir();
@@ -13,35 +13,24 @@ Deno.test("dirSize counts files in nested directories, and 0 for a missing one",
 });
 
 Deno.test({
-  name: "start-base.sh runs the server and stops it when the watched process exits",
+  name: "start-bootstrap.sh runs llama-server in the foreground with the model cache",
   ignore: Deno.build.os === "windows",
 }, async () => {
   const dir = await Deno.realPath(await Deno.makeTempDir());
-  // A stand-in llama-server that records its arguments and runs until killed.
+  // A stand-in llama-server that records its arguments and cache.
   const server = join(dir, "llama server's");
-  await Deno.writeTextFile(server, `#!/bin/sh\necho "$@" > "$LLAMA_CACHE/args"\nexec sleep 60\n`);
+  await Deno.writeTextFile(server, `#!/bin/sh\necho "$LLAMA_CACHE $@"\n`);
   await Deno.chmod(server, 0o755);
-  const script = join(dir, "start-base.sh");
-  await Deno.writeTextFile(script, baseScript(server, "org/m:Q4", dir, false));
-  const watched = new Deno.Command("sleep", { args: ["30"] }).spawn();
-  const p = new Deno.Command("sh", {
-    args: [script, "18123", String(watched.pid)],
-    stdout: "null",
-    stderr: "null",
-  }).spawn();
-  let args = "";
-  for (let i = 0; i < 50 && !args; i++) {
-    await new Promise((r) => setTimeout(r, 100));
-    args = await Deno.readTextFile(join(dir, "args")).catch(() => "");
-  }
-  assertEquals(args.trim(), "-hf org/m:Q4 --host 127.0.0.1 --jinja -c 16384 --port 18123");
-  watched.kill();
-  await watched.status;
-  // The script notices within a second or two and takes the server down with it.
-  const t0 = Date.now();
-  await p.status;
-  assertEquals(Date.now() - t0 < 5000, true);
-  const left = await new Deno.Command("pgrep", { args: ["-f", server] }).output();
-  assertEquals(left.code, 1, "the server is still running");
+  const script = join(dir, "start-bootstrap.sh");
+  await Deno.writeTextFile(
+    script,
+    bootstrapScript(server, "org/m:Q4", join(dir, "m"), 41234, false),
+  );
+  const run = async (args: string[]) =>
+    new TextDecoder().decode((await new Deno.Command("sh", { args }).output()).stdout).trim();
+  const expect = `${join(dir, "m")} -hf org/m:Q4 --host 127.0.0.1 --jinja -c 16384 --port`;
+  assertEquals(await run([script, "28123"]), `${expect} 28123`);
+  // Run by hand: the port picked when it was written.
+  assertEquals(await run([script]), `${expect} 41234`);
   await Deno.remove(dir, { recursive: true });
 });

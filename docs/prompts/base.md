@@ -31,11 +31,16 @@ Once the user agrees:
    plan and ask before starting.
 5. Do one step at a time, and check that it worked before the next. If you are stuck, say so and
    ask; do not guess.
-6. Download weights into the models folder listed below, and write the start command as a script
-   in the startup scripts folder (start-<name>.sh), then start the server with it.
-7. When the server answers, list its models with models_at and switch with use_model. Record the
-   machine and the model (name, server, openai_url, start script) in fleet.json, and how it is
-   started in a memory file with a line in INDEX.
+6. Download weights into the models folder listed below. Write the start command as start-full.sh
+   in the startup scripts folder: it must run the server in the foreground (exec it; no nohup, `&`
+   or `docker run -d`) and include a line `# endpoint: <base_url> <model>`. Serve on the free port
+   listed below, never a default such as 8000 or 8080. ai-bootstrap runs it at every start from
+   now on. (If it runs on another machine, write start-<name>.sh there instead,
+   start it, and switch with use_model.)
+7. Start it with start_full_model: it waits until the model answers and switches to it. If it
+   fails, it gives you the end of the log; fix the cause and try again.
+8. Record the machine and the model (name, server, openai_url, start script) in fleet.json, and
+   how it is started in a memory file with a line in INDEX.
 
 {{onboarding}}
 
