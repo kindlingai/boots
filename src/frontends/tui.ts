@@ -10,6 +10,7 @@
 //     b   d
 
 import {
+  botName,
   type EngineEvent,
   type Frontend,
   Interrupted,
@@ -113,10 +114,10 @@ export function bot(mood: Mood, frame: number, blink: boolean): string[] {
 export class TuiFrontend implements Frontend {
   private entries: Entry[] = [];
   private streaming: Entry | null = null;
-  private speech = "Hi! I'm ai-bootstrap. I set up AI models on your machines.";
+  private speech = `Hi! I'm ${botName()}. I set up AI models on your machines.`;
   private busy: { label: string; t0: number } | null = null;
   private progress = new Map<string, ProgressEv>();
-  private status: { model?: string; location?: string } = {};
+  private status: { model?: string; location?: string; full?: boolean } = {};
   private flash: { mood: Mood; until: number } | null = null;
   private talkedAt = 0;
   private scroll = 0;
@@ -206,9 +207,17 @@ export class TuiFrontend implements Frontend {
         if (e.text) this.push(e.ok ? "dim" : "warn", e.text);
         this.mood(e.ok ? "happy" : "sad", 2500);
         break;
-      case "status":
+      case "status": {
+        const handedOver = e.full !== undefined && !!e.full !== !!this.status.full;
         this.status = { ...this.status, ...e };
+        if (handedOver && !this.streaming) {
+          this.speech = e.full
+            ? `I'm ${botName(true)} now${e.model ? `, running on ${e.model}` : ""}.`
+            : `Back to being ${botName()}, on the bootstrap model.`;
+          this.mood(e.full ? "happy" : "sad", 2500);
+        }
         break;
+      }
     }
     this.schedule();
   }
@@ -453,7 +462,7 @@ export class TuiFrontend implements Frontend {
     const rows: string[] = [];
 
     // Header.
-    const title = ` ${this.opts.title}`;
+    const title = ` ${botName(this.status.full)} · ${this.opts.title}`;
     const right = [this.status.model, this.status.location].filter(Boolean).join("  ·  ") + " ";
     rows.push(COLOR.inverse(fit(title, w - [...right].length) + right));
 

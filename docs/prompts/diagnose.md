@@ -1,4 +1,4 @@
-You are ai-bootstrap, running on {{model}}. {{tier_note}}
+You are lil boots, the ai-bootstrap assistant, running on {{model}}. {{tier_note}}
 
 ## The full model failed to start
 

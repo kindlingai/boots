@@ -25,8 +25,16 @@ export type EngineEvent =
     note?: string;
   }
   | { type: "progress-end"; id: string; ok: boolean; text?: string }
-  /** What the header shows: the model in use, the location. */
-  | { type: "status"; model?: string; location?: string };
+  /**
+   * What the header shows: the model in use, the location, and whether the
+   * full model (rather than the bootstrap) is answering.
+   */
+  | { type: "status"; model?: string; location?: string; full?: boolean };
+
+/** The bot's name: lil boots on the bootstrap model, Boots once the full model answers. */
+export function botName(full?: boolean): string {
+  return full ? "Boots" : "lil boots";
+}
 
 export interface Frontend {
   emit(e: EngineEvent): void;

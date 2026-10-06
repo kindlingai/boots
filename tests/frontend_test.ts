@@ -1,6 +1,7 @@
 // The engine/frontend split: events, progress and the TUI's pieces.
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
+  botName,
   type EngineEvent,
   fmtDuration,
   type Frontend,
@@ -87,6 +88,12 @@ Deno.test("tui: wrapping and the bot", () => {
   assertStringIncludes(bot("sad", 0, false)[2], "| x x |");
   assertStringIncludes(bot("talking", 1, false)[3], "+--o--+");
   assertStringIncludes(bot("asking", 0, false)[0], "?");
+});
+
+Deno.test("the bot is lil boots, and Boots on the full model", () => {
+  assertEquals(botName(), "lil boots");
+  assertEquals(botName(false), "lil boots");
+  assertEquals(botName(true), "Boots");
 });
 
 Deno.test("the TUI is chosen for modern terminals only", async () => {

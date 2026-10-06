@@ -133,7 +133,13 @@ export class Agent {
       this.abort = new AbortController();
       let reply: Reply;
       let printed = false;
-      emit({ type: "status", model: this.s.router.current().label, location: this.s.where() });
+      const current = this.s.router.current();
+      emit({
+        type: "status",
+        model: current.label,
+        location: this.s.where(),
+        full: current !== this.s.router.bootstrap,
+      });
       const spin = spinner("thinking");
       try {
         reply = await this.s.router.chat(await this.messages(), shape, {

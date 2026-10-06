@@ -136,7 +136,12 @@ async function interactive(tui: boolean): Promise<number> {
     }
   };
   onInterrupt = onSigint;
-  emit({ type: "status", model: router.current().label, location: session.where() });
+  emit({
+    type: "status",
+    model: router.current().label,
+    location: session.where(),
+    full: router.current() !== router.bootstrap,
+  });
   try {
     Deno.addSignalListener("SIGINT", onSigint);
   } catch {
