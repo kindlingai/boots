@@ -16,6 +16,8 @@ import { secrets } from "./secrets.ts";
 export interface TraceLine extends Message {
   ts: string;
   session: string;
+  /** Where the agent was when this was written, e.g. "local > admin@gx10". */
+  location?: string;
 }
 
 /** Past this size the oldest half is dropped at startup. */
@@ -91,8 +93,8 @@ export class Transcript {
     }
   }
 
-  append(m: Message): void {
-    const line: TraceLine = { ts: new Date().toISOString(), session: this.session, ...m };
+  append(m: Message, location?: string): void {
+    const line: TraceLine = { ts: new Date().toISOString(), session: this.session, location, ...m };
     try {
       Deno.writeTextFileSync(this.path, scrub(JSON.stringify(line)) + "\n", { append: true });
     } catch {
@@ -121,12 +123,18 @@ export class Transcript {
     return out;
   }
 
-  /** The last `turns` turns of earlier sessions, and when the last of them happened. */
-  async restore(turns = 6): Promise<{ messages: Message[]; at: string } | null> {
+  /**
+   * The last `turns` turns of earlier sessions, when the last of them
+   * happened, and where the agent was then (a hop that is gone now).
+   */
+  async restore(
+    turns = 6,
+  ): Promise<{ messages: Message[]; at: string; location?: string } | null> {
     const earlier = (await this.lines()).filter((l) => l.session !== this.session);
     const messages = lastTurns(earlier, turns);
     if (!messages.length) return null;
-    return { messages, at: earlier.at(-1)!.ts };
+    const last = earlier.at(-1)!;
+    return { messages, at: last.ts, location: last.location };
   }
 
   /**

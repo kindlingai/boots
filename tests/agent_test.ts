@@ -1,6 +1,6 @@
 // The base model must answer with tool calls, and talks through reply.
 import { join } from "@std/path";
-import { assert, assertEquals } from "@std/assert";
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { Agent } from "../src/agent.ts";
 import { Router } from "../src/llm.ts";
 import { Memory } from "../src/memory.ts";
@@ -150,4 +150,95 @@ Deno.test("fit keeps the latest user message, shortening tool output instead", a
   assert(size <= 6000, `fits: ${size}`);
   assert(out.at(-1)!.content.includes("cut to fit the context"));
   assertEquals(fit(history, 1e6).length, 5, "nothing changes when it fits");
+});
+
+Deno.test("^C at a tool's approval prompt ends the turn", async () => {
+  const { setFrontend, Interrupted } = await import("../src/frontend.ts");
+  const lines: string[] = [];
+  setFrontend({
+    emit: (e: any) => e.type === "line" && lines.push(e.text),
+    readLine: () => Promise.reject(new Interrupted()),
+    close() {},
+  });
+  const { m, agent, done } = await session("gpt-oss-120b", [
+    {
+      calls: [{ name: "run", args: { command: "touch /tmp/aib-never" } }, {
+        name: "run",
+        args: { command: "ls" },
+      }],
+    },
+    { content: "the model went on" },
+  ]);
+  try {
+    (agent.s as any).allowReadonly = false;
+    await agent.turn("go");
+    assertEquals(m.seen.filter((b) => b.tools).length, 1, "no further model call");
+    const tools = agent.history.filter((x) => x.role === "tool").map((x) => x.content);
+    assertEquals(tools, [
+      "not run: the user pressed ^C at the prompt",
+      "not run: the user interrupted",
+    ]);
+    assertEquals(agent.history.at(-1)!.content, "(the user stopped that command)");
+    assert(lines.includes("[interrupted]") || lines.some((l) => l.includes("[interrupted]")));
+  } finally {
+    await done();
+  }
+});
+
+Deno.test("restored turns are shown, and an ssh hop left open is called interrupted", async () => {
+  const { Transcript } = await import("../src/transcript.ts");
+  const { setFrontend } = await import("../src/frontend.ts");
+  const dir = await Deno.makeTempDir();
+  const lines: string[] = [];
+  setFrontend({
+    emit: (e: any) => e.type === "line" && lines.push(e.text),
+    readLine: () => Promise.resolve(null),
+    close() {},
+  });
+  try {
+    const path = join(dir, "t.jsonl");
+    const before = new Transcript(path);
+    const call = {
+      id: "c1",
+      type: "function" as const,
+      function: { name: "ssh", arguments: '{"destination":"admin@gx10"}' },
+    };
+    before.append({ role: "user", content: "log in to the spark" }, "local");
+    before.append({ role: "assistant", content: "", tool_calls: [call] }, "local");
+    before.append(
+      { role: "tool", tool_call_id: "c1", content: "connected." },
+      "local > admin@gx10",
+    );
+    before.append({ role: "assistant", content: "I'm on the spark now." }, "local > admin@gx10");
+    const { s, agent, done } = await session("gpt-oss-120b", [{ content: "ok" }]);
+    try {
+      s.transcript = new Transcript(path);
+      assertEquals(await agent.restore(6), 1);
+      assertEquals(agent.restoredFrom, "local > admin@gx10");
+      agent.showRestored();
+      const plain = lines.map((l) =>
+        l.replace(new RegExp(String.fromCharCode(27) + "\\[[0-9;]*m", "g"), "")
+      );
+      assertEquals(plain, [
+        "› log in to the spark",
+        '  ssh {"destination":"admin@gx10"}',
+        "● I'm on the spark now.",
+      ]);
+      const sys = (await agent.system())();
+      assertStringIncludes(sys, "That connection was interrupted when the session was resumed");
+      assertStringIncludes(sys, "local > admin@gx10");
+      // A session that ended on the local machine says nothing about ssh.
+      const earlier = new Transcript(join(dir, "u.jsonl"));
+      earlier.append({ role: "user", content: "hi" }, "local");
+      earlier.append({ role: "assistant", content: "hello" }, "local");
+      s.transcript = new Transcript(join(dir, "u.jsonl"));
+      await agent.restore(6);
+      assertEquals(agent.restoredFrom, null);
+      assert(!(await agent.system())().includes("connection was interrupted"));
+    } finally {
+      await done();
+    }
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
 });

@@ -141,8 +141,16 @@ async function interactive(tui: boolean): Promise<number> {
   const restored = await agent.restore(6);
   if (restored) {
     say(
-      dim(`restored the last ${restored} turn${restored === 1 ? "" : "s"} of the previous session`),
+      dim(
+        `restored the last ${restored} turn${restored === 1 ? "" : "s"} of the previous session:`,
+      ),
     );
+    agent.showRestored();
+    if (agent.restoredFrom) {
+      warn(
+        `the previous session was connected to ${agent.restoredFrom}; that connection was interrupted, so this one starts on the local machine`,
+      );
+    }
   }
 
   // ^C stops a model reply; outside one it quits. (At the prompt the

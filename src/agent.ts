@@ -85,10 +85,17 @@ export function fit(history: Message[], budget: number): Message[] {
   return msgs;
 }
 
+/** Text on one line, cut to `n` characters. */
+function oneLine(s: string, n: number): string {
+  const t = s.replace(/\s+/g, " ").trim();
+  return t.length > n ? `${t.slice(0, n - 1)}…` : t;
+}
+
 export class Agent {
   history: Message[] = [];
-  /** When the restored turns were last active, if the history was restored. */
+  /** When the restored turns were last active, and where, if the history was restored. */
   restoredAt: string | null = null;
+  restoredFrom: string | null = null;
   private abort: AbortController | null = null;
   private busy = false;
   /** Slows down tool calls that come in rapid succession. */
@@ -101,7 +108,7 @@ export class Agent {
   /** Adds to the history and to the conversation log. */
   private push(m: Message): void {
     this.history.push(m);
-    this.s.transcript?.append(m);
+    this.s.transcript?.append(m, this.s.where());
   }
 
   /** Picks up the last turns of the previous session from the log. */
@@ -110,7 +117,23 @@ export class Agent {
     if (!r) return 0;
     this.history = r.messages;
     this.restoredAt = r.at;
+    // Only a remote location matters: that connection did not survive the restart.
+    this.restoredFrom = r.location && r.location.includes(">") ? r.location : null;
     return r.messages.filter((m) => m.role === "user").length;
+  }
+
+  /** The restored turns, shown the way they looked: questions, replies, and the tools used. */
+  showRestored(): void {
+    for (const m of this.history) {
+      if (m.role === "user") {
+        if (!/^\(.*\)$/s.test(m.content.trim())) say(dim(`› ${oneLine(m.content, 200)}`));
+      } else if (m.role === "assistant") {
+        if (m.content.trim()) say(dim(`● ${oneLine(m.content, 300)}`));
+        for (const c of m.tool_calls ?? []) {
+          say(dim(`  ${c.function.name} ${oneLine(c.function.arguments, 120)}`));
+        }
+      }
+    }
   }
 
   /**
@@ -140,6 +163,17 @@ export class Agent {
     return `compacted ${r.summarized} older turn${r.summarized === 1 ? "" : "s"}${
       r.summary ? " into a summary" : " (no summary: they were dropped)"
     }; the last 2 are kept as they were`;
+  }
+
+  /** ^C during tools: this call's result, "not run" for the rest, and the turn ends. */
+  private stopTurn(calls: { id: string }[], result: string): void {
+    const [first, ...rest] = calls;
+    this.push({ role: "tool", tool_call_id: first.id, content: result });
+    for (const r of rest) {
+      this.push({ role: "tool", tool_call_id: r.id, content: "not run: the user interrupted" });
+    }
+    this.push({ role: "user", content: "(the user stopped that command)" });
+    say("[interrupted]", "dim");
   }
 
   /** Stops a model reply or a running tool. False when no turn is running. */
@@ -186,7 +220,7 @@ export class Agent {
         fresh,
         failure: this.s.fullFailure,
         update: this.s.update,
-        restored: this.restoredAt,
+        restored: this.restoredAt ? { at: this.restoredAt, location: this.restoredFrom } : null,
       });
   }
 
@@ -340,21 +374,15 @@ export class Agent {
             ? "not run: the user interrupted"
             : await this.s.exec(tc.function.name, args, ac.signal);
           if (ac.signal.aborted) {
-            this.push({ role: "tool", tool_call_id: tc.id, content: result });
-            for (const rest of reply.toolCalls.slice(n + 1)) {
-              this.push({
-                role: "tool",
-                tool_call_id: rest.id,
-                content: "not run: the user interrupted",
-              });
-            }
-            this.push({ role: "user", content: "(the user stopped that command)" });
-            say("[interrupted]", "dim");
+            this.stopTurn(reply.toolCalls.slice(n), result);
             return;
           }
         } catch (e) {
           if (e instanceof Interrupted) {
-            result = "interrupted by the user";
+            // ^C at a question the tool asked (run it?, a password): the turn
+            // ends here, as it does for ^C while the command runs.
+            this.stopTurn(reply.toolCalls.slice(n), "not run: the user pressed ^C at the prompt");
+            return;
           } else if (e instanceof SyntaxError) {
             result = `error: arguments were not valid JSON: ${tc.function.arguments.slice(0, 200)}`;
           } else {

@@ -80,8 +80,8 @@ export interface PromptVars {
   failure?: FullFailure | null;
   /** A newer ai-bootstrap release: offer to update. */
   update?: Update | null;
-  /** The history was restored from the previous session, last active then. */
-  restored?: string | null;
+  /** The history was restored from the previous session: when it was last active, and where. */
+  restored?: { at: string; location?: string | null } | null;
 }
 
 export function systemPrompt(t: Templates, router: Router, v: PromptVars): string {
@@ -89,7 +89,7 @@ export function systemPrompt(t: Templates, router: Router, v: PromptVars): strin
   if (!fleetRecorded(v.fleet) && tierOf(router.current()) !== "base") {
     prompt += `\n\n${NOTHING_SET_UP}`;
   }
-  if (v.restored) prompt += `\n\n${restoredNote(v.restored)}`;
+  if (v.restored) prompt += `\n\n${restoredNote(v.restored.at, v.restored.location)}`;
   if (v.update) prompt += `\n\n${updateNote(v.update)}`;
   return prompt;
 }
@@ -112,13 +112,16 @@ Install directly on the host only where Docker cannot do the job (the Mac GPU) o
 it.`;
 
 /** The conversation starts with turns restored from the previous session. */
-export function restoredNote(at: string): string {
+export function restoredNote(at: string, location?: string | null): string {
+  const hop = location
+    ? `\n\nThe previous session ended while you were connected over ssh (location ${location}). That connection was interrupted when the session was resumed: you are on the local machine now, and run and the other tools act here. To carry on there, connect again with the ssh tool.`
+    : "";
   return `## Restored conversation
 
 The first turns of this conversation are the end of the previous session (last active ${
     at.slice(0, 16).replace("T", " ")
   } UTC), restored when ai-bootstrap restarted. Things may have changed since: check before relying
-on them. history_search looks further back.`;
+on them. history_search looks further back.${hop}`;
 }
 
 function basePrompt(t: Templates, router: Router, v: PromptVars): string {
