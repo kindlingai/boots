@@ -20,7 +20,8 @@ Deno.test({
   try {
     const info = await rpc.call("info");
     assertEquals(info.target, Deno.build.target);
-    const dir = await Deno.makeTempDir();
+    // macOS temp dirs sit behind a symlink (/var -> /private/var); pwd reports the real path.
+    const dir = await Deno.realPath(await Deno.makeTempDir());
     let r = await rpc.call("exec", { cmd: `cd ${dir} && echo hi` });
     assertEquals(r.code, 0);
     assertEquals(r.stdout, "hi\n");

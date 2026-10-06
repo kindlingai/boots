@@ -96,3 +96,18 @@ Deno.test("the model reaches the knowledge base through memory_search", async ()
     await m.close();
   }
 });
+
+Deno.test("on the base model the session opens by asking to set up a smarter one", async () => {
+  const m = serveMock([{ content: "I'm running on my base intelligence layer right now..." }]);
+  try {
+    // No task typed: the model speaks first.
+    const r = await run([], { OPENAI_BASE_URL: m.url, OPENAI_MODEL: "qwen3-4b" }, "1\n/quit\n");
+    assertEquals(r.code, 0, r.out + r.err);
+    assert(!r.out.includes("What would you like to do?"), r.out);
+    assertStringIncludes(r.out, "base intelligence layer");
+    const sys = m.seen.find((b) => b.tools)?.messages[0].content ?? "";
+    assertStringIncludes(sys, "Is it OK if I check your system and start that process?");
+  } finally {
+    await m.close();
+  }
+});

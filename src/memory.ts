@@ -213,7 +213,8 @@ export class Memory {
   private async git(args: string[], timeoutMs = 60_000): Promise<{ code: number; out: string }> {
     try {
       const o = await new Deno.Command("git", {
-        args,
+        // Memories are LF text everywhere; Windows' autocrlf would rewrite them.
+        args: ["-c", "core.autocrlf=false", ...args],
         cwd: this.dir,
         env: { GIT_TERMINAL_PROMPT: "0" },
         stdin: "null",

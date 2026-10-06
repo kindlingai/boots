@@ -4,52 +4,11 @@
 import type { Message, Reply } from "./llm.ts";
 import { LLMError } from "./llm.ts";
 import { describe, renderPlan, type Session, TOOLS } from "./tools.ts";
+import { currentTier, loadTemplates, systemPrompt, type Templates } from "./prompts.ts";
 import { secrets } from "./secrets.ts";
 import { ask, bold, cyan, dim, Interrupted, plain, red, warn, write } from "./ui.ts";
 
 const MAX_STEPS = 60;
-
-function systemPrompt(
-  s: Session,
-  index: string,
-  docs: string[],
-  memories: string[],
-  extra: string,
-  remote: string | null,
-): string {
-  const ep = s.router.current();
-  const model = s.router.smart
-    ? s.router.usingFallback()
-      ? `You are the bootstrap model ${ep.label}, standing in because ${s.router.smart.label} is unavailable.`
-      : `You are ${ep.label}. The bootstrap model ${s.router.bootstrap.label} is the fallback.`
-    : `You are the bootstrap model ${ep.label}: small and limited. Your first job, unless the user wants something else, is to get a smarter hardware-accelerated model running and switch to it with use_model. Look at this machine's hardware (GPU, VRAM, unified memory, RAM) and suggest an intermediate model and server that fit; running it on this machine is recommended, otherwise on one of the machines the user wants to configure. Read the bundled docs first.`;
-  return `You are ai-bootstrap, a terminal agent that sets up AI infrastructure (inference servers, models, GPU boxes, clusters) on the user's machines. ${model}
-
-How you work:
-1. Find out what the user wants. Ask short questions if the goal is unclear.
-2. Before changing anything, inspect (OS, arch, GPUs, drivers, disk, what is already installed) and check memory and the docs.
-3. Build a plan with the plan tool. For each step, think about what could go wrong (no GPU or wrong driver, unsupported OS/arch, not enough disk or RAM, port in use, no internet, missing permissions, a service already running) and note how you will detect and handle it.
-4. Show the plan and get the user's agreement, then execute one step at a time: act, verify, update the plan. If a step fails, stop and re-plan rather than pushing on.
-5. Read-only commands run immediately; everything else is shown to the user to approve. Use sudo for root and ssh to reach other machines; never type passwords or put sudo/ssh inside run.
-6. Save durable facts about the user's setup (machines, GPUs, installed services, endpoints, preferences) to memory, and keep INDEX a short list of pointers. If memory is not synced to a private git repository (see Memory sync below), suggest setting that up once, so the setup can be maintained from other machines and recovered if this one is lost.
-7. Be brief. Report results plainly.
-
-Location: ${s.where()}
-Operating system here: ${s.here.info.osName} on ${s.here.info.arch} (hardware-accelerated model options: docs/intermediate-${
-    { darwin: "macos", windows: "windows" }[s.here.info.os] ?? "linux"
-  })
-Host details: ${describe(s.here.info)}
-${s.here.info.shell === "powershell" ? "Commands here run in PowerShell.\n" : ""}
-Bundled docs (memory_read docs/<name>): ${docs.join(", ") || "none"}
-Memory files: ${memories.join(", ") || "none"}
-Memory sync: ${remote ?? "not set up"}
-${extra}
-Memory INDEX:
-${index.trim()}
-
-Plan:
-${s.plan.length ? plain(renderPlan(s.plan)) : "(none yet)"}`;
-}
 
 /** Fits the history into the current model's budget. */
 function fit(history: Message[], budget: number): Message[] {
@@ -77,6 +36,8 @@ export class Agent {
   private abort: AbortController | null = null;
   private busy = false;
 
+  private templates: Templates | null = null;
+
   constructor(readonly s: Session, private extraContext: () => string) {}
 
   /** Stops a model reply. False when no turn is running. */
@@ -85,16 +46,41 @@ export class Agent {
     return this.busy;
   }
 
-  private async messages(): Promise<() => Message[]> {
-    const index = await this.s.memory.index();
-    const docs = await this.s.memory.docNames();
-    const memories = await this.s.memory.list();
+  /** The system prompt as it stands now (it depends on which model is answering). */
+  async system(): Promise<() => string> {
+    this.templates ??= await loadTemplates();
+    const t = this.templates;
+    const [index, docs, memories, remote] = await Promise.all([
+      this.s.memory.index(),
+      this.s.memory.docNames(),
+      this.s.memory.list(),
+      this.s.memory.remote(),
+    ]);
     const extra = this.extraContext();
-    const remote = await this.s.memory.remote();
+    // Rendered lazily: the router may fall back to the bootstrap model mid-request.
+    return () =>
+      systemPrompt(t, this.s.router, {
+        location: this.s.where(),
+        os_name: this.s.here.info.osName,
+        arch: this.s.here.info.arch,
+        os: this.s.here.info.os,
+        host: describe(this.s.here.info),
+        shell: this.s.here.info.shell,
+        docs,
+        memories,
+        memory_sync: remote,
+        other_sources: extra,
+        index,
+        plan: this.s.plan.length ? plain(renderPlan(this.s.plan)) : "(none yet)",
+      });
+  }
+
+  private async messages(): Promise<() => Message[]> {
+    const sys = await this.system();
     return () => {
-      const sys = systemPrompt(this.s, index, docs, memories, extra, remote);
-      const budget = this.s.router.current().contextChars - sys.length;
-      return [{ role: "system", content: sys }, ...fit(this.history, Math.max(budget, 4000))];
+      const content = sys();
+      const budget = this.s.router.current().contextChars - content.length;
+      return [{ role: "system", content }, ...fit(this.history, Math.max(budget, 4000))];
     };
   }
 
@@ -179,7 +165,13 @@ const HELP = `commands:
 
 export async function repl(agent: Agent): Promise<void> {
   const s = agent.s;
-  console.log(`\n${bold("What would you like to do?")} ${dim("(/help for commands)")}`);
+  if (currentTier(s.router) === "base") {
+    // The base model opens by asking to set up a smarter one (docs/prompts/base.md).
+    console.log(dim("(/help for commands)"));
+    await agent.turn("(New session. Open as your instructions say.)");
+  } else {
+    console.log(`\n${bold("What would you like to do?")} ${dim("(/help for commands)")}`);
+  }
   while (true) {
     let line: string | null;
     try {
