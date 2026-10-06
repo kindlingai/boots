@@ -8,6 +8,12 @@ A single, offline-friendly binary that you can use to bootstrap your local AI.
 
 Easy.
 
+First, download the latest release for your system: https://github.com/mmastrac/ai-bootstrap/releases
+
+ - On macOS: run `sh ai-bootstrap-XXX.sh` to extract the `ai-bootstrap` executable, then run it
+ - On Windows, unzip the file, run `ai-bootstrap.exe`
+ - On Linux, gunzip the file, run `ai-bootstrap`
+
 `ai-bootstrap` - boots the program, discovers any bootstrap intelligence that it can use and
 starts the prompt loop to understand what you'd like to do. If it doesn't find a bootstrap
 intelligence, it'll prompt you to download a small, CPU-based Qwen 4B model to start.
