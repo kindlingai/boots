@@ -20,5 +20,5 @@ others to confirm their details rather than relying on memory alone. "Just this 
 answer: move on.
 
 Save what you learn as you go: record each machine in fleet.json (how to reach it, hardware, OS,
-role), put what they want in a `goals` memory, and add an INDEX line for `goals`.
+role), and what they want in goals.json, one goal per thing they want done.
 {{onboarding_timing}}

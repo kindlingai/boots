@@ -195,3 +195,17 @@ Deno.test("hardware summaries", async () => {
     "AMD EPYC 9654, 192 CPU threads; 756 GB RAM; NVIDIA GPU: NVIDIA H100 80GB HBM3 with 81559 MiB",
   );
 });
+
+Deno.test("goals.json is in the full prompt, with its shape", async () => {
+  const t = await loadTemplates();
+  const goals = JSON.stringify([{ title: "Serve GLM on the Sparks", done: false }], null, 2);
+  const full = systemPrompt(t, new Router(ep("gpt-oss-120b")), { ...vars, goals });
+  assertStringIncludes(full, "Goals (memory goals.json):\n\n```json\n" + goals + "\n```");
+  assertStringIncludes(
+    flat(full),
+    'a list of goals, each `{"title": "...", "done": false, "children": [ ...goals... ]}`',
+  );
+  const empty = systemPrompt(t, new Router(ep("gpt-oss-120b")), { ...vars, goals: "[]\n" });
+  assertStringIncludes(empty, "[] (empty: no goals recorded yet)");
+  assert(!full.includes("{{"), "unfilled placeholder");
+});

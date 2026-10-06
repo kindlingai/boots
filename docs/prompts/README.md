@@ -52,4 +52,5 @@ would you like to do?" prompt, so the model can ask its opening question.
 | `other_sources`     | other AI sources seen at boot, or empty                                                               |
 | `index`             | memory INDEX.md (4 kB at most)                                                                        |
 | `fleet` | memory fleet.json (8 kB at most), or a note that it is empty |
+| `goals` | memory goals.json as stored (a list of {title, done?, children?}), or a note that it is empty|
 | `plan`              | the current plan, or `(none yet)`                                                                     |

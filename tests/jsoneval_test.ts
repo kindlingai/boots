@@ -71,3 +71,36 @@ Deno.test("the json_eval tool saves fleet.json", async () => {
     await Deno.remove(dir, { recursive: true });
   }
 });
+
+Deno.test("json_eval edits goals.json, and its shape is enforced", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    const memory = new Memory(join(dir, "mem"));
+    await memory.init();
+    const s = new Session(
+      new Router({ label: "m", baseUrl: "http://127.0.0.1:9/v1", model: "big", contextChars: 1e4 }),
+      memory,
+      new McpManager(join(dir, "mcp.json")),
+      () => Promise.resolve(null),
+    );
+    assertStringIncludes(
+      await s.exec("json_eval", {
+        memory: "goals.json",
+        code: "json.push({ title: input })",
+        input: "Serve GLM",
+      }),
+      "goals.json saved",
+    );
+    assertStringIncludes(
+      await s.exec("json_eval", { memory: "goals.json", code: "json[0].done = 'yes'" }),
+      "goals[0].done must be true or false",
+    );
+    assertEquals(JSON.parse(await memory.goals()), [{ title: "Serve GLM" }]);
+    assertStringIncludes(
+      await s.exec("json_eval", { memory: "notes", code: "" }),
+      "JSON memories only",
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});

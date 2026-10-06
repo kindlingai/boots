@@ -3,7 +3,7 @@
 import { join } from "@std/path";
 import { b64, DEFAULT_TIMEOUT_MS, type ExecResult, Host, type HostInfo } from "./host.ts";
 import { chat, type Endpoint, reachable, type Router, type ToolDef } from "./llm.ts";
-import type { Memory } from "./memory.ts";
+import { JSON_MEMORIES, jsonMemory, type Memory } from "./memory.ts";
 import type { McpManager } from "./mcp.ts";
 import { isReadonly, stages } from "./readonly.ts";
 import {
@@ -194,12 +194,17 @@ export const TOOLS: ToolDef[] = [
     },
     ["steps"],
   ),
-  fn("memory_read", "Read a memory file, fleet.json, or a bundled doc as docs/<name>.", {
-    name: str("e.g. local-setup, goals, fleet.json, docs/vllm"),
-  }, ["name"]),
+  fn(
+    "memory_read",
+    "Read a memory file, fleet.json, goals.json, or a bundled doc as docs/<name>.",
+    {
+      name: str("e.g. local-setup, fleet.json, goals.json, docs/vllm"),
+    },
+    ["name"],
+  ),
   fn(
     "memory_write",
-    "Save durable facts about the user's setup. Write INDEX to update the always-visible index (4 kB limit; one line per memory file). Write fleet.json to update the always-visible fleet inventory: the content must be a complete, valid JSON object (it replaces the file; 8 kB limit).",
+    "Save durable facts about the user's setup. Write INDEX to update the always-visible index (4 kB limit; one line per memory file). Write fleet.json to update the always-visible fleet inventory: the content must be a complete, valid JSON object (it replaces the file; 8 kB limit). Write goals.json to replace the always-visible goals: a JSON list of {title, done?, children?}, and nothing else (8 kB limit). For small changes to either, json_eval is easier.",
     {
       name: str("memory name, letters digits - _ ."),
       content: str("Markdown"),
@@ -333,9 +338,9 @@ TOOLS.push(
 
 TOOLS.push(fn(
   "json_eval",
-  "Edit a JSON memory (fleet.json) with JavaScript instead of rewriting it. The code runs in a sandbox with no file, network or process access: the current document is the global `json`, your data is the global `input`. Change `json` in place or assign a new value to it; whatever `json` holds when the code ends is saved (it must be a JSON object). console.log output is returned. Example: json.hosts['spark-1'].models.push(input)",
+  "Edit a JSON memory (fleet.json or goals.json) with JavaScript instead of rewriting it. The code runs in a sandbox with no file, network or process access: the current document is the global `json`, your data is the global `input`. Change `json` in place or assign a new value to it; whatever `json` holds when the code ends is saved (if it still matches that memory's shape). console.log output is returned. Example: json.hosts['spark-1'].models.push(input)",
   {
-    memory: str("the JSON memory to edit: fleet.json"),
+    memory: str("the JSON memory to edit: fleet.json (default) or goals.json"),
     code: str("JavaScript statements (synchronous)"),
     input: { description: "any JSON value, available to the code as `input`" },
   },
@@ -660,29 +665,31 @@ export class Session {
         return r;
       }
       case "json_eval": {
-        const name = String(args.memory ?? "fleet.json");
-        if (name !== "fleet.json" && name !== "fleet") {
-          return `json_eval edits fleet.json only (there is no JSON memory called ${name})`;
+        const m = jsonMemory(String(args.memory ?? "fleet.json"));
+        if (!m) {
+          return `json_eval edits JSON memories only: ${
+            JSON_MEMORIES.map((j) => j.file).join(", ")
+          }`;
         }
         const code = String(args.code ?? "");
-        console.log(dim(`  json_eval fleet.json: ${code.replace(/\s+/g, " ").slice(0, 100)}`));
-        let doc: unknown = {};
+        console.log(dim(`  json_eval ${m.file}: ${code.replace(/\s+/g, " ").slice(0, 100)}`));
+        let doc: unknown;
         try {
-          doc = JSON.parse((await this.memory.fleet()) || "{}");
+          doc = JSON.parse((await this.memory.json(m.file)) || m.empty);
         } catch {
-          return "fleet.json is not valid JSON now: rewrite it with memory_write first";
+          return `${m.file} is not valid JSON now: rewrite it with memory_write first`;
         }
         const r = await jsonEval(doc, args.input ?? null, code);
         const logs = r.logs.length ? `\nconsole output:\n${r.logs.join("\n")}` : "";
         if (r.error) return `not saved: ${r.error}${logs}`;
         const text = JSON.stringify(r.json, null, 2);
         try {
-          const saved = await this.memory.write("fleet.json", text);
+          const saved = await this.memory.write(m.file, text);
           console.log(dim(`  memory: ${saved}`));
         } catch (e) {
           return `not saved: ${(e as Error).message}${logs}`;
         }
-        return `fleet.json saved (${text.length} bytes)${logs}${
+        return `${m.file} saved (${text.length} bytes)${logs}${
           text.length <= 3000 ? `\nnow:\n${text}` : ""
         }`;
       }

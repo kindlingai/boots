@@ -70,6 +70,8 @@ export interface PromptVars {
   index: string;
   /** memory fleet.json as stored, "" when there is none. */
   fleet: string;
+  /** memory goals.json as stored, "" when there is none. */
+  goals?: string;
   plan: string;
   /** Memory holds nothing about the user yet: onboard them. */
   fresh: boolean;
@@ -102,6 +104,7 @@ export function systemPrompt(t: Templates, router: Router, v: PromptVars): strin
     other_sources: v.other_sources,
     index: v.index.trim(),
     fleet: v.fleet.trim() || "{} (empty: nothing recorded yet)",
+    goals: v.goals?.trim().replace(/^\[\s*\]$/, "") || "[] (empty: no goals recorded yet)",
     plan: v.plan,
   });
   const base = tierOf(ep) === "base";

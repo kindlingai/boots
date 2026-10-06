@@ -71,6 +71,15 @@ There is no schema. We recommend this shape, adding fields as they are useful:
 Keep it to facts you can check (hosts, hardware, models, endpoints); put longer notes in other
 memory files. It is limited to 8 kB.
 
+## Goals
+
+goals.json (shown below, under "Goals") is the user's list of goals, also in front of you every
+turn. Its shape is fixed, and a write that does not match is refused: a list of goals, each
+`{"title": "...", "done": false, "children": [ ...goals... ]}`, where done and children are
+optional. Add a goal when the user asks for something that takes more than one step, break it
+into children as you plan, and mark goals done as they are achieved. Update it with json_eval,
+e.g. `json.push({title: input})` or `json[0].done = true`.
+
 ## Recipes
 
 Early on, tell the user once that they can point you at a "recipe" for the hardware they want to

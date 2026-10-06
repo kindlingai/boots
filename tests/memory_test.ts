@@ -111,3 +111,42 @@ Deno.test("fleet.json only accepts a valid JSON object", async () => {
   assert((await m.search("glm53")).some((h) => h.source === "fleet.json"));
   assert(!(await m.list()).includes("fleet.json"), "listed separately from Markdown memories");
 });
+
+Deno.test("goals.json: a checked list of goals, always JSON", async () => {
+  const { checkGoals } = await import("../src/memory.ts");
+  const dir = await Deno.makeTempDir();
+  try {
+    const m = new Memory(join(dir, "mem"));
+    await m.init();
+    assertEquals(await m.read("goals.json"), "[]\n");
+    const goals = [
+      { title: "Run the 30B-A3B on the Mac", done: true },
+      { title: "Serve GLM on the Sparks", children: [{ title: "mentat router up", done: false }] },
+    ];
+    assertStringIncludes(await m.write("goals.json", JSON.stringify(goals)), "wrote goals.json");
+    assertEquals(JSON.parse(await m.goals()), goals);
+    // Not the shape: refused, and the stored goals stay as they were.
+    for (
+      const [bad, why] of [
+        ['{"title": "x"}', "must be a list"],
+        ['[{"done": true}]', "goals[0].title must be a non-empty string"],
+        ['[{"title": "x", "done": "yes"}]', "goals[0].done must be true or false"],
+        ['[{"title": "x", "priority": 1}]', "goals[0] has priority"],
+        ['[{"title": "x", "children": [{"title": ""}]}]', "goals[0].children[0].title"],
+        ['[{"title": "x", "children": {}}]', "goals[0].children must be a list"],
+        ["[1]", "goals[0] must be an object"],
+      ]
+    ) {
+      await assertRejects(() => m.write("goals.json", bad), Error, why);
+    }
+    assertEquals(JSON.parse(await m.goals()), goals);
+    assertEquals(checkGoals([]), null);
+    // A goals list means the user has told us something: no onboarding.
+    assertEquals(await m.isEmpty(), false);
+    // A bare "goals" is still an ordinary memory (onboarding used to write one).
+    await m.write("goals", "- old notes");
+    assertStringIncludes(await m.read("goals"), "old notes");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});

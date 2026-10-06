@@ -65,9 +65,10 @@ export class Agent {
   async system(): Promise<() => string> {
     this.templates ??= await loadTemplates();
     const t = this.templates;
-    const [index, fleet, docs, memories, remote, fresh] = await Promise.all([
+    const [index, fleet, goals, docs, memories, remote, fresh] = await Promise.all([
       this.s.memory.index(),
       this.s.memory.fleet(),
+      this.s.memory.goals(),
       this.s.memory.docNames(),
       this.s.memory.list(),
       this.s.memory.remote(),
@@ -93,6 +94,7 @@ export class Agent {
         other_sources: extra,
         index,
         fleet,
+        goals,
         plan: this.s.plan.length ? plain(renderPlan(this.s.plan)) : "(none yet)",
         fresh,
         failure: this.s.fullFailure,

@@ -27,6 +27,12 @@ Fleet inventory (memory fleet.json):
 {{fleet}}
 ```
 
+Goals (memory goals.json):
+
+```json
+{{goals}}
+```
+
 ## Plan
 
 {{plan}}

@@ -12,6 +12,82 @@ export const INDEX_LIMIT = 4096;
 /** The fleet inventory: always in context, always a valid JSON object. */
 export const FLEET = "fleet.json";
 export const FLEET_LIMIT = 8192;
+/** The user's goals: always in context, a list of {title, done?, children?}. */
+export const GOALS = "goals.json";
+
+/** A JSON memory: kept whole, checked on every write, stored pretty-printed. */
+interface JsonMemory {
+  file: string;
+  limit: number;
+  /** What reading it gives before anything is written. */
+  empty: string;
+  /** Why `doc` is not acceptable, or null. */
+  check(doc: unknown): string | null;
+  /** Where detail should go instead, when it is too big. */
+  tooBig: string;
+}
+
+/** Why a goals list does not match [{title, done?, children?}], or null. */
+export function checkGoals(doc: unknown, at = "goals"): string | null {
+  if (!Array.isArray(doc)) {
+    return `${at} must be a list of goals: [{"title": "...", "done": false, "children": []}]`;
+  }
+  for (const [i, g] of doc.entries()) {
+    const here = `${at}[${i}]`;
+    if (g === null || typeof g !== "object" || Array.isArray(g)) {
+      return `${here} must be an object with a title`;
+    }
+    const extra = Object.keys(g).filter((k) => !["title", "done", "children"].includes(k));
+    if (extra.length) {
+      return `${here} has ${
+        extra.join(", ")
+      }: a goal has only title, done (optional) and children (optional)`;
+    }
+    const goal = g as Record<string, unknown>;
+    if (typeof goal.title !== "string" || !goal.title.trim()) {
+      return `${here}.title must be a non-empty string`;
+    }
+    if ("done" in goal && typeof goal.done !== "boolean") {
+      return `${here}.done must be true or false`;
+    }
+    if ("children" in goal) {
+      const bad = checkGoals(goal.children, `${here}.children`);
+      if (bad) return bad;
+    }
+  }
+  return null;
+}
+
+export const JSON_MEMORIES: JsonMemory[] = [
+  {
+    file: FLEET,
+    limit: FLEET_LIMIT,
+    empty: "{}",
+    check: (d) =>
+      d === null || typeof d !== "object" || Array.isArray(d)
+        ? 'it must be a JSON object, e.g. {"hosts": {}}'
+        : null,
+    tooBig: "Keep it to hosts, models and endpoints, and move notes into a separate memory.",
+  },
+  {
+    file: GOALS,
+    limit: 8192,
+    empty: "[]",
+    check: (d) => checkGoals(d),
+    tooBig:
+      "Keep titles short, drop finished goals that no longer matter, and move detail into a separate memory.",
+  },
+];
+
+/**
+ * The JSON memory a name refers to, if any. "fleet" also means fleet.json (it
+ * always has); a bare "goals" is still an ordinary memory, as onboarding used
+ * to write one.
+ */
+export function jsonMemory(name: string): JsonMemory | null {
+  const n = name === "fleet" ? FLEET : name;
+  return JSON_MEMORIES.find((m) => m.file === n) ?? null;
+}
 
 const STOPWORDS = new Set([
   "a",
@@ -93,7 +169,8 @@ export class Memory {
   }
 
   private path(name: string): string {
-    if (isFleet(name)) return join(this.dir, FLEET);
+    const json = jsonMemory(name);
+    if (json) return join(this.dir, json.file);
     const n = name.replace(/\.md$/, "");
     if (n === "INDEX") return this.indexPath();
     if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,80}$/.test(n)) {
@@ -114,12 +191,24 @@ export class Memory {
     const own = (await this.list()).filter((n) => !AUTOMATIC.includes(n));
     const index = (await this.index()).split("\n").filter((l) => !/^- full-model:/.test(l))
       .join("\n");
-    return !own.length && automaticFleet(await this.fleet()) && index.trim() === SEED.trim();
+    const goals = (await this.goals()).replace(/\s/g, "");
+    return !own.length && automaticFleet(await this.fleet()) && (goals === "" || goals === "[]") &&
+      index.trim() === SEED.trim();
   }
 
   /** fleet.json as stored, or "" when there is none yet. */
   async fleet(): Promise<string> {
-    return await Deno.readTextFile(join(this.dir, FLEET)).catch(() => "");
+    return await this.json(FLEET);
+  }
+
+  /** goals.json as stored, or "" when there is none yet. */
+  async goals(): Promise<string> {
+    return await this.json(GOALS);
+  }
+
+  /** A JSON memory as stored, or "" when there is none yet. */
+  async json(file: string): Promise<string> {
+    return await Deno.readTextFile(join(this.dir, file)).catch(() => "");
   }
 
   async index(): Promise<string> {
@@ -164,7 +253,8 @@ export class Memory {
         throw new Error(`no doc ${n}; available: ${(await this.docNames()).join(", ")}`);
       }
     }
-    if (isFleet(name)) return (await this.fleet()) || "{}\n";
+    const json = jsonMemory(name);
+    if (json) return (await this.json(json.file)) || `${json.empty}\n`;
     try {
       return await Deno.readTextFile(this.path(name));
     } catch (e) {
@@ -177,7 +267,8 @@ export class Memory {
 
   async write(name: string, content: string, append = false): Promise<string> {
     if (name.startsWith("docs/")) throw new Error("docs are read-only; write a memory instead");
-    if (isFleet(name)) return await this.writeFleet(content, append);
+    const json = jsonMemory(name);
+    if (json) return await this.writeJson(json, content, append);
     const p = this.path(name);
     let next = content;
     if (append) {
@@ -195,11 +286,11 @@ export class Memory {
     return `${append ? "appended to" : "wrote"} ${name} (${bytes} bytes)`;
   }
 
-  /** Replaces fleet.json, which must be a JSON object; it is stored pretty-printed. */
-  private async writeFleet(content: string, append: boolean): Promise<string> {
+  /** Replaces a JSON memory, after checking it; it is stored pretty-printed. */
+  private async writeJson(m: JsonMemory, content: string, append: boolean): Promise<string> {
     if (append) {
       throw new Error(
-        `${FLEET} cannot be appended to: read it, change it, and write the whole document`,
+        `${m.file} cannot be appended to: read it, change it, and write the whole document (or use json_eval)`,
       );
     }
     let doc: unknown;
@@ -207,21 +298,18 @@ export class Memory {
       doc = JSON.parse(content);
     } catch (e) {
       throw new Error(
-        `${FLEET} was not changed: the content is not valid JSON (${(e as Error).message})`,
+        `${m.file} was not changed: the content is not valid JSON (${(e as Error).message})`,
       );
     }
-    if (doc === null || typeof doc !== "object" || Array.isArray(doc)) {
-      throw new Error(`${FLEET} was not changed: it must be a JSON object, e.g. {"hosts": {}}`);
-    }
+    const bad = m.check(doc);
+    if (bad) throw new Error(`${m.file} was not changed: ${bad}`);
     const text = JSON.stringify(doc, null, 2) + "\n";
     const bytes = new TextEncoder().encode(text).length;
-    if (bytes > FLEET_LIMIT) {
-      throw new Error(
-        `${FLEET} would be ${bytes} bytes; the limit is ${FLEET_LIMIT}. Keep it to hosts, models and endpoints, and move notes into a separate memory.`,
-      );
+    if (bytes > m.limit) {
+      throw new Error(`${m.file} would be ${bytes} bytes; the limit is ${m.limit}. ${m.tooBig}`);
     }
-    await Deno.writeTextFile(join(this.dir, FLEET), text);
-    return `wrote ${FLEET} (${bytes} bytes)`;
+    await Deno.writeTextFile(join(this.dir, m.file), text);
+    return `wrote ${m.file} (${bytes} bytes)`;
   }
 
   /**
@@ -240,7 +328,9 @@ export class Memory {
     );
     const files: [string, string][] = [];
     for (const n of await this.list()) files.push([n, join(this.dir, `${n}.md`)]);
-    if (await this.fleet()) files.push([FLEET, join(this.dir, FLEET)]);
+    for (const m of JSON_MEMORIES) {
+      if (await this.json(m.file)) files.push([m.file, join(this.dir, m.file)]);
+    }
     for (const n of await this.docNames()) files.push([`docs/${n}`, join(this.docs, `${n}.md`)]);
     const hits: Hit[] = [];
     for (const [source, p] of files) {
@@ -367,8 +457,4 @@ export class Memory {
     const r = await this.git(args);
     if (r.code !== 0) throw new Error(`git ${args[0]} failed: ${r.out}`);
   }
-}
-
-function isFleet(name: string): boolean {
-  return name === FLEET || name === "fleet";
 }
