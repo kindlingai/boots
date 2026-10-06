@@ -369,7 +369,7 @@ function gitReadonly(toks: string[]): boolean {
   return true;
 }
 
-function stageReadonly(toks: string[]): boolean {
+export function stageReadonly(toks: string[]): boolean {
   let head = toks[0];
   if (!head) return true;
   // Leading VAR=value assignments change the environment of the command only.

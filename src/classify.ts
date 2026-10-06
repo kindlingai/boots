@@ -4,7 +4,7 @@
 // model that wrote them, to be split into smaller steps.
 
 import { chat, type Endpoint } from "./llm.ts";
-import { stages } from "./readonly.ts";
+import { stageReadonly, stages } from "./readonly.ts";
 
 export type Verdict = "readonly" | "writes" | "dangerous" | "complex";
 
@@ -42,6 +42,15 @@ function writingStage(toks: string[]): boolean {
   if (/^g?awk$/.test(head) && /system\s*\(|print[^;]*>|\|\s*"/.test(rest)) return true;
   return false;
 }
+
+const SHELL_KEYWORDS = new Set(
+  "if then else elif fi for while until do done case esac select function { } [[ ]] ! time".split(
+    " ",
+  ),
+);
+
+/** More stages than this in one line: ask for smaller steps. */
+const MAX_STAGES = 8;
 
 /** Too long to be worth asking about. */
 const MAX_LEN = 600;
@@ -95,24 +104,83 @@ export function guard(cmd: string, v: Verdict): Verdict {
   return st.some(writingStage) ? "writes" : "readonly";
 }
 
+/** How bad each verdict is: a command is as bad as its worst stage. */
+const RANK: Record<Verdict, number> = { readonly: 0, writes: 1, complex: 2, dangerous: 3 };
+
+/** A word as the shell would need it written (for showing a stage on its own). */
+export function shellQuote(w: string): string {
+  return /^[A-Za-z0-9_\-.\/:=@%+,~^]+$/.test(w) ? w : `'${w.replace(/'/g, `'\\''`)}'`;
+}
+
+/** Programs that run whatever they are fed. */
+const RUNS_INPUT =
+  /^(sh|bash|zsh|dash|ksh|fish|python3?|perl|ruby|node|deno|php|powershell|pwsh|iex|source|\.)$/;
+
+/** A download piped into something that runs it: `curl … | sh`. */
+export function pipesDownloadIntoShell(st: string[][]): boolean {
+  const head = (t: string[]) => {
+    let i = 0;
+    while (i < t.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(t[i])) i++;
+    while (i < t.length && /^(sudo|env|exec|nohup|command|time)$/.test(t[i])) i++;
+    return (t[i] ?? "").split(/[\\/]/).pop()!;
+  };
+  const fetched = st.findIndex((t) => /^(curl|wget|iwr|Invoke-WebRequest|fetch)$/.test(head(t)));
+  return fetched >= 0 && st.slice(fetched + 1).some((t) => RUNS_INPUT.test(head(t)));
+}
+
 export class Classifier {
   private cache = new Map<string, Verdict>();
 
   constructor(private model: () => Endpoint) {}
 
-  /** null when the checker is off or did not answer: treat the command as one that writes. */
+  /**
+   * null when the checker is off or did not answer: treat the command as one
+   * that writes. A command line of several stages (pipes, ;, &&, ||) is split
+   * and judged stage by stage: stages on the read-only list need no model,
+   * the rest are asked about one at a time, and the line is as bad as its
+   * worst stage. A line that cannot be split safely (substitution, a
+   * here-document, a redirect into a file) is asked about whole.
+   */
   async classify(cmd: string, os: string): Promise<Verdict | null> {
     if (Deno.env.get("AIBOOT_CHECK") === "0") return null;
-    if (cmd.length > MAX_LEN) return "complex";
+    const st = stages(cmd);
+    // Loops and conditionals do not split into independent stages.
+    if (!st || st.length < 2 || st.some((t) => SHELL_KEYWORDS.has(t[0]))) {
+      if (cmd.length > MAX_LEN) return "complex";
+      return await this.ask(cmd, os, null);
+    }
+    if (pipesDownloadIntoShell(st)) return "dangerous";
+    if (st.length > MAX_STAGES || cmd.length > MAX_LEN * 3) return "complex";
+    let worst: Verdict = "readonly";
+    for (const toks of st) {
+      if (stageReadonly([...toks])) continue;
+      const seg = toks.map(shellQuote).join(" ");
+      if (seg.length > MAX_LEN) return "complex";
+      const v = await this.ask(seg, os, cmd);
+      if (v === null) return null;
+      if (RANK[v] > RANK[worst]) worst = v;
+      if (worst === "dangerous") break;
+    }
+    return worst;
+  }
+
+  /** One question to the model, about `cmd` (a stage of `whole`, when given). */
+  private async ask(cmd: string, os: string, whole: string | null): Promise<Verdict | null> {
     const key = `${os}\0${cmd}`;
     const hit = this.cache.get(key);
     if (hit) return hit;
+    const context = whole
+      ? `\nIt is one stage of this command line (judge only the stage; the other stages are checked separately):\n\`\`\`\n${whole}\n\`\`\``
+      : "";
     try {
       const r = await chat(
         this.model(),
         [
           { role: "system", content: CLASSIFY_PROMPT },
-          { role: "user", content: `Operating system: ${os}\nCommand:\n\`\`\`\n${cmd}\n\`\`\`` },
+          {
+            role: "user",
+            content: `Operating system: ${os}\nCommand:\n\`\`\`\n${cmd}\n\`\`\`${context}`,
+          },
         ],
         [],
         {},

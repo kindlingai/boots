@@ -28,7 +28,7 @@ export function serveMock(script: Scripted[], port = 0, classify?: (cmd: string)
     }
     const sys = body.messages?.[0]?.content ?? "";
     if (!body.tools && classify && sys.startsWith("You check shell commands")) {
-      const cmd = (body.messages.at(-1).content.match(/```\n([\s\S]*)\n```/) ?? [])[1] ?? "";
+      const cmd = (body.messages.at(-1).content.match(/```\n([\s\S]*?)\n```/) ?? [])[1] ?? "";
       return sse([{ choices: [{ delta: { content: classify(cmd) } }] }]);
     }
     if (!body.tools) return sse([{ choices: [{ delta: { content: "ok" } }] }]);
