@@ -88,7 +88,8 @@ jobs:
       - name: Unpack
         if: runner.os == 'macOS'
         run: |
-          out=$(sh dist/ai-bootstrap-${{ matrix.target }}.sh)
+          sh dist/ai-bootstrap-${{ matrix.target }}.sh | tee extract.txt
+          out=$(tail -1 extract.txt)
           test "$out" = "$PWD/dist/ai-bootstrap"
           codesign --verify --verbose "$out"
       - name: Unpack

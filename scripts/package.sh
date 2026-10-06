@@ -43,6 +43,7 @@ if command -v codesign >/dev/null && ! codesign --verify "\$out.part" 2>/dev/nul
   codesign --force --sign - "\$out.part"
 fi
 mv -f "\$out.part" "\$out"
+echo "Extracted."
 echo "\$out"
 exit 0
 __PAYLOAD__

@@ -33,7 +33,12 @@ export interface CatalogModel {
   thinks?: boolean;
 }
 
-/** Best first. Sizes are approximate. */
+/**
+ * Best first. The 30B-A3B mixture of experts leads everywhere: it runs ~3B
+ * parameters per token (fast even where memory bandwidth is the limit, as on
+ * Apple silicon) and does not think before answering. Dense models are only
+ * for machines without the memory for it. Sizes are approximate.
+ */
 export const CATALOG: CatalogModel[] = [
   {
     id: "qwen3-30b-a3b",
@@ -41,16 +46,15 @@ export const CATALOG: CatalogModel[] = [
     hf: "unsloth/Qwen3-30B-A3B-Instruct-2507-GGUF:UD-Q3_K_XL",
     fileGB: 13.8,
     kvMBPer1k: 96,
-    note: "mixture of experts: fast for its size, good with tools",
+    note: "mixture of experts: fast, good with tools; the one to use",
   },
   {
-    id: "qwen3-14b",
-    label: "Qwen3 14B (Q6_K)",
-    hf: "unsloth/Qwen3-14B-GGUF:Q6_K",
-    fileGB: 12.1,
-    kvMBPer1k: 160,
-    note: "dense; slower per token than the 30B-A3B",
-    thinks: true,
+    id: "qwen3-30b-a3b-q2",
+    label: "Qwen3 30B-A3B Instruct 2507 (UD-Q2_K_XL)",
+    hf: "unsloth/Qwen3-30B-A3B-Instruct-2507-GGUF:UD-Q2_K_XL",
+    fileGB: 11.8,
+    kvMBPer1k: 96,
+    note: "the same model, smaller, for less memory",
   },
   {
     id: "qwen3-14b-q4",
@@ -58,7 +62,7 @@ export const CATALOG: CatalogModel[] = [
     hf: "unsloth/Qwen3-14B-GGUF:Q4_K_M",
     fileGB: 9.0,
     kvMBPer1k: 160,
-    note: "the same model, smaller and a little less precise",
+    note: "dense and slower; only when the 30B-A3B does not fit",
     thinks: true,
   },
   {
@@ -70,6 +74,11 @@ export const CATALOG: CatalogModel[] = [
     note: "the smallest; for GPUs with about 12 GB",
     thinks: true,
   },
+];
+
+/** No longer offered, but recognised in the models folder so their downloads can be removed. */
+const RETIRED: Pick<CatalogModel, "id" | "hf">[] = [
+  { id: "qwen3-14b", hf: "unsloth/Qwen3-14B-GGUF:Q6_K" },
 ];
 
 const CONTEXTS = [32768, 16384];
@@ -128,8 +137,9 @@ const quantOf = (hf: string) => (hf.split(":")[1] ?? "").toLowerCase();
 export function ownersOf(path: string, isRepoDir: boolean, bootstrapHf: string): string[] {
   const p = path.toLowerCase();
   if (p.includes(repoOf(bootstrapHf))) return ["bootstrap"];
-  return CATALOG.filter((m) => p.includes(repoOf(m.hf)) && (isRepoDir || p.includes(quantOf(m.hf))))
-    .map((m) => m.id);
+  return [...CATALOG, ...RETIRED].filter((m) =>
+    p.includes(repoOf(m.hf)) && (isRepoDir || p.includes(quantOf(m.hf)))
+  ).map((m) => m.id);
 }
 
 /** What is in the models folder, as units that can be removed whole. */
@@ -254,7 +264,11 @@ async function listDevices(server: string): Promise<Device[]> {
 }
 
 /** Installs the GPU build of llama.cpp if needed and sizes the catalog against its devices. */
-export async function plan(hardware: string): Promise<Plan> {
+/**
+ * `holding`: the catalog model ai-bootstrap is running as the full model now;
+ * setting up another stops it first, so its memory counts as free.
+ */
+export async function plan(hardware: string, holding?: string): Promise<Plan> {
   const server = await installLlama("gpu");
   const devices = await listDevices(server);
   let budgetGB: number;
@@ -275,6 +289,12 @@ export async function plan(hardware: string): Promise<Plan> {
           : ": update the GPU driver, then try again"
       }. Without it the model runs on the CPU, slowly.`
       : "No GPU that llama.cpp can use was found, so the model would run on the CPU, slowly.";
+  }
+  const held = CATALOG.find((m) => m.id === holding);
+  if (held) {
+    const gb = needsGB(held, CONTEXTS.at(-1)!);
+    budgetGB += gb;
+    accel += ` (counting ~${gb.toFixed(1)} GB held by the running ${held.id}, freed for a switch)`;
   }
   const free = await freeBytes(modelsDir());
   const diskFreeGB = free === null ? null : free / GB;
@@ -319,27 +339,26 @@ export function describePlan(p: Plan): string {
       }. ${f.model.note}`
     ),
   ];
-  const ok = p.fits.find((f) => f.fits && f.diskOK !== false);
+  // Memory decides the model; a short disk is fixed by freeing space, not by a smaller model.
   const best = p.fits.find((f) => f.fits);
-  const freeable = removable(p.downloads).reduce((n, d) => n + d.bytes, 0);
-  if (best && best !== ok) {
+  if (!best) {
     lines.push(
-      `Low disk: ${best.model.id} needs ${best.diskNeedGB!.toFixed(1)} GB free, and there is ${
-        p.diskFreeGB?.toFixed(1)
-      } GB. Warn the user.${
-        freeable
-          ? ` remove_downloads can free ${sizeGB(freeable)} (unfinished or other catalog models).`
-          : ""
-      } Otherwise the user must free disk space, or pick a smaller model.`,
+      "None fits. Suggest a hosted model instead: restart ai-bootstrap with OPENROUTER_API_KEY or OPENAI_API_KEY set.",
     );
-  }
-  lines.push(
-    ok
-      ? `Recommended: ${ok.model.id}.`
-      : best
-      ? "Nothing fits on the disk as it is: free space first."
-      : "None fits. Suggest a hosted model instead: restart ai-bootstrap with OPENROUTER_API_KEY or OPENAI_API_KEY set.",
-  );
+  } else if (best.diskOK === false) {
+    const freeable = removable(p.downloads, best.model.id).reduce((n, d) => n + d.bytes, 0);
+    lines.push(
+      `Recommended: ${best.model.id}, but the disk is too full: it needs ${
+        best.diskNeedGB!.toFixed(1)
+      } GB free and there is ${p.diskFreeGB?.toFixed(1)} GB. Warn the user.${
+        freeable
+          ? ` remove_downloads (keep ${best.model.id}) can free ${
+            sizeGB(freeable)
+          } of unfinished or unused model downloads.`
+          : ""
+      } Otherwise the user must free disk space. Do not set up a smaller model because of disk: free space, then set up ${best.model.id}.`,
+    );
+  } else lines.push(`Recommended: ${best.model.id}.`);
   return lines.join("\n");
 }
 
@@ -437,8 +456,9 @@ export async function setUpModel(
   hardware: string,
   memory: Memory,
   signal?: AbortSignal,
+  holding?: string,
 ): Promise<{ ep: Endpoint; summary: string } | { error: string; failure?: FullFailure }> {
-  const p = await plan(hardware);
+  const p = await plan(hardware, holding);
   const fit = p.fits.find((f) => f.model.id === id);
   if (!fit) return { error: `no model ${id} in the catalog.\n${describePlan(p)}` };
   if (!fit.fits) return { error: `${id} does not fit here.\n${describePlan(p)}` };

@@ -38,7 +38,7 @@ Deno.test({ name: "the macOS script writes ai-bootstrap next to itself", ignore 
   const pkg = join(dir, "out", packageName("aarch64-apple-darwin"));
   // Run from elsewhere: the binary lands beside the script, not in the cwd.
   const printed = await sh([pkg], Deno.cwd());
-  assertEquals(printed.trim(), join(dir, "out", "ai-bootstrap"));
+  assertEquals(printed, `Extracted.\n${join(dir, "out", "ai-bootstrap")}\n`);
   assertEquals(await Deno.readFile(join(dir, "out", "ai-bootstrap")), bin);
   const run = await new Deno.Command(join(dir, "out", "ai-bootstrap")).output();
   assertEquals(run.code, 0);

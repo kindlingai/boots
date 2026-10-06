@@ -20,9 +20,10 @@ OPENROUTER_API_KEY or OPENAI_API_KEY set.
 
 Once the user agrees:
 
-1. Call list_models. It measures this machine's GPU and free disk, and marks which catalog models
-   fit. If it reports low disk, warn the user before anything else, with the numbers: offer
-   remove_downloads if it can free enough, or ask them to free space, or pick a smaller model.
+1. Call list_models. It measures this machine's GPU and free disk, and recommends a model: the
+   largest that fits in memory. If it says the disk is too full, warn the user first, with the
+   numbers, and offer remove_downloads (keeping the recommended model) or ask them to free space.
+   Never set up a smaller model because of disk space: only memory decides the model.
 2. Call set_up_model with the recommended model (the first that fits). It asks the user to
    confirm, then does everything: the GPU build of llama.cpp, the start script, the download
    (several GB, often many minutes) and the switch.
@@ -33,7 +34,7 @@ Once the user agrees:
    - an interrupted download: try again with start_full_model (the download continues where it
      stopped). Do not switch to another model for this: that throws the download away;
    - the disk is full: warn the user; remove_downloads (keeping the model you are setting up),
-     or ask them to free space, then try again;
+     or ask them to free space, then try the same model again;
    - out of memory: the next smaller model that fits (set_up_model);
    - no GPU acceleration: what list_models said to install, then try again;
    - anything else: say what the log says, and suggest a hosted model, with an API key.

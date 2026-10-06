@@ -1,7 +1,9 @@
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { CATALOG, fitAll, fullScript, needsGB, parseDevices } from "../src/rails.ts";
 
-Deno.test("the catalog: a few Qwen models of 8-16 GB, best first", () => {
+Deno.test("the catalog: a few Qwen models of 8-16 GB, the 30B-A3B first", () => {
+  assertEquals(CATALOG[0].id, "qwen3-30b-a3b");
+  assertEquals(CATALOG[1].id, "qwen3-30b-a3b-q2");
   assert(CATALOG.length >= 3 && CATALOG.length <= 5);
   for (const m of CATALOG) {
     assert(m.fileGB >= 8 && m.fileGB <= 16, m.id);
@@ -51,13 +53,14 @@ Deno.test("start-full.sh for a catalog model", () => {
     "exec '/c/llama-gpu/b1/llama-server' -hf unsloth/Qwen3-30B-A3B-Instruct-2507-GGUF:UD-Q3_K_XL --alias qwen3-30b-a3b --host 127.0.0.1 --port 41234 --jinja -c 32768",
   );
   // Qwen3 14B thinks before every answer unless told not to.
+  const dense = CATALOG.find((m) => m.id === "qwen3-14b-q4")!;
   assertStringIncludes(
-    fullScript(CATALOG[1], "/l/llama-server", 41234, 16384, "Vulkan0", false),
+    fullScript(dense, "/l/llama-server", 41234, 16384, "Vulkan0", false),
     "--jinja -c 16384 --reasoning off",
   );
   assert(!s.includes("--reasoning"), "the 30B-A3B Instruct does not think");
-  const w = fullScript(CATALOG[1], "C:\\\\l\\\\llama-server.exe", 41234, 16384, "Vulkan0", true);
-  assertStringIncludes(w, "rem endpoint: http://127.0.0.1:41234/v1 qwen3-14b");
+  const w = fullScript(dense, "C:\\\\l\\\\llama-server.exe", 41234, 16384, "Vulkan0", true);
+  assertStringIncludes(w, "rem endpoint: http://127.0.0.1:41234/v1 qwen3-14b-q4");
 });
 
 Deno.test("downloads: what belongs to whom, and what can go", async () => {
@@ -126,10 +129,20 @@ Deno.test("disk: a model that fits the GPU but not the disk is not recommended",
     downloads: [partial30b],
   });
   assertStringIncludes(text, "NOT ENOUGH DISK");
+  // Still the 30B-A3B: disk is fixed by freeing space, not by a smaller model.
   assertStringIncludes(
     text,
-    "Low disk: qwen3-30b-a3b needs 9.3 GB free, and there is 5.0 GB. Warn the user.",
+    "Recommended: qwen3-30b-a3b, but the disk is too full: it needs 9.3 GB free and there is 5.0 GB. Warn the user.",
   );
+  assertStringIncludes(text, "Do not set up a smaller model because of disk");
   assertStringIncludes(text, "qwen3-30b-a3b 6.5 GB (unfinished)");
-  assert(!text.includes("Recommended: qwen3-30b-a3b"));
+});
+
+Deno.test("the running full model's memory counts when switching", () => {
+  // 15 GB free with a 14B Q4 running (~13 GB at 16k): the 30B-A3B fits once it is stopped.
+  assertEquals(fitAll(15)[0].fits, false);
+  assertEquals(
+    fitAll(15 + needsGB(CATALOG.find((m) => m.id === "qwen3-14b-q4")!, 16384))[0].fits,
+    true,
+  );
 });

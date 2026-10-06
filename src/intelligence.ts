@@ -364,6 +364,11 @@ async function runFull(
   }
 }
 
+/** A full model started by ai-bootstrap is running. */
+export function fullRunning(): boolean {
+  return !!full?.isRunning();
+}
+
 export function stopFull(): void {
   full?.stop();
   full = null;

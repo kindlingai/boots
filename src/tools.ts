@@ -9,6 +9,7 @@ import { isReadonly, stages } from "./readonly.ts";
 import {
   describeFailure,
   type FullFailure,
+  fullRunning,
   logPath,
   prevLog,
   readLog,
@@ -322,6 +323,13 @@ export const BASE_TOOLS = [
   ),
 ];
 
+// The full model can manage the local model too (switch it, clean up downloads).
+TOOLS.push(
+  ...BASE_TOOLS.filter((t) =>
+    ["list_models", "set_up_model", "read_log", "remove_downloads"].includes(t.function.name)
+  ),
+);
+
 export class Session {
   readonly host: Host;
   stack: Location[] = [];
@@ -395,18 +403,24 @@ export class Session {
     else if (r.code !== 0) console.log(red(`    (exit ${r.code})`));
   }
 
+  /** The catalog model our running full model is, if any: its memory counts as free for a switch. */
+  private holding(): string | undefined {
+    return fullRunning() ? this.router.smart?.model : undefined;
+  }
+
   /**
    * Starts the full model with the local bootstrap stopped (its memory goes to
    * the full model), and brings the bootstrap back if that did not work.
    */
   private async handedOver<T>(start: () => Promise<T>, ok: (r: T) => boolean): Promise<T> {
-    const handed = await this.router.handover();
+    await this.router.handover();
     let r: T | undefined;
     try {
       r = await start();
       return r;
     } finally {
-      if (handed && (r === undefined || !ok(r))) await this.router.ensureBootstrap();
+      // Not up: the small model takes over (it may never have been started).
+      if (r === undefined || !ok(r)) await this.router.ensureBootstrap();
     }
   }
 
@@ -699,7 +713,7 @@ export class Session {
       case "list_models": {
         if (this.stack.length > 1) return "models are set up on the local machine only";
         console.log(dim("  checking the GPU and the model catalog"));
-        return describePlan(await plan(this.here.info.hardware));
+        return describePlan(await plan(this.here.info.hardware, this.holding()));
       }
       case "remove_downloads": {
         if (this.stack.length > 1) return "models are set up on the local machine only";
@@ -744,7 +758,7 @@ export class Session {
         );
         if (no) return no;
         const r = await this.handedOver(
-          () => setUpModel(id, this.here.info.hardware, this.memory, signal),
+          () => setUpModel(id, this.here.info.hardware, this.memory, signal, this.holding()),
           (x) => "ep" in x,
         );
         if ("error" in r) {
