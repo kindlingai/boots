@@ -37,6 +37,7 @@ const COLOR = {
   grey: c("90"),
   white: c("97"),
   brightBlue: c("94"),
+  sweat: c("96"),
 };
 
 /**
@@ -45,14 +46,23 @@ const COLOR = {
  */
 export function paintBot(art: string[]): string[] {
   const [antenna, top, face, mouth, legs, feet] = art;
-  const eyesAt = face.indexOf("|") + 1;
+  // Sweat drops sit in the outer columns of the head rows.
+  const edges = (row: string, middle: (s: string) => string) => {
+    const tint = (ch: string) => (ch === " " ? ch : COLOR.sweat(ch));
+    return tint(row[0]) + middle(row.slice(1, -1)) + tint(row.at(-1)!);
+  };
+  const eyesAt = face.indexOf("|");
   const eyesEnd = face.lastIndexOf("|");
   return [
     antenna.trim() === "|" ? COLOR.grey(antenna) : COLOR.red(antenna),
-    COLOR.grey(top),
-    COLOR.grey(face.slice(0, eyesAt)) + COLOR.white(face.slice(eyesAt, eyesEnd)) +
-    COLOR.grey(face.slice(eyesEnd)),
-    COLOR.grey(mouth),
+    edges(top, COLOR.grey),
+    edges(
+      face,
+      (m) =>
+        COLOR.grey(m.slice(0, eyesAt)) + COLOR.white(m.slice(eyesAt, eyesEnd - 1)) +
+        COLOR.grey(m.slice(eyesEnd - 1)),
+    ),
+    edges(mouth, COLOR.grey),
     COLOR.grey(legs),
     COLOR.brightBlue(feet),
   ];
@@ -130,7 +140,35 @@ export function bot(mood: Mood, frame: number, blink: boolean): string[] {
     : "    |    ";
   const mouth = mood === "talking" && frame % 2 ? " +--o--+ " : " +-----+ ";
   const feet = mood === "working" ? (frame % 2 ? "  b   d  " : "   b d   ") : "  b   d  ";
-  return [antenna, " +-----+ ", ` |${eyes}| `, mouth, "   | |   ", feet];
+  const art = [antenna, " +-----+ ", ` |${eyes}| `, mouth, "   | |   ", feet];
+  return mood === "working" ? sweat(art, frame) : art;
+}
+
+/**
+ * Anime sweat while it works: a drop runs down each side of the head,
+ * half a cycle apart, so something moves every frame or two.
+ */
+const DROP: (null | [number, string])[] = [
+  [1, "'"],
+  [1, "'"],
+  [2, "'"],
+  [2, "'"],
+  [3, ","],
+  [3, "."],
+  null,
+  null,
+];
+
+function sweat(art: string[], frame: number): string[] {
+  const out = [...art];
+  const put = (row: number, col: number, ch: string) => {
+    out[row] = out[row].slice(0, col) + ch + out[row].slice(col + 1);
+  };
+  const right = DROP[frame % DROP.length];
+  const left = DROP[(frame + DROP.length / 2) % DROP.length];
+  if (right) put(right[0], 8, right[1]);
+  if (left) put(left[0], 0, left[1]);
+  return out;
 }
 
 export class TuiFrontend implements Frontend {
@@ -219,7 +257,10 @@ export class TuiFrontend implements Frontend {
         this.scroll = 0;
         break;
       case "busy":
-        this.busy = e.label ? { label: e.label, t0: Date.now() } : null;
+        // A new label for the same task (its latest output) keeps the clock.
+        this.busy = e.label
+          ? { label: e.label, t0: e.same && this.busy ? this.busy.t0 : Date.now() }
+          : null;
         break;
       case "progress":
         this.progress.set(e.id, e);
@@ -257,6 +298,10 @@ export class TuiFrontend implements Frontend {
     if (this.flash && Date.now() < this.flash.until) return this.flash.mood;
     if (this.streaming || Date.now() - this.talkedAt < 1200) return "talking";
     if (this.progress.size) return "working";
+    // Running a command, connecting, compacting: hard at work.
+    if (this.busy && /^(running|connecting|compacting|checking)/.test(this.busy.label)) {
+      return "working";
+    }
     if (this.busy) return "thinking";
     if (this.pending && /run it\?|\[y\/n\]|\[Y\/n\]|password|choice/i.test(this.pending.prompt)) {
       return "asking";

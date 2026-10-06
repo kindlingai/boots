@@ -66,7 +66,10 @@ export class LineFrontend implements Frontend {
         }
         break;
       case "busy":
-        this.busy = e.label ? { label: e.label, t0: Date.now() } : null;
+        // A new label for the same task (its latest output) keeps the clock.
+        this.busy = e.label
+          ? { label: e.label, t0: e.same && this.busy ? this.busy.t0 : Date.now() }
+          : null;
         this.tick();
         break;
       case "progress":

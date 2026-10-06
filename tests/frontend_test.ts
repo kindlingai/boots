@@ -96,11 +96,35 @@ Deno.test("tui: the bot's colours", () => {
   assert(idle[0].startsWith(`${E}[90m`), "a plain antenna is grey");
   assert(paintBot(bot("asking", 0, false))[0].startsWith(`${E}[31m`), "a signalling one dark red");
   assert(paintBot(bot("thinking", 1, false))[0].startsWith(`${E}[31m`));
-  assert(idle[1].startsWith(`${E}[90m`), "grey body");
+  assertStringIncludes(idle[1], `${E}[90m+-----+${E}[0m`, "grey body");
   assertStringIncludes(idle[2], `${E}[97m o o ${E}[0m`);
   assert(idle[5].startsWith(`${E}[94m`), "bright blue boots");
   const plain = (s: string) => s.replace(new RegExp(E + "\\[[0-9;]*m", "g"), "");
   assertEquals(idle.map(plain), bot("idle", 0, false), "colour adds nothing visible");
+});
+
+Deno.test("tui: the bot sweats while it works, and only then", () => {
+  const frames = Array.from({ length: 8 }, (_, f) => bot("working", f, false));
+  for (const art of frames) assert(art.every((l) => l.length === 9), art.join("|"));
+  // A drop on each side, moving: no two neighbouring frames look the same.
+  const drops = frames.map((a) => a.slice(1, 4).map((l) => l[0] + l[8]).join(""));
+  assert(drops.every((d) => d.trim()), "a drop is always showing");
+  for (let i = 1; i < drops.length; i++) {
+    assert(drops[i] !== drops[i - 1] || frames[i][5] !== frames[i - 1][5]);
+  }
+  assert(drops.some((d) => d.includes("'")) && drops.some((d) => d.includes(",")));
+  for (const m of ["idle", "thinking", "talking", "happy", "sad", "asking"] as const) {
+    for (let f = 0; f < 8; f++) {
+      const a = bot(m, f, false);
+      assertEquals(
+        a.slice(1, 4).map((l) => l[0] + l[8]).join("").trim(),
+        "",
+        `${m} does not sweat`,
+      );
+    }
+  }
+  const E = String.fromCharCode(27);
+  assertStringIncludes(paintBot(frames[0])[1], `${E}[96m'${E}[0m`, "light blue drops");
 });
 
 Deno.test("the bot is lil boots, and Boots on the full model", () => {

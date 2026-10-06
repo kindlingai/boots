@@ -440,7 +440,11 @@ export class Session {
     asker: (req: any) => Promise<string | null>,
   ) {
     this.host = new Host(asker, (s) => info(s));
+    this.host.onLine = (token, line) => this.lineListeners.get(token)?.(line);
   }
+
+  /** Running commands' latest output, by token (see command()). */
+  private lineListeners = new Map<string, (line: string) => void>();
 
   async init(): Promise<void> {
     this.stack = [{ label: "local", via: [], info: await this.host.info() }];
@@ -607,11 +611,19 @@ export class Session {
     const via = this.here.via;
     const cancel = () => this.host.handle("cancel", { token }, via).catch(() => {});
     signal?.addEventListener("abort", cancel);
+    let spin: ReturnType<typeof spinner> | undefined;
     try {
       const timeoutMs = (Number(args.timeout_s) || DEFAULT_TIMEOUT_MS / 1000) * 1000;
+      // Something moves while it runs (the frontends add the seconds).
+      const short = cmd.replace(/\s+/g, " ");
+      const what = `running ${short.length > 50 ? `${short.slice(0, 47)}...` : short}`;
+      const s = spin = spinner(what);
+      this.lineListeners.set(token, (line) => s.update(`${what}  │ ${line.slice(0, 120)}`));
       const r = await this.host.handle(op, { cmd, token, timeoutMs }, via) as ExecResult;
       return { ...r, cmd };
     } finally {
+      this.lineListeners.delete(token);
+      spin?.stop();
       signal?.removeEventListener("abort", cancel);
     }
   }
@@ -735,13 +747,14 @@ export class Session {
           left.push(leaving.label);
         }
         if (left.length) say(dim(`  left ${left.join(", ")}; connecting from ${this.where()}`));
+        const connecting = spinner(`connecting to ${dest}`);
         const r = await this.call("ssh_open", { dest, port: args.port }).catch((e) => {
           throw new Error(
             `${(e as Error).message}${
               left.length ? ` (left ${left.join(", ")} first: now on ${this.where()})` : ""
             }`,
           );
-        });
+        }).finally(() => connecting.stop());
         const top = this.here;
         this.stack.push({ label: dest, via: [...top.via, r.id], info: r.info });
         say(

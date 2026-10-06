@@ -3,6 +3,7 @@
 
 import { join } from "@std/path";
 import { encodeHex } from "@std/encoding/hex";
+import { decodeBase64, encodeBase64 } from "@std/encoding/base64";
 import type { Asker } from "./secrets.ts";
 import { Rpc } from "./rpc.ts";
 import { startAskpass } from "./askpass.ts";
@@ -79,45 +80,155 @@ async function sshRun(
   return { code: o.code, out: d.decode(o.stdout), err: d.decode(o.stderr).trim() };
 }
 
-/** The ai-bootstrap executable for `target`: ourselves, the cache, or a release download. */
-export async function binaryFor(target: string, log: (s: string) => void): Promise<string> {
-  const override = Deno.env.get("AIBOOT_FAR_BINARY");
-  if (override) return override;
-  if (target === currentTarget() && isCompiled()) return Deno.execPath();
-  const dir = join(cacheDir(), "bin", VERSION);
-  const path = join(dir, `ai-bootstrap-${target}`);
-  if (await exists(path)) return path;
+/**
+ * Where a far agent gets builds it does not have: the machine that started
+ * it (set by far.ts). The local machine has none and downloads.
+ */
+type Upstream = (op: string, args: unknown) => Promise<any>;
+let upstream: Upstream | null = null;
+
+export function setUpstream(u: Upstream | null): void {
+  upstream = u;
+}
+
+/** Bytes per binary_chunk: a few MB of base64 per RPC message. */
+const CHUNK = 2 * 1024 * 1024;
+
+/** sha256 hex of a release file, from the release's SHA256SUMS. */
+export function checksumFor(sums: string, name: string): string | null {
+  for (const line of sums.split("\n")) {
+    const m = line.trim().match(/^([0-9a-f]{64})\s+\*?(\S+)$/i);
+    if (m && m[2] === name) return m[1].toLowerCase();
+  }
+  return null;
+}
+
+async function sha256(data: Uint8Array): Promise<string> {
+  return encodeHex(new Uint8Array(await crypto.subtle.digest("SHA-256", data as BufferSource)));
+}
+
+/** Downloads this version's package for `target`, checked against SHA256SUMS. */
+async function download(target: string, log: (s: string) => void): Promise<Uint8Array> {
+  const base = `${Deno.env.get("AIBOOT_RELEASES") ?? RELEASES}/v${VERSION}`;
   const pkg = packageName(target);
-  const url = `${Deno.env.get("AIBOOT_RELEASES") ?? RELEASES}/v${VERSION}/${pkg}`;
+  const url = `${base}/${pkg}`;
   log(`downloading the ${target} build from ${url}`);
-  const r = await fetch(url);
+  const [r, s] = await Promise.all([fetch(url), fetch(`${base}/SHA256SUMS`)]);
   if (!r.ok) {
     await r.body?.cancel();
+    await s.body?.cancel();
     throw new Error(
       `no ai-bootstrap build for ${target}: ${url} returned ${r.status}. Set AIBOOT_FAR_BINARY to a binary for that platform.`,
     );
   }
-  const bin = await unpack(pkg, new Uint8Array(await r.arrayBuffer()));
+  const data = new Uint8Array(await r.arrayBuffer());
+  const want = s.ok ? checksumFor(await s.text(), pkg) : (await s.body?.cancel(), null);
+  if (!want) throw new Error(`cannot verify ${pkg}: no checksum for it in ${base}/SHA256SUMS`);
+  const got = await sha256(data);
+  if (got !== want) {
+    throw new Error(`${pkg} does not match its checksum (got ${got}, SHA256SUMS says ${want})`);
+  }
+  return await unpack(pkg, data);
+}
+
+/** Fetches the build for `target` from the machine above, a chunk at a time. */
+async function fromUpstream(up: Upstream, target: string, log: (s: string) => void) {
+  const info = await up("binary_info", { target }) as { size: number; sha256: string };
+  log(`fetching the ${target} build (${(info.size / 1e6).toFixed(0)} MB) from the machine above`);
+  const out = new Uint8Array(info.size);
+  for (let off = 0; off < info.size; off += CHUNK) {
+    const r = await up("binary_chunk", { target, offset: off, length: CHUNK }) as { b64: string };
+    out.set(decodeBase64(r.b64), off);
+  }
+  if (await sha256(out) !== info.sha256) {
+    throw new Error(`the ${target} build from the machine above arrived damaged`);
+  }
+  return out;
+}
+
+/**
+ * The ai-bootstrap executable for `target`: ourselves, the cache, the
+ * machine above (on a hop), or a release download checked against its
+ * SHA256SUMS. Builds of other versions in the cache are removed.
+ */
+export async function binaryFor(target: string, log: (s: string) => void): Promise<string> {
+  const override = Deno.env.get("AIBOOT_FAR_BINARY");
+  if (override) return override;
+  if (target === currentTarget() && isCompiled()) return Deno.execPath();
+  const root = join(cacheDir(), "bin");
+  const dir = join(root, VERSION);
+  const path = join(dir, `ai-bootstrap-${target}`);
+  if (await exists(path)) return path;
+  const bin = upstream ? await fromUpstream(upstream, target, log) : await download(target, log);
   await ensureDir(dir);
   const tmp = `${path}.part`;
   await Deno.writeFile(tmp, bin);
   await Deno.rename(tmp, path);
   if (!isWindows) await Deno.chmod(path, 0o755);
+  await pruneLocal(root);
   return path;
+}
+
+/** Removes cached builds of other versions. */
+async function pruneLocal(root: string): Promise<void> {
+  try {
+    for await (const e of Deno.readDir(root)) {
+      if (e.isDirectory && e.name !== VERSION) {
+        await Deno.remove(join(root, e.name), { recursive: true }).catch(() => {});
+      }
+    }
+  } catch {
+    // nothing cached
+  }
+}
+
+/** Answers a hop below that needs a build it does not have (binary_info, binary_chunk). */
+export async function serveBinary(op: string, args: any, log: (s: string) => void) {
+  const path = await binaryFor(String(args.target), log);
+  if (op === "binary_info") {
+    return { size: (await Deno.stat(path)).size, sha256: await fullHash(path) };
+  }
+  const f = await Deno.open(path, { read: true });
+  try {
+    await f.seek(Number(args.offset) || 0, Deno.SeekMode.Start);
+    const buf = new Uint8Array(Math.min(Number(args.length) || CHUNK, CHUNK));
+    let n = 0;
+    while (n < buf.length) {
+      const r = await f.read(buf.subarray(n));
+      if (r === null) break;
+      n += r;
+    }
+    return { b64: encodeBase64(buf.subarray(0, n)) };
+  } finally {
+    f.close();
+  }
 }
 
 const hashes = new Map<string, string>();
 
-async function shortHash(path: string): Promise<string> {
+async function fullHash(path: string): Promise<string> {
   const st = await Deno.stat(path);
   const k = `${path}:${st.size}:${st.mtime?.getTime()}`;
   const hit = hashes.get(k);
   if (hit) return hit;
-  const h = encodeHex(
-    new Uint8Array(await crypto.subtle.digest("SHA-256", await Deno.readFile(path))),
-  );
-  hashes.set(k, h.slice(0, 16));
-  return h.slice(0, 16);
+  const h = await sha256(await Deno.readFile(path));
+  hashes.set(k, h);
+  return h;
+}
+
+async function shortHash(path: string): Promise<string> {
+  return (await fullHash(path)).slice(0, 16);
+}
+
+/**
+ * Removes other builds from the remote's cache, except any still running
+ * (an agent of another session), and upload leftovers older than an hour.
+ */
+export function pruneRemote(dir: string, keep: string): string {
+  return `cd "${dir}" 2>/dev/null && for f in ai-bootstrap-*; do ` +
+    `case "$f" in "${keep}"|"ai-bootstrap-*") continue;; *.tmp) continue;; esac; ` +
+    `ps -eo args 2>/dev/null | grep -F -- "$f --far" | grep -qv grep && continue; ` +
+    `rm -f -- "$f"; done; find . -name 'ai-bootstrap-*.tmp' -mmin +60 -exec rm -f {} + 2>/dev/null; true`;
 }
 
 const PROBE = `uname -s; uname -m; ${REMOTE_CACHE_SH}; echo "$c"; ` +
@@ -128,6 +239,7 @@ export async function openSsh(
   port: string | undefined,
   ask: Asker,
   log: (s: string) => void,
+  onLine?: (token: string, line: string) => void,
 ): Promise<SshChild> {
   if (!isWindows) {
     await ensureDir(controlDir());
@@ -146,7 +258,15 @@ export async function openSsh(
 
     const local = await binaryFor(target, log);
     const remote = `${rcache}/bin/ai-bootstrap-${await shortHash(local)}`;
-    const have = await sshRun(dest, port, env, `test -x '${remote}' && echo yes || echo no`);
+    const name = remote.slice(remote.lastIndexOf("/") + 1);
+    const have = await sshRun(
+      dest,
+      port,
+      env,
+      `sh -c 'test -x "${remote}" && echo yes || echo no; ${
+        pruneRemote(`${rcache}/bin`, name).replace(/'/g, `'"'"'`)
+      }'`,
+    );
     if (have.out.trim() !== "yes") {
       const size = (await Deno.stat(local)).size;
       log(`installing ai-bootstrap (${target}, ${(size / 1e6).toFixed(0)} MB) into ${remote}`);
@@ -192,6 +312,11 @@ export async function openSsh(
     // The hop may ask for secrets later (sudo there, or a deeper ssh).
     rpc.handler = (op, args) => {
       if (op === "ask") return ask(args);
+      if (op === "binary_info" || op === "binary_chunk") return serveBinary(op, args, log);
+      if (op === "exec_line") {
+        onLine?.(String(args.token), String(args.line));
+        return Promise.resolve(true);
+      }
       return Promise.reject(new Error(`${dest} sent unexpected ${op}`));
     };
     return {

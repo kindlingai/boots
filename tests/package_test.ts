@@ -1,7 +1,8 @@
 // Release packages from scripts/package.sh: the self-extracting script works,
 // and binaryFor gets the binary back out of a downloaded package.
 import { fromFileUrl, join } from "@std/path";
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertRejects } from "@std/assert";
+import { encodeHex } from "@std/encoding/hex";
 import { packageName, unpack } from "../src/package.ts";
 import { binaryFor } from "../src/ssh.ts";
 import { VERSION } from "../src/platform.ts";
@@ -83,9 +84,26 @@ Deno.test({ name: "binaryFor downloads and unpacks a release", ignore }, async (
   });
   Deno.env.set("AIBOOT_RELEASES", `http://127.0.0.1:${server.addr.port}`);
   Deno.env.set("AIBOOT_CACHE", join(dir, "cache"));
+  const rel = join(dir, "rel", `v${version}`);
+  const pkg = packageName(target);
+  const sums = join(rel, "SHA256SUMS");
+  const hash = encodeHex(
+    new Uint8Array(await crypto.subtle.digest("SHA-256", await Deno.readFile(join(rel, pkg)))),
+  );
   try {
+    // No SHA256SUMS: refused. A wrong one: refused. The right one: unpacked and cached.
+    await assertRejects(() => binaryFor(target, () => {}), Error, "cannot verify");
+    await Deno.writeTextFile(sums, `${"0".repeat(64)}  ${pkg}\n`);
+    await assertRejects(() => binaryFor(target, () => {}), Error, "does not match its checksum");
+    await Deno.writeTextFile(sums, `${"1".repeat(64)}  other\n${hash}  ${pkg}\n`);
+    await Deno.mkdir(join(dir, "cache", "bin", "0.0.1"), { recursive: true });
     const path = await binaryFor(target, () => {});
     assertEquals(await Deno.readFile(path), bin);
+    assertEquals(
+      await Deno.stat(join(dir, "cache", "bin", "0.0.1")).then(() => true, () => false),
+      false,
+      "builds of other versions are pruned",
+    );
   } finally {
     Deno.env.delete("AIBOOT_RELEASES");
     Deno.env.delete("AIBOOT_CACHE");

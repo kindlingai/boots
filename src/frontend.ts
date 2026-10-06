@@ -11,7 +11,7 @@ export type EngineEvent =
   /** The assistant's reply, streamed: start, any number of deltas, end. */
   | { type: "assistant"; phase: "start" | "delta" | "end"; text?: string }
   /** Something is in progress without a measure ("thinking", "checking the command"); null ends it. */
-  | { type: "busy"; label: string | null }
+  | { type: "busy"; label: string | null; same?: boolean }
   /** A measurable task: a download, a model loading. `total` absent: indeterminate. */
   | {
     type: "progress";

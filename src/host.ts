@@ -65,7 +65,33 @@ export class Host {
   /** Commands in flight, by the token their caller can cancel them with. */
   private running = new Map<string, AbortController>();
 
+  /**
+   * Gets the latest output line of a running command, by its token: shown
+   * live by the frontend here, sent up the hop chain on a far agent.
+   */
+  onLine: ((token: string, line: string) => void) | null = null;
+
   constructor(private ask: Asker, private log: (s: string) => void = () => {}) {}
+
+  /** A throttled line reporter for the command with this token (none without one). */
+  private liner(token: unknown): ((line: string) => void) | undefined {
+    if (!token || !this.onLine) return undefined;
+    const t = String(token);
+    let last = 0;
+    let pending: string | null = null;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const send = () => {
+      timer = undefined;
+      last = Date.now();
+      if (pending !== null) this.onLine?.(t, pending);
+      pending = null;
+    };
+    return (line) => {
+      pending = line;
+      if (timer) return;
+      timer = setTimeout(send, Math.max(0, 300 - (Date.now() - last)));
+    };
+  }
 
   async handle(op: string, args: any, via: string[]): Promise<unknown> {
     if (via.length) {
@@ -81,12 +107,12 @@ export class Host {
       case "exec":
         return await this.cancellable(
           args.token,
-          (signal) => this.exec(String(args.cmd), args.timeoutMs, signal),
+          (signal) => this.exec(String(args.cmd), args.timeoutMs, signal, this.liner(args.token)),
         );
       case "sudo":
         return await this.cancellable(
           args.token,
-          (signal) => this.sudo(String(args.cmd), args.timeoutMs, signal),
+          (signal) => this.sudo(String(args.cmd), args.timeoutMs, signal, this.liner(args.token)),
         );
       case "cancel":
         this.running.get(String(args.token))?.abort();
@@ -207,7 +233,14 @@ export class Host {
    */
   private async spawn(
     argv: string[],
-    opts: { stdin?: string; timeoutMs?: number; cwd?: string; signal?: AbortSignal },
+    opts: {
+      stdin?: string;
+      timeoutMs?: number;
+      cwd?: string;
+      signal?: AbortSignal;
+      /** Called with the latest output line as it arrives. */
+      onLine?: (line: string) => void;
+    },
   ) {
     const ms = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     let timedOut = false;
@@ -257,16 +290,27 @@ export class Host {
         await w.write(new TextEncoder().encode(opts.stdin)).catch(() => {});
         await w.close().catch(() => {});
       }
-      const out = await p.output();
-      done = true;
-      const dec = new TextDecoder();
-      return {
-        code: out.code,
-        stdout: dec.decode(out.stdout),
-        stderr: dec.decode(out.stderr),
-        timedOut,
-        cancelled,
+      // Read both streams as they come, so the latest line can be shown live.
+      const collect = async (s: ReadableStream<Uint8Array>) => {
+        const dec = new TextDecoder();
+        let text = "";
+        for await (const chunk of s) {
+          const piece = dec.decode(chunk, { stream: true });
+          text += piece;
+          if (opts.onLine) {
+            const line = lastLine(piece);
+            if (line) opts.onLine(line);
+          }
+        }
+        return text + dec.decode();
       };
+      const [stdout, stderr, status] = await Promise.all([
+        collect(p.stdout),
+        collect(p.stderr),
+        p.status,
+      ]);
+      done = true;
+      return { code: status.code, stdout, stderr, timedOut, cancelled };
     } catch (e) {
       return { code: 127, stdout: "", stderr: (e as Error).message, timedOut, cancelled };
     } finally {
@@ -298,22 +342,32 @@ export class Host {
       : [sh, "-c", script];
   }
 
-  async exec(cmd: string, timeoutMs?: number, signal?: AbortSignal): Promise<ExecResult> {
+  async exec(
+    cmd: string,
+    timeoutMs?: number,
+    signal?: AbortSignal,
+    onLine?: (line: string) => void,
+  ): Promise<ExecResult> {
     const sh = await this.shell();
     return this.finish(
-      await this.spawn(this.shellArgv(sh, this.wrap(cmd)), { timeoutMs, signal }),
+      await this.spawn(this.shellArgv(sh, this.wrap(cmd)), { timeoutMs, signal, onLine }),
     );
   }
 
   /** Runs as root, asking up the hop chain for a password only if sudo wants one. */
-  async sudo(cmd: string, timeoutMs?: number, signal?: AbortSignal): Promise<ExecResult> {
+  async sudo(
+    cmd: string,
+    timeoutMs?: number,
+    signal?: AbortSignal,
+    onLine?: (line: string) => void,
+  ): Promise<ExecResult> {
     if (isWindows) return { code: 1, stdout: "", stderr: "sudo is not available on Windows hosts" };
     const sh = await this.shell();
     const script = this.wrap(cmd);
     const quick = await this.spawn(["sudo", "-n", "true"], { timeoutMs: 15_000 });
     if (quick.code === 0) {
       return this.finish(
-        await this.spawn(["sudo", "-n", sh, "-c", script], { timeoutMs, signal }),
+        await this.spawn(["sudo", "-n", sh, "-c", script], { timeoutMs, signal, onLine }),
       );
     }
     if (quick.code === 127) return { code: 127, stdout: "", stderr: "sudo is not installed here" };
@@ -343,6 +397,7 @@ export class Host {
           stdin: pw + "\n",
           timeoutMs,
           signal,
+          onLine,
         }),
       );
     }
@@ -438,7 +493,13 @@ export class Host {
   async sshOpen(dest: string, port?: number | string) {
     // Whatever the new hop asks for is asked on behalf of `dest`.
     const childAsk: Asker = (req) => this.ask({ ...req, path: [dest, ...req.path] });
-    const child = await openSsh(dest, port ? String(port) : undefined, childAsk, this.log);
+    const child = await openSsh(
+      dest,
+      port ? String(port) : undefined,
+      childAsk,
+      this.log,
+      (token, line) => this.onLine?.(token, line),
+    );
     const id = String(this.nextChild++);
     this.children.set(id, child);
     child.rpc.closed.then(() => this.children.delete(id));
@@ -460,4 +521,16 @@ export class Host {
 
 export function b64(s: string): string {
   return encodeBase64(new TextEncoder().encode(s));
+}
+
+/** The last non-empty line of some output, after any carriage-return redraws, without colour. */
+export function lastLine(text: string): string {
+  const lines = text.split("\n");
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const l = lines[i].split("\r").filter((x) => x.trim()).at(-1) ?? "";
+    // deno-lint-ignore no-control-regex
+    const clean = l.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "").trim();
+    if (clean) return clean;
+  }
+  return "";
 }

@@ -32,6 +32,8 @@ export function warn(s: string): void {
 }
 
 export interface Spinner {
+  /** A new label for the same task, e.g. its latest output line. */
+  update(label: string): void;
   stop(): void;
 }
 
@@ -40,6 +42,9 @@ export function spinner(label: string): Spinner {
   emit({ type: "busy", label });
   let live = true;
   return {
+    update(l: string) {
+      if (live) emit({ type: "busy", label: l, same: true });
+    },
     stop() {
       if (!live) return;
       live = false;
