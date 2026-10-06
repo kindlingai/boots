@@ -13,7 +13,7 @@ import { makeNearAsker } from "./secrets.ts";
 import { restoreSmart, Session } from "./tools.ts";
 import { Agent, repl } from "./agent.ts";
 import { boot } from "./boot.ts";
-import { cacheDir, currentTarget, dataDir, VERSION } from "./platform.ts";
+import { cacheDir, currentTarget, dataDir, modelsDir, scriptsDir, VERSION } from "./platform.ts";
 import { bold, dim, red, warn } from "./ui.ts";
 
 async function interactive(): Promise<number> {
@@ -94,7 +94,9 @@ async function main(args: string[]): Promise<number> {
       return hits.length ? 0 : 1;
     }
     case "--paths":
-      console.log(`data:  ${dataDir()}\ncache: ${cacheDir()}`);
+      console.log(
+        `data:    ${dataDir()}\nmodels:  ${modelsDir()}\nscripts: ${scriptsDir()}\ncache:   ${cacheDir()}`,
+      );
       return 0;
     case undefined:
       return await interactive();

@@ -68,6 +68,8 @@ export class Agent {
         os: this.s.here.info.os,
         host: describe(this.s.here.info),
         shell: this.s.here.info.shell,
+        models: this.s.here.info.models,
+        scripts: this.s.here.info.scripts,
         docs,
         memories,
         memory_sync: remote,

@@ -93,7 +93,9 @@ export async function boot(memory: Memory): Promise<Booted> {
     ? sources.map((s) => `  - ${s.label} (${s.endpoint.baseUrl})`).join("\n")
     : "  - none";
   const allFacts =
-    `${facts}\n- AI sources found at boot:\n${found}\n- bootstrap this session: ${bootstrap.label} (${bootstrap.baseUrl})`;
+    `${facts}\n- AI sources found at boot:\n${found}\n- bootstrap this session: ${bootstrap.label} (${bootstrap.baseUrl})${
+      llama ? `, started by ${llama.script}` : ""
+    }`;
   await memory.recordLocalSetup(allFacts);
   return { bootstrap, sources, llama, facts: allFacts };
 }

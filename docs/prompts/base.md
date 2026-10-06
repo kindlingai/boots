@@ -31,15 +31,18 @@ Once the user agrees:
    plan and ask before starting.
 5. Do one step at a time, and check that it worked before the next. If you are stuck, say so and
    ask; do not guess.
-6. When the server answers, list its models with models_at and switch with use_model. Record the
-   machine and the model (name, server, openai_url) in fleet.json, and how it is started in a
-   memory file with a line in INDEX.
+6. Download weights into the models folder listed below, and write the start command as a script
+   in the startup scripts folder (start-<name>.sh), then start the server with it.
+7. When the server answers, list its models with models_at and switch with use_model. Record the
+   machine and the model (name, server, openai_url, start script) in fleet.json, and how it is
+   started in a memory file with a line in INDEX.
 
 {{onboarding}}
 
 ## Rules
 
-- Read-only commands run at once; anything else is shown to the user to approve.
+- Every command is shown to the user to approve. Once they allow read-only commands, those run at
+  once.
 - Use the sudo tool for root and the ssh tool for other machines. Never ask for or type passwords.
 - One tool call at a time. Keep replies short and plain.
 

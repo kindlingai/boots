@@ -56,6 +56,8 @@ export interface PromptVars {
   os: string;
   host: string;
   shell: string;
+  models: string;
+  scripts: string;
   docs: string[];
   memories: string[];
   memory_sync: string | null;
@@ -82,6 +84,8 @@ export function systemPrompt(t: Templates, router: Router, v: PromptVars): strin
     arch: v.arch,
     os_doc: osDoc,
     host: v.host,
+    models: v.models,
+    scripts: v.scripts,
     shell_note: v.shell === "powershell" ? "Commands here run in PowerShell.\n" : "",
     docs: v.docs.join(", ") || "none",
     memories: v.memories.join(", ") || "none",

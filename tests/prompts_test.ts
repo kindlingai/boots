@@ -22,6 +22,8 @@ const vars: PromptVars = {
   os: "linux",
   host: "me@box",
   shell: "/bin/bash",
+  models: "/home/u/.local/share/ai-bootstrap/models",
+  scripts: "/home/u/.local/share/ai-bootstrap/intelligence",
   docs: ["vllm", "ray"],
   memories: ["local-setup"],
   memory_sync: null,

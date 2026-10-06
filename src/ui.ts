@@ -163,19 +163,26 @@ export async function choose(prompt: string, options: string[], def = 0): Promis
   }
 }
 
-export type Approval = { ok: boolean; always?: boolean; note?: string };
+export type Approval = { ok: boolean; always?: boolean; readonly?: boolean; note?: string };
 
-/** y / n / a(lways this session) / e(xplain why not). */
-export async function approve(what: string): Promise<Approval> {
+/**
+ * y / n / s(omething else: tell the model) and, for a read-only command,
+ * r (allow every read-only command this session); otherwise a(lways allow this one).
+ */
+export async function approve(what: string, readonly = false): Promise<Approval> {
   console.log(`${yellow("?")} ${what}`);
+  const choices = readonly
+    ? "[y]es [n]o always allow [r]ead-only [s]omething else, I'll explain"
+    : "[y]es [n]o [a]lways [s]omething else, I'll explain";
   while (true) {
-    const a = await input.readLine(dim("  run it? [y]es [n]o [a]lways [e]xplain: "));
+    const a = await input.readLine(dim(`  run it? ${choices}: `));
     if (a === null) return { ok: false, note: "no input available" };
     const t = a.trim().toLowerCase();
     if (t === "y" || t === "yes") return { ok: true };
-    if (t === "a") return { ok: true, always: true };
     if (t === "n" || t === "no" || t === "") return { ok: false };
-    if (t === "e") {
+    if (readonly && t === "r") return { ok: true, readonly: true };
+    if (!readonly && t === "a") return { ok: true, always: true };
+    if (t === "s") {
       const note = await input.readLine("  tell the model: ");
       return { ok: false, note: note ?? "" };
     }

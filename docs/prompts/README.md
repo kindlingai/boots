@@ -35,6 +35,8 @@ would you like to do?" prompt, so the model can ask its opening question.
 | `os_name`, `arch`   | e.g. `Ubuntu 24.04.5 LTS, kernel 6.8`, `x86_64`                                                       |
 | `os_doc`            | the per-OS guide, e.g. `docs/intermediate-linux`                                                      |
 | `host`              | user, hostname, home, shell, cwd                                                                      |
+| `models`            | the models folder on the current machine                                                              |
+| `scripts`           | the startup scripts folder on the current machine                                                     |
 | `shell_note`        | a line when commands run in PowerShell, else empty                                                    |
 | `docs`              | the knowledge-base docs, comma separated                                                              |
 | `memories`          | memory file names                                                                                     |

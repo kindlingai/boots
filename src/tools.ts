@@ -222,10 +222,14 @@ export class Session {
     return this.clip(s);
   }
 
-  private async gate(what: string, key: string): Promise<string | null> {
+  /** The user allowed every read-only command for this session. */
+  allowReadonly = false;
+
+  private async gate(what: string, key: string, readonly = false): Promise<string | null> {
     if (this.always.has(key)) return null;
-    const a = await approve(what);
+    const a = await approve(what, readonly);
     if (a.always) this.always.add(key);
+    if (a.readonly) this.allowReadonly = true;
     if (a.ok) return null;
     return a.note ? `the user declined: ${a.note}` : "the user declined to run this";
   }
@@ -235,9 +239,10 @@ export class Session {
       case "run": {
         const cmd = String(args.command ?? "");
         const loc = this.where();
-        if (isReadonly(cmd)) console.log(dim(`  [${loc}] $ ${cmd}`));
+        const readonly = isReadonly(cmd);
+        if (readonly && this.allowReadonly) console.log(dim(`  [${loc}] $ ${cmd}`));
         else {
-          const no = await this.gate(`[${bold(loc)}] $ ${cmd}`, `${loc}\0${cmd}`);
+          const no = await this.gate(`[${bold(loc)}] $ ${cmd}`, `${loc}\0${cmd}`, readonly);
           if (no) return no;
         }
         return this.render(

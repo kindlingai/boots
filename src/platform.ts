@@ -62,7 +62,25 @@ export function dataDir(): string {
   return join(Deno.env.get("XDG_DATA_HOME") ?? join(home(), ".local", "share"), "ai-bootstrap");
 }
 
-/** Re-creatable state: downloaded binaries, llama.cpp, model weights. */
+/** Durable state that stays on this machine: the data dir, except on Windows, where that roams. */
+function localDir(): string {
+  if (isWindows && !Deno.env.get("AIBOOT_HOME")) {
+    return join(Deno.env.get("LOCALAPPDATA") ?? join(home(), "AppData", "Local"), "ai-bootstrap");
+  }
+  return dataDir();
+}
+
+/** Model weights, shared by the base model and the servers set up for smarter ones. */
+export function modelsDir(): string {
+  return join(localDir(), "models");
+}
+
+/** Scripts that start each model server (start-base.sh for the base model). */
+export function scriptsDir(): string {
+  return join(localDir(), "intelligence");
+}
+
+/** Re-creatable state: downloaded binaries, llama.cpp. */
 export function cacheDir(): string {
   const o = Deno.env.get("AIBOOT_CACHE");
   if (o) return o;

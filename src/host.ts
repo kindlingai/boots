@@ -5,7 +5,7 @@
 import { dirname, isAbsolute, join } from "@std/path";
 import { decodeBase64, encodeBase64 } from "@std/encoding/base64";
 import type { Asker } from "./secrets.ts";
-import { currentTarget, isWindows, VERSION } from "./platform.ts";
+import { currentTarget, isWindows, modelsDir, scriptsDir, VERSION } from "./platform.ts";
 import { openSsh, type SshChild } from "./ssh.ts";
 
 export interface HostInfo {
@@ -20,6 +20,9 @@ export interface HostInfo {
   shell: string;
   cwd: string;
   version: string;
+  /** Where model weights and startup scripts belong on this machine. */
+  models: string;
+  scripts: string;
 }
 
 export interface ExecResult {
@@ -86,6 +89,8 @@ export class Host {
       shell: isWindows ? "powershell" : await this.shell(),
       cwd: this.cwd,
       version: VERSION,
+      models: modelsDir(),
+      scripts: scriptsDir(),
     };
   }
 
