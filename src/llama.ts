@@ -125,7 +125,8 @@ export async function startLlama(server: string): Promise<Running> {
   const bin = join(server, "..");
   const logPath = join(cacheDir(), "llama", "server.log");
   const log = await Deno.open(logPath, { write: true, create: true, truncate: true });
-  const env: Record<string, string> = { LLAMA_CACHE: join(cacheDir(), "models") };
+  const models = join(cacheDir(), "models");
+  const env: Record<string, string> = { LLAMA_CACHE: models };
   if (Deno.build.os === "linux") {
     env.LD_LIBRARY_PATH = [bin, Deno.env.get("LD_LIBRARY_PATH")].filter(Boolean).join(":");
   }
@@ -146,6 +147,7 @@ export async function startLlama(server: string): Promise<Running> {
   proc.status.then(() => (exited = true));
   const t0 = Date.now();
   let shown = 0;
+  let had = await dirSize(models);
   while (true) {
     if (exited) throw new Error(`llama-server exited; see ${logPath}`);
     try {
@@ -158,9 +160,17 @@ export async function startLlama(server: string): Promise<Running> {
       // not up yet
     }
     const el = Math.floor((Date.now() - t0) / 1000);
-    if (el - shown >= 15) {
+    if (el - shown >= 10) {
+      // llama-server draws download progress only on a terminal, so watch the cache grow.
+      const size = await dirSize(models);
+      const rate = (size - had) / (el - shown);
       shown = el;
-      info(`  waiting for the model (${el}s): ${await lastLine(logPath)}`);
+      had = size;
+      info(
+        rate > 0
+          ? `  downloading the model (${el}s): ${gb(size)} so far, ${(rate / 1e6).toFixed(1)} MB/s`
+          : `  waiting for the model (${el}s): ${await lastLine(logPath)}`,
+      );
     }
     await new Promise((r) => setTimeout(r, 1000));
   }
@@ -179,6 +189,25 @@ export async function startLlama(server: string): Promise<Running> {
       }
     },
   };
+}
+
+function gb(n: number): string {
+  return `${(n / 1e9).toFixed(2)} GB`;
+}
+
+/** Bytes under `dir`, partial downloads included. */
+export async function dirSize(dir: string): Promise<number> {
+  let n = 0;
+  try {
+    for await (const e of Deno.readDir(dir)) {
+      const p = join(dir, e.name);
+      if (e.isDirectory) n += await dirSize(p);
+      else if (e.isFile) n += (await Deno.stat(p).catch(() => ({ size: 0 }))).size;
+    }
+  } catch {
+    // not there yet
+  }
+  return n;
 }
 
 async function lastLine(p: string): Promise<string> {
