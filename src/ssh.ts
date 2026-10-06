@@ -6,6 +6,7 @@ import { encodeHex } from "@std/encoding/hex";
 import type { Asker } from "./secrets.ts";
 import { Rpc } from "./rpc.ts";
 import { startAskpass } from "./askpass.ts";
+import { packageName, unpack } from "./package.ts";
 import type { HostInfo } from "./host.ts";
 import {
   cacheDir,
@@ -84,18 +85,20 @@ export async function binaryFor(target: string, log: (s: string) => void): Promi
   const dir = join(cacheDir(), "bin", VERSION);
   const path = join(dir, `ai-bootstrap-${target}`);
   if (await exists(path)) return path;
-  const url = `${Deno.env.get("AIBOOT_RELEASES") ?? RELEASES}/v${VERSION}/ai-bootstrap-${target}`;
+  const pkg = packageName(target);
+  const url = `${Deno.env.get("AIBOOT_RELEASES") ?? RELEASES}/v${VERSION}/${pkg}`;
   log(`downloading the ${target} build from ${url}`);
   const r = await fetch(url);
-  if (!r.ok || !r.body) {
+  if (!r.ok) {
+    await r.body?.cancel();
     throw new Error(
       `no ai-bootstrap build for ${target}: ${url} returned ${r.status}. Set AIBOOT_FAR_BINARY to a binary for that platform.`,
     );
   }
+  const bin = await unpack(pkg, new Uint8Array(await r.arrayBuffer()));
   await ensureDir(dir);
   const tmp = `${path}.part`;
-  const f = await Deno.open(tmp, { write: true, create: true, truncate: true });
-  await r.body.pipeTo(f.writable);
+  await Deno.writeFile(tmp, bin);
   await Deno.rename(tmp, path);
   if (!isWindows) await Deno.chmod(path, 0o755);
   return path;

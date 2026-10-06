@@ -1,6 +1,6 @@
 {
   "name": "@mmastrac/aiboot",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "exports": "./src/main.ts",
   "tasks": {
     "dev": "deno run -A src/main.ts",
@@ -13,6 +13,7 @@
     "exclude": [
       "README.md",
       "dist/",
+      "build/",
       "docs/prompts/"
     ]
   },
@@ -23,7 +24,8 @@
       ]
     },
     "exclude": [
-      "dist/"
+      "dist/",
+      "build/"
     ]
   },
   "imports": {

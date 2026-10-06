@@ -45,12 +45,14 @@ jobs:
       - uses: denoland/setup-deno@v2
         with:
           deno-version: v2.x
-      - name: Compile
+      - name: Compile and package
         shell: bash
         run: |
           ext=""; [[ "${{ matrix.target }}" == *windows* ]] && ext=".exe"
           deno compile -A --include docs --target ${{ matrix.target }} \
-            -o "dist/ai-bootstrap-${{ matrix.target }}${ext}" src/main.ts
+            -o "build/ai-bootstrap${ext}" src/main.ts
+          sh scripts/package.sh ${{ matrix.target }} "build/ai-bootstrap${ext}" dist
+          ls -l dist
       - uses: actions/upload-artifact@v4
         with:
           name: ai-bootstrap-${{ matrix.target }}
@@ -79,11 +81,24 @@ jobs:
         with:
           name: ai-bootstrap-${{ matrix.target }}
           path: dist
+      # Unpack the way a user would: tar on Linux, the script on macOS, a zip on Windows.
+      - name: Unpack
+        if: runner.os == 'Linux'
+        run: tar -xzf dist/ai-bootstrap-${{ matrix.target }}.tar.gz -C dist
+      - name: Unpack
+        if: runner.os == 'macOS'
+        run: |
+          out=$(sh dist/ai-bootstrap-${{ matrix.target }}.sh)
+          test "$out" = "$PWD/dist/ai-bootstrap"
+          codesign --verify --verbose "$out"
+      - name: Unpack
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Expand-Archive -Path dist/ai-bootstrap-${{ matrix.target }}.zip -DestinationPath dist
       - name: Run the binary
         shell: bash
         run: |
-          bin=$(ls dist/ai-bootstrap-*)
-          chmod +x "$bin"
+          bin=dist/ai-bootstrap; [ -f "$bin.exe" ] && bin="$bin.exe"
           "$bin" --version | tee version.txt
           grep -q "${{ matrix.target }}" version.txt
           "$bin" --paths
