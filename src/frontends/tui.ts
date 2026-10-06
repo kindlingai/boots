@@ -34,7 +34,29 @@ const COLOR = {
   green: c("32"),
   magenta: c("35"),
   inverse: c("7"),
+  grey: c("90"),
+  white: c("97"),
+  brightBlue: c("94"),
 };
+
+/**
+ * The bot in colour: a grey body with white eyes and bright blue boots. The
+ * antenna is grey while it is a plain line, dark red when it signals (? * .).
+ */
+export function paintBot(art: string[]): string[] {
+  const [antenna, top, face, mouth, legs, feet] = art;
+  const eyesAt = face.indexOf("|") + 1;
+  const eyesEnd = face.lastIndexOf("|");
+  return [
+    antenna.trim() === "|" ? COLOR.grey(antenna) : COLOR.red(antenna),
+    COLOR.grey(top),
+    COLOR.grey(face.slice(0, eyesAt)) + COLOR.white(face.slice(eyesAt, eyesEnd)) +
+    COLOR.grey(face.slice(eyesEnd)),
+    COLOR.grey(mouth),
+    COLOR.grey(legs),
+    COLOR.brightBlue(feet),
+  ];
+}
 
 type Kind = Style | "user" | "assistant";
 interface Entry {
@@ -468,8 +490,7 @@ export class TuiFrontend implements Frontend {
 
     // The bot and its speech bubble.
     const mood = this.currentMood();
-    const art = bot(mood, this.frame, Date.now() < this.blinkUntil);
-    const tint = mood === "sad" ? COLOR.red : mood === "working" ? COLOR.yellow : COLOR.cyan;
+    const art = paintBot(bot(mood, this.frame, Date.now() < this.blinkUntil));
     const bw = Math.max(10, w - 16);
     const said = this.busy && !this.streaming ? `${this.busy.label}...` : this.speech || "...";
     const words = wrap(said.trim(), bw - 4);
@@ -484,7 +505,7 @@ export class TuiFrontend implements Frontend {
     for (let i = 0; i < 6; i++) {
       const tail = i === 2 ? COLOR.cyan(" ◀ ") : "   ";
       const b = bubble[i] ?? "";
-      rows.push(` ${tint(art[i])}${b ? tail : "   "}${COLOR.cyan(b)}`);
+      rows.push(` ${art[i]}${b ? tail : "   "}${COLOR.cyan(b)}`);
     }
     rows.push(COLOR.dim("─".repeat(w)));
 

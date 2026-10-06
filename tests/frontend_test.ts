@@ -9,7 +9,7 @@ import {
   progressText,
   setFrontend,
 } from "../src/frontend.ts";
-import { bot, wrap } from "../src/frontends/tui.ts";
+import { bot, paintBot, wrap } from "../src/frontends/tui.ts";
 import { approve, choose, say, spinner } from "../src/ui.ts";
 
 /** A frontend that records events and answers prompts from a list. */
@@ -88,6 +88,19 @@ Deno.test("tui: wrapping and the bot", () => {
   assertStringIncludes(bot("sad", 0, false)[2], "| x x |");
   assertStringIncludes(bot("talking", 1, false)[3], "+--o--+");
   assertStringIncludes(bot("asking", 0, false)[0], "?");
+});
+
+Deno.test("tui: the bot's colours", () => {
+  const E = String.fromCharCode(27);
+  const idle = paintBot(bot("idle", 0, false));
+  assert(idle[0].startsWith(`${E}[90m`), "a plain antenna is grey");
+  assert(paintBot(bot("asking", 0, false))[0].startsWith(`${E}[31m`), "a signalling one dark red");
+  assert(paintBot(bot("thinking", 1, false))[0].startsWith(`${E}[31m`));
+  assert(idle[1].startsWith(`${E}[90m`), "grey body");
+  assertStringIncludes(idle[2], `${E}[97m o o ${E}[0m`);
+  assert(idle[5].startsWith(`${E}[94m`), "bright blue boots");
+  const plain = (s: string) => s.replace(new RegExp(E + "\\[[0-9;]*m", "g"), "");
+  assertEquals(idle.map(plain), bot("idle", 0, false), "colour adds nothing visible");
 });
 
 Deno.test("the bot is lil boots, and Boots on the full model", () => {
