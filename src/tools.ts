@@ -30,7 +30,15 @@ import {
   yellow,
 } from "./ui.ts";
 import { Classifier, type Verdict } from "./classify.ts";
-import { CATALOG, describePlan, plan, setUpModel } from "./rails.ts";
+import {
+  CATALOG,
+  describePlan,
+  downloads,
+  plan,
+  removable,
+  removeDownloads,
+  setUpModel,
+} from "./rails.ts";
 
 /** Wrappers that run the command after them. */
 const WRAPPERS = new Set([
@@ -305,6 +313,12 @@ export const BASE_TOOLS = [
   ),
   ...TOOLS.filter((t) => t.function.name === "start_full_model"),
   READ_LOG_TOOL,
+  fn(
+    "remove_downloads",
+    "Free disk space: delete unfinished model downloads and catalog models other than `keep`, from ai-bootstrap's models folder. Never the bootstrap model. The user sees the list and confirms.",
+    { keep: str("a catalog model id to keep (the one about to be set up), if any") },
+    [],
+  ),
 ];
 
 export class Session {
@@ -664,6 +678,28 @@ export class Session {
         if (this.stack.length > 1) return "models are set up on the local machine only";
         console.log(dim("  checking the GPU and the model catalog"));
         return describePlan(await plan(this.here.info.hardware));
+      }
+      case "remove_downloads": {
+        if (this.stack.length > 1) return "models are set up on the local machine only";
+        const keep = args.keep ? String(args.keep) : undefined;
+        const list = removable(await downloads(), keep);
+        if (!list.length) return "nothing to remove: no unfinished or unused catalog downloads";
+        const total = list.reduce((n, d) => n + d.bytes, 0);
+        const lines = list.map((d) =>
+          `    ${(d.bytes / 2 ** 30).toFixed(1)} GB  ${d.path}${d.partial ? " (unfinished)" : ""}`
+        );
+        const no = await this.gate(
+          `delete ${list.length} model download(s), ${(total / 2 ** 30).toFixed(1)} GB:\n${
+            lines.join("\n")
+          }`,
+          `remove\0${list.map((d) => d.path).join("\0")}`,
+          "dangerous",
+        );
+        if (no) return no;
+        const gone = await removeDownloads(keep);
+        const freed = gone.reduce((n, d) => n + d.bytes, 0);
+        console.log(green(`  freed ${(freed / 2 ** 30).toFixed(1)} GB`));
+        return `removed ${gone.length} download(s), ${(freed / 2 ** 30).toFixed(1)} GB freed`;
       }
       case "read_log": {
         const which = String(args.log ?? "full");

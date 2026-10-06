@@ -4,9 +4,11 @@
 // elsewhere), start-full.sh, the download, the start and the switch.
 
 import { join } from "@std/path";
-import { installLlama } from "./llama.ts";
+import { DEFAULT_MODEL, installLlama } from "./llama.ts";
+import { freeBytes } from "./hardware.ts";
 import {
   describeFailure,
+  dirSize,
   type FullFailure,
   logPath,
   scriptPath,
@@ -92,7 +94,113 @@ export interface Fit {
   model: CatalogModel;
   ctx: number;
   needs: number;
+  /** Fits the GPU (or RAM) budget. */
   fits: boolean;
+  /** Disk still needed for its download, and whether there is that much free. */
+  diskNeedGB?: number;
+  diskOK?: boolean;
+}
+
+/** Something in the models folder: a file, or a Hugging Face cache folder (models--org--repo). */
+export interface Download {
+  path: string;
+  bytes: number;
+  partial: boolean;
+  /** Catalog ids it belongs to; "bootstrap" for the base model's. */
+  models: string[];
+}
+
+const PARTIAL = /\.(downloadInProgress|incomplete|part|tmp)$/i;
+const GB = 2 ** 30;
+/** Room to leave on the disk beyond the download. */
+const DISK_MARGIN_GB = 2;
+
+const repoOf = (hf: string) => hf.split(":")[0].split("/").pop()!.toLowerCase();
+const quantOf = (hf: string) => (hf.split(":")[1] ?? "").toLowerCase();
+
+/** Which catalog models (or the bootstrap) a download belongs to. */
+export function ownersOf(path: string, isRepoDir: boolean, bootstrapHf: string): string[] {
+  const p = path.toLowerCase();
+  if (p.includes(repoOf(bootstrapHf))) return ["bootstrap"];
+  return CATALOG.filter((m) => p.includes(repoOf(m.hf)) && (isRepoDir || p.includes(quantOf(m.hf))))
+    .map((m) => m.id);
+}
+
+/** What is in the models folder, as units that can be removed whole. */
+export async function downloads(
+  dir = join(modelsDir(), "llama.cpp"),
+  bootstrapHf = Deno.env.get("AIBOOT_BOOTSTRAP_MODEL") ?? DEFAULT_MODEL,
+): Promise<Download[]> {
+  const out: Download[] = [];
+  const walk = async (d: string) => {
+    let entries: Deno.DirEntry[] = [];
+    try {
+      entries = await Array.fromAsync(Deno.readDir(d));
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      const p = join(d, e.name);
+      if (e.isDirectory && e.name.startsWith("models--")) {
+        const files: string[] = [];
+        const list = async (x: string) => {
+          for await (const f of Deno.readDir(x)) {
+            if (f.isDirectory) await list(join(x, f.name));
+            else files.push(f.name);
+          }
+        };
+        await list(p).catch(() => {});
+        out.push({
+          path: p,
+          bytes: await dirSize(p),
+          partial: files.some((f) => PARTIAL.test(f)),
+          models: ownersOf(e.name, true, bootstrapHf),
+        });
+      } else if (e.isDirectory) await walk(p);
+      else if (e.isFile) {
+        const bytes = (await Deno.stat(p).catch(() => ({ size: 0 }))).size;
+        out.push({
+          path: p,
+          bytes,
+          partial: PARTIAL.test(e.name),
+          models: ownersOf(e.name, false, bootstrapHf),
+        });
+      }
+    }
+  };
+  await walk(dir);
+  return out;
+}
+
+/** Downloads that can go: unfinished ones and catalog models other than `keep`; never the bootstrap's. */
+export function removable(all: Download[], keep?: string): Download[] {
+  return all.filter((d) => {
+    if (d.models.includes("bootstrap")) return false;
+    // The one being set up stays, even unfinished: its download resumes.
+    if (keep && d.models.includes(keep)) return false;
+    return d.partial || d.models.length > 0;
+  });
+}
+
+/** Removes the downloads `removable` picks; returns what went. */
+export async function removeDownloads(keep?: string): Promise<Download[]> {
+  const gone = removable(await downloads(), keep);
+  for (const d of gone) await Deno.remove(d.path, { recursive: true }).catch(() => {});
+  return gone;
+}
+
+function sizeGB(bytes: number): string {
+  return `${(bytes / GB).toFixed(1)} GB`;
+}
+
+/** Marks each fit with the disk its download still needs. */
+export function withDisk(fits: Fit[], all: Download[], freeGB: number | null): Fit[] {
+  return fits.map((f) => {
+    const have = all.filter((d) => d.models.includes(f.model.id)).reduce((n, d) => n + d.bytes, 0) /
+      GB;
+    const diskNeedGB = Math.max(0, f.model.fileGB - have) + DISK_MARGIN_GB;
+    return { ...f, diskNeedGB, diskOK: freeGB === null || diskNeedGB <= freeGB };
+  });
 }
 
 export interface Plan {
@@ -104,6 +212,9 @@ export interface Plan {
   /** Why there is no GPU acceleration, when there is none. */
   warning: string | null;
   fits: Fit[];
+  /** Free disk where models go, in GB (null: unknown). */
+  diskFreeGB: number | null;
+  downloads: Download[];
 }
 
 /** For each model, the largest context that fits the budget, if any does. */
@@ -159,24 +270,68 @@ export async function plan(hardware: string): Promise<Plan> {
       }. Without it the model runs on the CPU, slowly.`
       : "No GPU that llama.cpp can use was found, so the model would run on the CPU, slowly.";
   }
-  return { server, devices, budgetGB, accel, warning, fits: fitAll(budgetGB) };
+  const free = await freeBytes(modelsDir());
+  const diskFreeGB = free === null ? null : free / GB;
+  const all = await downloads();
+  return {
+    server,
+    devices,
+    budgetGB,
+    accel,
+    warning,
+    fits: withDisk(fitAll(budgetGB), all, diskFreeGB),
+    diskFreeGB,
+    downloads: all,
+  };
 }
 
 export function describePlan(p: Plan): string {
+  const owner = (d: Download) => d.models.length ? d.models.join("/") : "other";
   const lines = [
     `Accelerator: ${p.accel}; about ${p.budgetGB.toFixed(1)} GB free for the model.`,
     ...(p.warning ? [`Warning: ${p.warning}`] : []),
+    `Disk: ${
+      p.diskFreeGB === null ? "unknown" : `${p.diskFreeGB.toFixed(1)} GB`
+    } free for downloads.${
+      p.downloads.length
+        ? ` Already in the models folder: ${
+          p.downloads.map((d) =>
+            `${owner(d)} ${sizeGB(d.bytes)}${d.partial ? " (unfinished)" : ""}`
+          )
+            .join(", ")
+        }.`
+        : ""
+    }`,
     "Models, best first:",
     ...p.fits.map((f) =>
       `- ${f.model.id}: ${f.model.label}, ~${f.model.fileGB} GB download, needs ~${
         f.needs.toFixed(1)
-      } GB with ${f.ctx / 1024}k context: ${f.fits ? "FITS" : "does not fit"}. ${f.model.note}`
+      } GB with ${f.ctx / 1024}k context: ${f.fits ? "FITS" : "does not fit"}${
+        f.fits && f.diskOK === false
+          ? `, but needs ${f.diskNeedGB!.toFixed(1)} GB of free disk (NOT ENOUGH DISK)`
+          : ""
+      }. ${f.model.note}`
     ),
   ];
-  const first = p.fits.find((f) => f.fits);
+  const ok = p.fits.find((f) => f.fits && f.diskOK !== false);
+  const best = p.fits.find((f) => f.fits);
+  const freeable = removable(p.downloads).reduce((n, d) => n + d.bytes, 0);
+  if (best && best !== ok) {
+    lines.push(
+      `Low disk: ${best.model.id} needs ${best.diskNeedGB!.toFixed(1)} GB free, and there is ${
+        p.diskFreeGB?.toFixed(1)
+      } GB. Warn the user.${
+        freeable
+          ? ` remove_downloads can free ${sizeGB(freeable)} (unfinished or other catalog models).`
+          : ""
+      } Otherwise the user must free disk space, or pick a smaller model.`,
+    );
+  }
   lines.push(
-    first
-      ? `Recommended: ${first.model.id}.`
+    ok
+      ? `Recommended: ${ok.model.id}.`
+      : best
+      ? "Nothing fits on the disk as it is: free space first."
       : "None fits. Suggest a hosted model instead: restart ai-bootstrap with OPENROUTER_API_KEY or OPENAI_API_KEY set.",
   );
   return lines.join("\n");
@@ -289,6 +444,13 @@ export async function setUpModel(
   const fit = p.fits.find((f) => f.model.id === id);
   if (!fit) return { error: `no model ${id} in the catalog.\n${describePlan(p)}` };
   if (!fit.fits) return { error: `${id} does not fit here.\n${describePlan(p)}` };
+  if (fit.diskOK === false) {
+    return {
+      error: `not enough disk for ${id}: it needs ${fit.diskNeedGB!.toFixed(1)} GB free.\n${
+        describePlan(p)
+      }`,
+    };
+  }
   const m = fit.model;
   const port = randomFreePort();
   const script = scriptPath("full");

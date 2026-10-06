@@ -20,7 +20,7 @@ export { dirSize };
 
 /** A release known to ship CPU builds for every platform below. */
 const PINNED_TAG = "b9000";
-const DEFAULT_MODEL = "unsloth/Qwen3-4B-Instruct-2507-GGUF:Q4_K_M";
+export const DEFAULT_MODEL = "unsloth/Qwen3-4B-Instruct-2507-GGUF:Q4_K_M";
 
 /**
  * "cpu" is the bootstrap build (Metal on macOS anyway). "gpu" is the

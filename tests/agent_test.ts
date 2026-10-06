@@ -47,6 +47,7 @@ Deno.test("base model: on rails, tool calls required, reply ends the turn", asyn
       "set_up_model",
       "start_full_model",
       "read_log",
+      "remove_downloads",
     ]);
     // A tool it was not offered is refused, not run.
     const last = asks[1].messages.at(-1);

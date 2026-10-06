@@ -18,19 +18,38 @@ async function out(cmd: string, args: string[], ms = 15_000): Promise<string> {
 
 const gb = (bytes: number) => `${Math.round(bytes / 2 ** 30)} GB`;
 
-/** Free space in the home directory, from df. */
-async function freeDisk(): Promise<string> {
+/** Free bytes on the disk holding `path` (or its nearest existing parent); null if unknown. */
+export async function freeBytes(path: string): Promise<number | null> {
+  let p = path;
+  for (let i = 0; i < 20; i++) {
+    try {
+      await Deno.stat(p);
+      break;
+    } catch {
+      const up = p.replace(/[\\/][^\\/]*$/, "");
+      if (!up || up === p) break;
+      p = up;
+    }
+  }
   if (Deno.build.os === "windows") {
+    const drive = (p.match(/^([A-Za-z]):/)?.[1]) ?? "C";
     const free = await out("powershell", [
       "-NoProfile",
       "-Command",
-      "(Get-PSDrive -Name ($env:SystemDrive.Trim(':'))).Free",
+      `(Get-PSDrive -Name ${drive}).Free`,
     ]);
-    return free ? `${gb(Number(free))} free disk` : "";
+    return free ? Number(free) : null;
   }
-  const df = await out("df", ["-k", Deno.env.get("HOME") ?? "/"]);
+  const df = await out("df", ["-k", p]);
   const kb = Number(df.split("\n").at(-1)?.trim().split(/\s+/)[3]);
-  return kb ? `${gb(kb * 1024)} free disk in the home directory` : "";
+  return kb ? kb * 1024 : null;
+}
+
+/** Free space in the home directory. */
+async function freeDisk(): Promise<string> {
+  const home = Deno.env.get("HOME") ?? Deno.env.get("USERPROFILE") ?? "/";
+  const free = await freeBytes(home);
+  return free ? `${gb(free)} free disk in the home directory` : "";
 }
 
 export function summarizeMac(

@@ -166,7 +166,7 @@ export async function logSummary(
 }
 
 /** Why the full model did not start, for the diagnosis prompt and the start_full_model tool. */
-export type FailureCause = "download" | "memory" | "gpu" | "other";
+export type FailureCause = "disk" | "download" | "memory" | "gpu" | "other";
 
 export interface FullFailure {
   script: string;
@@ -181,6 +181,9 @@ export interface FullFailure {
 /** What a failed start's log says, most specific first. */
 export function causeOf(lines: string[], downloading: boolean): FailureCause {
   const t = lines.join("\n");
+  if (/no space left|ENOSPC|os error 28|disk (is )?full|not enough (free )?(disk|space)/i.test(t)) {
+    return "disk";
+  }
   if (
     /out of memory|failed to allocate|insufficient memory|not enough memory|OutOfMemory|cannot allocate/i
       .test(t)
@@ -199,6 +202,8 @@ export function causeOf(lines: string[], downloading: boolean): FailureCause {
 }
 
 export const CAUSE_HINT: Record<FailureCause, string> = {
+  disk:
+    "the disk is full. Warn the user. remove_downloads deletes unfinished and unused model downloads; otherwise the user must free space. list_models shows how much each model needs.",
   download:
     "the model download was interrupted (ai-bootstrap already resumed it automatically, and it still failed). Check the network; then try again with start_full_model, which continues the download.",
   memory:
@@ -275,7 +280,7 @@ export async function startFull(
     const r = await runFull(ep, script, log, timeoutMs, signal);
     if ("ep" in r) return r;
     const summary = await logSummary(log);
-    const cause = causeOf([...summary.tail, ...summary.errors], r.downloading);
+    const cause = causeOf([r.reason, ...summary.tail, ...summary.errors], r.downloading);
     full?.stop();
     full = null;
     // An interrupted download resumes where it stopped: try again, a few times.
@@ -302,7 +307,12 @@ async function runFull(
 ): Promise<{ ep: Endpoint } | { reason: string; downloading: boolean; final?: boolean }> {
   full?.stop();
   info(`starting the full model ${ep.model} with ${script} (log: ${log})`);
-  full = await supervise(script, [], log);
+  try {
+    full = await supervise(script, [], log);
+  } catch (e) {
+    // e.g. no space left for the log itself.
+    return { reason: (e as Error).message, downloading: false, final: true };
+  }
   const t0 = Date.now();
   let shown = 0;
   let had = await dirSize(modelsDir());

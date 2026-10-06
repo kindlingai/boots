@@ -165,6 +165,7 @@ Deno.test("failure causes from the log", async () => {
   assertEquals(causeOf(["exiting"], true), "download");
   assertEquals(causeOf(["ggml_vulkan: no devices found"], false), "gpu");
   assertEquals(causeOf(["segfault"], false), "other");
+  assertEquals(causeOf(["No space left on device (os error 28)"], true), "disk");
 });
 
 Deno.test(

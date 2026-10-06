@@ -32,7 +32,12 @@ async function interactive(): Promise<number> {
   let failure: FullFailure | null = null;
   if (!smart) {
     // Nothing answering: start the full model if there is a start-full script.
-    const r = await startFull((await loadSmart()).find((e) => !e.keyInMemory) ?? null);
+    const r = await startFull((await loadSmart()).find((e) => !e.keyInMemory) ?? null).catch(
+      (e) => {
+        warn(`could not start the full model: ${(e as Error).message}`);
+        return null;
+      },
+    );
     if (r && "ep" in r) {
       smart = r.ep;
       router.setSmart(smart);

@@ -6,7 +6,9 @@ import type { Endpoint } from "./llm.ts";
 import { scanApiKeys, scanLocal, type Source } from "./discover.ts";
 import { installedServer, installLlama, type Running, startLlama } from "./llama.ts";
 import type { Memory } from "./memory.ts";
-import { bold, choose, confirm, dim, info } from "./ui.ts";
+import { bold, choose, confirm, dim, info, warn } from "./ui.ts";
+import { freeBytes } from "./hardware.ts";
+import { modelsDir } from "./platform.ts";
 
 export interface Booted {
   bootstrap: Endpoint;
@@ -59,6 +61,14 @@ export async function boot(memory: Memory): Promise<Booted> {
   if (!sources.length) {
     if (!installed) {
       info("no bootstrap intelligence found (no local model servers, no API keys)");
+      const free = await freeBytes(modelsDir());
+      if (free !== null && free < 4 * 2 ** 30) {
+        warn(
+          `only ${
+            (free / 2 ** 30).toFixed(1)
+          } GB of disk is free where models go (${modelsDir()}); the download needs about 3 GB, and a smarter model later needs 10-16 GB more`,
+        );
+      }
       const ok = await confirm(
         "Download llama.cpp and Qwen3 4B (~2.5 GB) to get started?",
         true,

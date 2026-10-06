@@ -53,3 +53,77 @@ Deno.test("start-full.sh for a catalog model", () => {
   const w = fullScript(CATALOG[1], "C:\\\\l\\\\llama-server.exe", 41234, 16384, "Vulkan0", true);
   assertStringIncludes(w, "rem endpoint: http://127.0.0.1:41234/v1 qwen3-14b");
 });
+
+Deno.test("downloads: what belongs to whom, and what can go", async () => {
+  const { downloads, removable } = await import("../src/rails.ts");
+  const { join } = await import("@std/path");
+  const dir = await Deno.makeTempDir();
+  try {
+    await Deno.writeFile(
+      join(
+        dir,
+        "unsloth_Qwen3-30B-A3B-Instruct-2507-GGUF_Qwen3-30B-A3B-Instruct-2507-UD-Q3_K_XL.gguf.downloadInProgress",
+      ),
+      new Uint8Array(300),
+    );
+    await Deno.writeFile(
+      join(dir, "unsloth_Qwen3-14B-GGUF_Qwen3-14B-Q6_K.gguf"),
+      new Uint8Array(200),
+    );
+    await Deno.mkdir(join(dir, "models--unsloth--Qwen3-4B-Instruct-2507-GGUF", "blobs"), {
+      recursive: true,
+    });
+    await Deno.writeFile(
+      join(dir, "models--unsloth--Qwen3-4B-Instruct-2507-GGUF", "blobs", "x"),
+      new Uint8Array(100),
+    );
+    await Deno.writeFile(join(dir, "my-own-model.gguf"), new Uint8Array(50));
+    const all = await downloads(dir, "unsloth/Qwen3-4B-Instruct-2507-GGUF:Q4_K_M");
+    const by = (s: string) => all.find((d) => d.path.includes(s))!;
+    assertEquals(by("30B").models, ["qwen3-30b-a3b"]);
+    assertEquals(by("30B").partial, true);
+    assertEquals(by("14B").models, ["qwen3-14b"]);
+    assertEquals(by("Qwen3-4B").models, ["bootstrap"]);
+    assertEquals(by("Qwen3-4B").bytes, 100);
+    assertEquals(by("my-own").models, []);
+    // Never the bootstrap or a file that is not ours; the kept model stays, even unfinished.
+    const names = (k?: string) =>
+      removable(all, k).map((d) => d.path.split("/").pop()!.slice(0, 22)).sort();
+    assertEquals(names(), ["unsloth_Qwen3-14B-GGUF", "unsloth_Qwen3-30B-A3B-"]);
+    assertEquals(names("qwen3-30b-a3b"), ["unsloth_Qwen3-14B-GGUF"]);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("disk: a model that fits the GPU but not the disk is not recommended", async () => {
+  const { withDisk, describePlan } = await import("../src/rails.ts");
+  const GB = 2 ** 30;
+  const partial30b = {
+    path: "/m/unsloth_Qwen3-30B-A3B-Instruct-2507-GGUF_x.gguf.downloadInProgress",
+    bytes: 6.5 * GB,
+    partial: true,
+    models: ["qwen3-30b-a3b"],
+  };
+  const fits = withDisk(fitAll(27), [partial30b], 5);
+  // 13.8 GB, 6.5 already here: 7.3 + 2 margin needed, 5 free.
+  assertEquals(fits[0].diskOK, false);
+  assertEquals(Math.round(fits[0].diskNeedGB! * 10) / 10, 9.3);
+  const text = describePlan({
+    server: "s",
+    devices: [],
+    budgetGB: 27,
+    accel: "MTL0 Apple M3 Pro",
+    warning: null,
+    fits,
+    diskFreeGB: 5,
+    downloads: [partial30b],
+  });
+  assertStringIncludes(text, "NOT ENOUGH DISK");
+  assertStringIncludes(
+    text,
+    "Low disk: qwen3-30b-a3b needs 9.3 GB free, and there is 5.0 GB. Warn the user.",
+  );
+  assertStringIncludes(text, "qwen3-30b-a3b 6.5 GB (unfinished)");
+  assert(!text.includes("Recommended: qwen3-30b-a3b"));
+});
