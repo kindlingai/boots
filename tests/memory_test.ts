@@ -61,3 +61,16 @@ Deno.test("memory syncs between two machines through a git remote", async () => 
   assertStringIncludes(await a.read("boxes"), "gpu-2 from b");
   assertEquals(await new Memory(join(d, "c")).remote(), null);
 });
+
+Deno.test("search matches whole words and ranks doc names", async () => {
+  const d = await Deno.makeTempDir();
+  const docs = join(d, "docs");
+  await Deno.mkdir(docs);
+  await Deno.writeTextFile(join(docs, "ray.md"), "# Ray\nCluster framework.\n");
+  await Deno.writeTextFile(join(docs, "misc.md"), "# Misc\nan array of disks\n");
+  const m = new Memory(join(d, "memory"), docs);
+  await m.init();
+  const hits = await m.search("ray");
+  assertEquals(hits.map((h) => h.source), ["docs/ray"]);
+  assertEquals((await m.search("the and of")).length, 0);
+});

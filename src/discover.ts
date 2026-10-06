@@ -22,6 +22,7 @@ export const LOCAL_PORTS: Record<number, string> = {
   5001: "KoboldCpp",
   8081: "llama.cpp",
   18080: "ai-bootstrap llama.cpp",
+  6381: "mentat router",
 };
 
 /** "qwen3:4b" 4, "Qwen3-30B-A3B" 30, "mixtral-8x7b" 56, "smol-360m" 0.36. */

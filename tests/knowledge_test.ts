@@ -1,0 +1,98 @@
+// The bundled knowledge base: every doc ships, search finds it, and the
+// model reaches it through the memory_search tool call.
+//
+// AIBOOT_BIN=dist/ai-bootstrap runs the same checks against a compiled
+// binary, proving the docs are embedded in it.
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import { fromFileUrl } from "@std/path";
+import { serveMock } from "./fixtures/mock_llm.ts";
+
+const EXPECTED = [
+  "docker",
+  "intermediate-linux",
+  "intermediate-macos",
+  "intermediate-windows",
+  "llama-cpp",
+  "mentat",
+  "ollama",
+  "ray",
+  "sglang",
+  "tensorfold",
+  "vllm",
+];
+
+const bin = Deno.env.get("AIBOOT_BIN");
+const argv = bin
+  ? [bin]
+  : [Deno.execPath(), "run", "-A", fromFileUrl(new URL("../src/main.ts", import.meta.url))];
+
+async function run(args: string[], env: Record<string, string> = {}, stdin = "") {
+  const home = await Deno.makeTempDir();
+  const p = new Deno.Command(argv[0], {
+    args: [...argv.slice(1), ...args],
+    // Run away from the repo so only embedded docs can be found.
+    cwd: home,
+    env: { AIBOOT_HOME: `${home}/data`, AIBOOT_CACHE: `${home}/cache`, NO_COLOR: "1", ...env },
+    stdin: "piped",
+    stdout: "piped",
+    stderr: "piped",
+  }).spawn();
+  const w = p.stdin.getWriter();
+  await w.write(new TextEncoder().encode(stdin));
+  await w.close();
+  const o = await p.output();
+  const d = new TextDecoder();
+  return { code: o.code, out: d.decode(o.stdout), err: d.decode(o.stderr) };
+}
+
+Deno.test("every knowledge-base doc ships", async () => {
+  const r = await run(["--docs"]);
+  assertEquals(r.out.trim().split("\n"), EXPECTED.map((n) => `docs/${n}`));
+});
+
+Deno.test("search finds each topic, by whole words", async () => {
+  for (
+    const [q, want] of [
+      ["ray", "docs/ray:"],
+      ["mentat router", "docs/mentat:"],
+      ["tensorfold metal", "docs/tensorfold:"],
+      ["dgx spark", "docs/intermediate-linux:"],
+      ["strix halo", "docs/intermediate-linux:"],
+      ["wsl vllm", "docs/intermediate-windows:"],
+      ["mlx", "docs/intermediate-macos:"],
+      ["nvidia container toolkit", "docs/docker:"],
+      ["OLLAMA_CONTEXT_LENGTH", "docs/ollama:"],
+      ["tool-call-parser", "docs/vllm:"],
+    ]
+  ) {
+    const r = await run(["--search", ...q.split(" ")]);
+    assertEquals(r.code, 0, `${q}: ${r.err}`);
+    const top = r.out.split("\n").slice(0, 3);
+    assert(top.some((l) => l.startsWith(want)), `${q} → ${top.join(" | ")}`);
+  }
+});
+
+Deno.test("the model reaches the knowledge base through memory_search", async () => {
+  const m = serveMock([
+    { calls: [{ name: "memory_search", args: { query: "ray multi-node" } }] },
+    { calls: [{ name: "memory_read", args: { name: "docs/mentat" } }] },
+    { content: "done" },
+  ]);
+  try {
+    const r = await run(
+      [],
+      { OPENAI_BASE_URL: m.url, OPENAI_MODEL: "mock" },
+      "1\nhelp me\n/quit\n",
+    );
+    assertEquals(r.code, 0, r.out + r.err);
+    const last = m.seen.filter((b) => b.tools).at(-1).messages;
+    const tools = last.filter((x: any) => x.role === "tool");
+    assertStringIncludes(tools[0].content, "docs/ray:");
+    assertStringIncludes(tools[1].content, "kindlingai/mentat");
+    // The system prompt names the knowledge base.
+    const sys = m.seen.find((b) => b.tools)?.messages[0].content ?? "";
+    assertStringIncludes(sys, "tensorfold");
+  } finally {
+    await m.close();
+  }
+});

@@ -1,5 +1,5 @@
 import { assertEquals, assertStringIncludes } from "@std/assert";
-import { join } from "@std/path";
+import { fromFileUrl, join } from "@std/path";
 import { McpManager } from "../src/mcp.ts";
 
 Deno.test("stdio MCP: list and call", async () => {
@@ -7,7 +7,7 @@ Deno.test("stdio MCP: list and call", async () => {
   const m = new McpManager(join(d, "mcp.json"));
   await m.add("calc", {
     command: Deno.execPath(),
-    args: ["run", "-A", new URL("./fixtures/mcp_server.ts", import.meta.url).pathname],
+    args: ["run", "-A", fromFileUrl(new URL("./fixtures/mcp_server.ts", import.meta.url))],
   });
   try {
     assertStringIncludes(await m.list(), "add: Add two numbers");

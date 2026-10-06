@@ -9,6 +9,35 @@ import { dataDir, docsDir, ensureDir, exists } from "./platform.ts";
 
 export const INDEX_LIMIT = 4096;
 
+const STOPWORDS = new Set([
+  "a",
+  "an",
+  "and",
+  "the",
+  "to",
+  "of",
+  "in",
+  "on",
+  "for",
+  "with",
+  "how",
+  "do",
+  "i",
+  "is",
+  "it",
+  "my",
+  "what",
+  "which",
+  "use",
+  "using",
+  "set",
+  "up",
+  "can",
+  "should",
+  "about",
+  "or",
+]);
+
 const SEED = `# Memory index
 
 One line per memory file: \`name\` — what it holds. Keep this under 4 kB.
@@ -58,8 +87,12 @@ export class Memory {
 
   async list(): Promise<string[]> {
     const out: string[] = [];
-    for await (const e of Deno.readDir(this.dir)) {
-      if (e.isFile && e.name.endsWith(".md")) out.push(e.name.slice(0, -3));
+    try {
+      for await (const e of Deno.readDir(this.dir)) {
+        if (e.isFile && e.name.endsWith(".md")) out.push(e.name.slice(0, -3));
+      }
+    } catch {
+      // no memory folder yet
     }
     return out.sort();
   }
@@ -115,24 +148,50 @@ export class Memory {
     return `${append ? "appended to" : "wrote"} ${name} (${bytes} bytes)`;
   }
 
-  /** Term-frequency search over memories and docs. */
-  async search(query: string, limit = 8): Promise<Hit[]> {
-    const terms = query.toLowerCase().split(/[^a-z0-9._-]+/).filter((t) => t.length > 1);
+  /**
+   * Searches memories and the bundled knowledge base. Terms match at word
+   * starts ("gpu" finds "GPUs", "ray" does not find "array"); a file whose
+   * name matches a term is listed first, and each file contributes at most
+   * three lines.
+   */
+  async search(query: string, limit = 10): Promise<Hit[]> {
+    const terms = [...new Set(query.toLowerCase().split(/[^a-z0-9.+_-]+/))]
+      .map((t) => t.replace(/^[.-]+|[.-]+$/g, ""))
+      .filter((t) => t.length > 1 && !STOPWORDS.has(t));
     if (!terms.length) return [];
+    const res = terms.map((t) =>
+      new RegExp(`(?<![a-z0-9])${t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`, "i")
+    );
     const files: [string, string][] = [];
     for (const n of await this.list()) files.push([n, join(this.dir, `${n}.md`)]);
     for (const n of await this.docNames()) files.push([`docs/${n}`, join(this.docs, `${n}.md`)]);
     const hits: Hit[] = [];
     for (const [source, p] of files) {
-      const lines = (await Deno.readTextFile(p).catch(() => "")).split("\n");
-      lines.forEach((text, i) => {
-        const l = text.toLowerCase();
-        let score = 0;
-        for (const t of terms) {
-          if (l.includes(t)) score += 1 + (source.toLowerCase().includes(t) ? 0.5 : 0);
+      const text = await Deno.readTextFile(p).catch(() => "");
+      const lines = text.split("\n");
+      const name = source.replace(/^docs\//, "").replace(/[-_.]/g, " ");
+      const named = res.filter((r) => r.test(name)).length;
+      // One entry per line; a doc whose name matches gets its title line boosted.
+      const mine = new Map<number, Hit>();
+      if (named) {
+        const at = Math.max(0, lines.findIndex((l) => l.startsWith("# ")));
+        mine.set(at, {
+          source,
+          line: at + 1,
+          text: (lines[at] ?? "").trim().slice(0, 200),
+          score: 3 * named + 1,
+        });
+      }
+      lines.forEach((line, i) => {
+        const matched = res.filter((r) => r.test(line)).length;
+        if (!matched) return;
+        const score = matched * 2 + (line.startsWith("#") ? 1 : 0) + named * 0.5;
+        const prev = mine.get(i);
+        if (!prev || prev.score < score) {
+          mine.set(i, { source, line: i + 1, text: line.trim().slice(0, 200), score });
         }
-        if (score) hits.push({ source, line: i + 1, text: text.trim().slice(0, 200), score });
       });
+      hits.push(...[...mine.values()].sort((x, y) => y.score - x.score).slice(0, 3));
     }
     return hits.sort((a, b) => b.score - a.score).slice(0, limit);
   }

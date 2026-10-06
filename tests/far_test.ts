@@ -1,4 +1,5 @@
 // Drives a real far agent over pipes, as ssh would.
+import { fromFileUrl } from "@std/path";
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { Rpc } from "../src/rpc.ts";
 import { b64 } from "../src/host.ts";
@@ -8,7 +9,7 @@ Deno.test({
   // The commands below are POSIX shell; Windows hosts run PowerShell.
   ignore: Deno.build.os === "windows",
 }, async () => {
-  const main = new URL("../src/main.ts", import.meta.url).pathname;
+  const main = fromFileUrl(new URL("../src/main.ts", import.meta.url));
   const p = new Deno.Command(Deno.execPath(), {
     args: ["run", "-A", main, "--far"],
     stdin: "piped",

@@ -113,8 +113,8 @@ export const TOOLS: ToolDef[] = [
   ),
   fn(
     "memory_search",
-    "Search memories and the bundled docs.",
-    { query: str("words to look for") },
+    "Search your memories and the bundled knowledge base (docs on llama.cpp, vLLM, SGLang, Ollama, TensorFold, Ray, mentat, Docker, and per-OS guides to hardware-accelerated models). Returns matching lines as source:line; read a whole doc with memory_read docs/<name>.",
+    { query: str("a few keywords, e.g. 'dgx spark vllm' or 'ray multi-node'") },
     ["query"],
   ),
   fn(
@@ -314,7 +314,7 @@ export class Session {
         const hits = await this.memory.search(String(args.query ?? ""));
         return hits.length
           ? hits.map((h) => `${h.source}:${h.line}: ${h.text}`).join("\n")
-          : "no matches";
+          : "no matches; try fewer or different words, or memory_read docs/<name> from the list in the system prompt";
       }
       case "memory_sync": {
         const url = args.remote_url ? String(args.remote_url) : undefined;
