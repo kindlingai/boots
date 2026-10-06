@@ -4,6 +4,7 @@
 
 import { basename, dirname } from "@std/path";
 import { currentTarget, isWindows, VERSION } from "./platform.ts";
+import { packageName } from "./package.ts";
 
 export const RELEASE_REPOS = ["mmastrac/ai-bootstrap", "kindlingai/boots"];
 
@@ -75,15 +76,14 @@ export async function checkForUpdate(
   }
 }
 
-/** The release file for this platform, as the release workflow names it. */
-export function assetName(target = currentTarget()): string {
-  const ext = target.includes("windows") ? "zip" : target.includes("darwin") ? "sh" : "tar.gz";
-  return `ai-bootstrap-${target}.${ext}`;
+/** The release file of `version` for this platform, as the release workflow names it. */
+export function assetName(version: string, target = currentTarget()): string {
+  return packageName(target, version);
 }
 
 /** The system prompt note: what is newer, and how this install updates. */
 export function updateNote(u: Update, current = VERSION, exe = Deno.execPath()): string {
-  const asset = assetName();
+  const asset = assetName(u.version);
   const download = `https://github.com/${u.repo}/releases/download/${u.tag}/${asset}`;
   const compiled = basename(exe).toLowerCase().startsWith("ai-bootstrap");
   const how = !compiled

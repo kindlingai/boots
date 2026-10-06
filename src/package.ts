@@ -1,10 +1,16 @@
 // Release packages (made by scripts/package.sh): the name of the package for
 // each target, and how to get the ai-bootstrap binary back out of one.
 
-/** The release asset holding the ai-bootstrap binary for `target`. */
-export function packageName(target: string): string {
+import { VERSION } from "./platform.ts";
+
+/**
+ * The release asset holding the ai-bootstrap binary for `target`, e.g.
+ * ai-bootstrap-0.1.21-x86_64-unknown-linux-gnu.tar.gz. The binary inside is
+ * plain ai-bootstrap (ai-bootstrap.exe on Windows).
+ */
+export function packageName(target: string, version: string = VERSION): string {
   const ext = target.includes("windows") ? "zip" : target.includes("darwin") ? "sh" : "tar.gz";
-  return `ai-bootstrap-${target}.${ext}`;
+  return `ai-bootstrap-${version.replace(/^v/, "")}-${target}.${ext}`;
 }
 
 async function gunzip(data: Uint8Array): Promise<Uint8Array> {

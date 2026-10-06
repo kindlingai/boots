@@ -84,18 +84,20 @@ jobs:
       # Unpack the way a user would: tar on Linux, the script on macOS, a zip on Windows.
       - name: Unpack
         if: runner.os == 'Linux'
-        run: tar -xzf dist/ai-bootstrap-${{ matrix.target }}.tar.gz -C dist
+        run: tar -xzf "dist/ai-bootstrap-$(jq -r .version deno.json)-${{ matrix.target }}.tar.gz" -C dist
       - name: Unpack
         if: runner.os == 'macOS'
         run: |
-          sh dist/ai-bootstrap-${{ matrix.target }}.sh | tee extract.txt
+          sh "dist/ai-bootstrap-$(jq -r .version deno.json)-${{ matrix.target }}.sh" | tee extract.txt
           out=$(tail -1 extract.txt)
           test "$out" = "$PWD/dist/ai-bootstrap"
           codesign --verify --verbose "$out"
       - name: Unpack
         if: runner.os == 'Windows'
         shell: pwsh
-        run: Expand-Archive -Path dist/ai-bootstrap-${{ matrix.target }}.zip -DestinationPath dist
+        run: |
+          $v = (Get-Content deno.json -Raw | ConvertFrom-Json).version
+          Expand-Archive -Path "dist/ai-bootstrap-$v-${{ matrix.target }}.zip" -DestinationPath dist
       - name: Run the binary
         shell: bash
         run: |

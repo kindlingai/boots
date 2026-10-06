@@ -4,6 +4,7 @@ import { fromFileUrl, join } from "@std/path";
 import { assertEquals } from "@std/assert";
 import { packageName, unpack } from "../src/package.ts";
 import { binaryFor } from "../src/ssh.ts";
+import { VERSION } from "../src/platform.ts";
 
 const script = fromFileUrl(new URL("../scripts/package.sh", import.meta.url));
 // Needs sh, tar, gzip and zip.
@@ -25,11 +26,21 @@ async function fixture() {
 
 Deno.test({ name: "package names", ignore }, () => {
   assertEquals(
-    packageName("x86_64-unknown-linux-gnu"),
-    "ai-bootstrap-x86_64-unknown-linux-gnu.tar.gz",
+    packageName("x86_64-unknown-linux-gnu", "0.1.21"),
+    "ai-bootstrap-0.1.21-x86_64-unknown-linux-gnu.tar.gz",
   );
-  assertEquals(packageName("aarch64-apple-darwin"), "ai-bootstrap-aarch64-apple-darwin.sh");
-  assertEquals(packageName("x86_64-pc-windows-msvc"), "ai-bootstrap-x86_64-pc-windows-msvc.zip");
+  assertEquals(
+    packageName("aarch64-apple-darwin", "v0.1.21"),
+    "ai-bootstrap-0.1.21-aarch64-apple-darwin.sh",
+  );
+  assertEquals(
+    packageName("x86_64-pc-windows-msvc", "0.1.21"),
+    "ai-bootstrap-0.1.21-x86_64-pc-windows-msvc.zip",
+  );
+  assertEquals(
+    packageName("x86_64-unknown-linux-gnu"),
+    `ai-bootstrap-${VERSION}-x86_64-unknown-linux-gnu.tar.gz`,
+  );
 });
 
 Deno.test({ name: "the macOS script writes ai-bootstrap next to itself", ignore }, async () => {
