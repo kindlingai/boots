@@ -4,6 +4,7 @@
 //   ai-bootstrap --far        far agent (started by ai-bootstrap over ssh)
 //   ai-bootstrap --version
 
+import { checkForUpdate } from "./update.ts";
 import { askpassMain } from "./askpass.ts";
 import { farMain } from "./far.ts";
 import { jsonEvalMain } from "./jsoneval.ts";
@@ -26,7 +27,7 @@ import {
   scriptsDir,
   VERSION,
 } from "./platform.ts";
-import { bold, dim, red, say, warn } from "./ui.ts";
+import { bold, dim, info, red, say, warn } from "./ui.ts";
 import { emit, frontend, setFrontend } from "./frontend.ts";
 import { TuiFrontend } from "./frontends/tui.ts";
 
@@ -44,6 +45,8 @@ async function interactive(tui: boolean): Promise<number> {
     } else warn("--tui needs a terminal; using the line interface");
   }
   say(`${bold("ai-bootstrap")} ${VERSION} ${dim(`(${currentTarget()}; memory in ${dataDir()})`)}`);
+  // Runs while the models start; the prompt picks it up once it answers.
+  const updateCheck = checkForUpdate();
   const memory = new Memory();
   await memory.init();
   const pulled = await memory.pull();
@@ -108,6 +111,11 @@ async function interactive(tui: boolean): Promise<number> {
 
   const session = new Session(router, memory, new McpManager(), makeNearAsker());
   session.fullFailure = failure;
+  updateCheck.then((u) => {
+    if (!u) return;
+    session.update = u;
+    info(`ai-bootstrap ${u.version} is available (this is ${VERSION}): ${u.url}`);
+  });
   await session.init();
   const others = booted.sources.filter((s) =>
     s.endpoint.baseUrl !== router.bootstrap.baseUrl || s.endpoint.model !== router.bootstrap.model

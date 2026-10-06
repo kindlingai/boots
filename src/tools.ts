@@ -1,5 +1,6 @@
 // The tools the model can call, and the session state they act on.
 
+import type { Update } from "./update.ts";
 import { join } from "@std/path";
 import { b64, DEFAULT_TIMEOUT_MS, type ExecResult, Host, type HostInfo } from "./host.ts";
 import { chat, type Endpoint, reachable, type Router, type ToolDef } from "./llm.ts";
@@ -360,6 +361,8 @@ export class Session {
   private always = new Set<string>();
   /** The full model's start script failed at boot (cleared once it starts). */
   fullFailure: FullFailure | null = null;
+  /** A newer release, found by the startup check: the prompt asks the model to offer it. */
+  update: Update | null = null;
 
   constructor(
     readonly router: Router,

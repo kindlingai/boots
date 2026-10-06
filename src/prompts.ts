@@ -1,6 +1,7 @@
 // System prompts, built from the templates in docs/prompts/ (see its
 // README). base.md drives a small base model; main.md a capable one.
 
+import { type Update, updateNote } from "./update.ts";
 import { join } from "@std/path";
 import type { Endpoint, Router } from "./llm.ts";
 import { sizeFromName } from "./discover.ts";
@@ -77,9 +78,16 @@ export interface PromptVars {
   fresh: boolean;
   /** The full model's start script failed at boot: diagnose that first. */
   failure?: FullFailure | null;
+  /** A newer ai-bootstrap release: offer to update. */
+  update?: Update | null;
 }
 
 export function systemPrompt(t: Templates, router: Router, v: PromptVars): string {
+  const prompt = basePrompt(t, router, v);
+  return v.update ? `${prompt}\n\n${updateNote(v.update)}` : prompt;
+}
+
+function basePrompt(t: Templates, router: Router, v: PromptVars): string {
   const ep = router.current();
   const fallback = router.usingFallback() && router.smart
     ? `\nThe smarter model ${router.smart.label} is not answering right now, so you are standing in for it. Skip any opening question: tell the user, keep to small safe steps, and help get that model answering again.\n`

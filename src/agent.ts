@@ -99,6 +99,7 @@ export class Agent {
         plan: this.s.plan.length ? plain(renderPlan(this.s.plan)) : "(none yet)",
         fresh,
         failure: this.s.fullFailure,
+        update: this.s.update,
       });
   }
 

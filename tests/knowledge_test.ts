@@ -38,7 +38,13 @@ async function run(args: string[], env: Record<string, string> = {}, stdin = "")
     args: [...argv.slice(1), ...args],
     // Run away from the repo so only embedded docs can be found.
     cwd: home,
-    env: { AIBOOT_HOME: `${home}/data`, AIBOOT_CACHE: `${home}/cache`, NO_COLOR: "1", ...env },
+    env: {
+      AIBOOT_HOME: `${home}/data`,
+      AIBOOT_CACHE: `${home}/cache`,
+      NO_COLOR: "1",
+      AIBOOT_UPDATE_CHECK: "0",
+      ...env,
+    },
     stdin: "piped",
     stdout: "piped",
     stderr: "piped",
