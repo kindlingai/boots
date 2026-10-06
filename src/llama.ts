@@ -11,7 +11,7 @@ import {
   randomFreePort,
   scriptsDir,
 } from "./platform.ts";
-import type { Endpoint } from "./llm.ts";
+import { BOOTSTRAP_SAMPLING, type Endpoint } from "./llm.ts";
 import { contextFor } from "./discover.ts";
 import { info } from "./ui.ts";
 import { dirSize, DownloadWatch, logPath, scriptPath, supervise } from "./intelligence.ts";
@@ -184,6 +184,7 @@ export function notStarted(): Endpoint {
     baseUrl: "",
     model,
     contextChars: contextFor(4, false),
+    sampling: BOOTSTRAP_SAMPLING,
   };
 }
 
@@ -222,6 +223,7 @@ export async function startLlama(server: string): Promise<Running> {
       baseUrl: `http://127.0.0.1:${port}/v1`,
       model,
       contextChars: contextFor(4, false),
+      sampling: BOOTSTRAP_SAMPLING,
     },
     script,
     server,

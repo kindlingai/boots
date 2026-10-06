@@ -1,4 +1,4 @@
-import { assertEquals, assertStringIncludes } from "@std/assert";
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { chat, type Endpoint, normalize, Router } from "../src/llm.ts";
 import { sizeFromName } from "../src/discover.ts";
 import { serveMock } from "./fixtures/mock_llm.ts";
@@ -151,5 +151,41 @@ Deno.test("handover: the bootstrap stops for the full model and comes back when 
     assertEquals(r.bootstrapUp(), true);
   } finally {
     await small.close();
+  }
+});
+
+Deno.test("sampling: none unless the endpoint asks; a server that rejects it is asked again", async () => {
+  const bodies: any[] = [];
+  const server = Deno.serve({ port: 0, onListen() {} }, async (req) => {
+    const b = await req.json();
+    bodies.push(b);
+    if ("temperature" in b || "top_p" in b) {
+      return new Response("unsupported sampling parameter: temperature", { status: 400 });
+    }
+    const sse = `data: ${
+      JSON.stringify({ choices: [{ delta: { content: "ok" } }] })
+    }\n\ndata: [DONE]\n\n`;
+    return new Response(sse, { headers: { "content-type": "text/event-stream" } });
+  });
+  try {
+    const ep = {
+      label: "x",
+      baseUrl: `http://127.0.0.1:${server.addr.port}/v1`,
+      model: "x",
+      contextChars: 1e4,
+    };
+    const hi = [{ role: "user" as const, content: "hi" }];
+    assertEquals((await chat(ep, hi, [])).content, "ok");
+    assertEquals(bodies.length, 1);
+    assert(!("temperature" in bodies[0]), "a remote model gets the server's defaults");
+
+    bodies.length = 0;
+    const tuned = { ...ep, sampling: { temperature: 0.7, top_p: 0.8 } };
+    assertEquals((await chat(tuned, hi, [])).content, "ok");
+    assertEquals(bodies[0].temperature, 0.7);
+    assertEquals(bodies[0].top_p, 0.8);
+    assert(!("temperature" in bodies[1]) && !("top_p" in bodies[1]), "retried without them");
+  } finally {
+    await server.shutdown();
   }
 });

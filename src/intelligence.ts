@@ -241,7 +241,6 @@ async function answers(ep: Endpoint): Promise<boolean> {
       [],
       {},
       AbortSignal.timeout(60_000),
-      0,
     );
     return true;
   } catch {

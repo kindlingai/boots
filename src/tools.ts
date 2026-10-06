@@ -270,6 +270,11 @@ export const TOOLS: ToolDef[] = [
         type: "boolean",
         description: "prompt the user for a key, kept in memory only",
       },
+      sampling: {
+        type: "object",
+        description:
+          'optional sampling parameters to send with every request, e.g. {"temperature": 0.7, "top_p": 0.8}. Leave out to use the server\'s defaults (best for most models).',
+      },
     },
     ["base_url", "model"],
   ),
@@ -893,6 +898,9 @@ export class Session {
       model,
       keyEnv: args.api_key_env || undefined,
       contextChars: contextFor(sizeFromName(model), /openrouter|openai|anthropic/.test(baseUrl)),
+      sampling: args.sampling && typeof args.sampling === "object" && !Array.isArray(args.sampling)
+        ? args.sampling
+        : undefined,
     };
     if (args.ask_user_for_key) {
       const k = await askSecret(`API key for ${baseUrl} (kept in memory only): `);
@@ -912,7 +920,9 @@ export class Session {
         return "the model answered with nothing; not switching";
       }
     } catch (e) {
-      return `could not use ${model}: ${(e as Error).message}`;
+      return `could not use ${model}: ${
+        (e as Error).message
+      }. This is the server's error; quote it to the user rather than guessing what kind of model it is.`;
     }
     this.router.setSmart(ep);
     await saveSmart(ep);

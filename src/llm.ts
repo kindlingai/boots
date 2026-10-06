@@ -35,7 +35,16 @@ export interface Endpoint {
   contextChars: number;
   /** Overrides the tier guessed from the model name (see prompts.ts tierOf). */
   tier?: "base" | "full";
+  /**
+   * Sampling parameters sent with every request (temperature, top_p, ...).
+   * None by default: the server's own defaults apply, and some servers
+   * reject parameters they do not support.
+   */
+  sampling?: Record<string, unknown>;
 }
+
+/** The small local model we run ourselves: kept steady. */
+export const BOOTSTRAP_SAMPLING = { temperature: 0.3 };
 
 export class LLMError extends Error {
   constructor(msg: string, readonly retryable: boolean) {
@@ -103,9 +112,12 @@ export async function chat(
   tools: ToolDef[],
   sink: StreamSink = {},
   signal?: AbortSignal,
-  temperature = 0.3,
+  /** Overrides the endpoint's temperature for this request (e.g. 0 for a classifier). */
+  temperature?: number,
   /** "required": the server must answer with a tool call (llama.cpp enforces it with a grammar). */
   toolChoice?: "required",
+  /** Internal: retrying after a 400 without the sampling parameters. */
+  plain = false,
 ): Promise<Reply> {
   const headers: Record<string, string> = { "content-type": "application/json" };
   const key = apiKey(ep);
@@ -114,13 +126,15 @@ export async function chat(
     headers["HTTP-Referer"] = "https://github.com/mmastrac/ai-bootstrap";
     headers["X-Title"] = "ai-bootstrap";
   }
+  const sampling: Record<string, unknown> = plain ? {} : { ...ep.sampling };
+  if (!plain && temperature !== undefined) sampling.temperature = temperature;
   const body = {
+    ...sampling,
     model: ep.model,
     messages,
     tools: tools.length ? tools : undefined,
     tool_choice: tools.length && toolChoice ? toolChoice : undefined,
     stream: true,
-    temperature,
   };
   let r: Response;
   try {
@@ -136,9 +150,13 @@ export async function chat(
   }
   if (!r.ok) {
     const text = (await r.text()).slice(0, 500);
-    // A server that does not support tool_choice: ask again without it.
+    // A server that does not support tool_choice, or a sampling parameter:
+    // ask again without it.
     if (r.status === 400 && body.tool_choice) {
-      return await chat(ep, messages, tools, sink, signal, temperature);
+      return await chat(ep, messages, tools, sink, signal, temperature, undefined, plain);
+    }
+    if (r.status === 400 && Object.keys(sampling).length) {
+      return await chat(ep, messages, tools, sink, signal, undefined, undefined, true);
     }
     throw new LLMError(
       `${ep.label}: HTTP ${r.status}: ${text}`,
