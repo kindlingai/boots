@@ -16,6 +16,8 @@ export function serveMock(script: Scripted[], port = 0, classify?: (cmd: string)
     if (url.pathname.endsWith("/models")) return Response.json({ data: [{ id: "mock-30b" }] });
     const body = await req.json();
     seen.push(body);
+    const delay = Number(Deno.env.get("MOCK_DELAY_MS") ?? 0);
+    if (delay && body.tools) await new Promise((r) => setTimeout(r, delay));
     const last = body.messages?.at(-1);
     if (last?.role === "tool" && Deno.env.get("MOCK_LOG")) console.error(`tool> ${last.content}`);
     if (body.tools && Deno.env.get("MOCK_SYSTEM") && body.messages?.[0]?.role === "system") {

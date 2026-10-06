@@ -6,7 +6,7 @@ import { type ChatShape, type Endpoint, LLMError } from "./llm.ts";
 import { BASE_TOOLS, describe, renderPlan, type Session, TOOLS } from "./tools.ts";
 import { currentTier, loadTemplates, systemPrompt, type Templates, tierOf } from "./prompts.ts";
 import { secrets } from "./secrets.ts";
-import { ask, bold, cyan, dim, Interrupted, plain, red, warn, write } from "./ui.ts";
+import { ask, bold, cyan, dim, Interrupted, plain, red, spinner, warn, write } from "./ui.ts";
 
 const MAX_STEPS = 60;
 
@@ -123,15 +123,22 @@ export class Agent {
       this.abort = new AbortController();
       let reply: Reply;
       let printed = false;
+      const spin = spinner("thinking");
       try {
         reply = await this.s.router.chat(await this.messages(), shape, {
           content: (t) => {
-            if (!printed) write(cyan("● "));
+            if (!printed) {
+              spin.stop();
+              write(cyan("● "));
+            }
             printed = true;
             write(t);
           },
           reasoning: (t) => {
-            if (Deno.env.get("AIBOOT_SHOW_THINKING")) write(dim(t));
+            if (Deno.env.get("AIBOOT_SHOW_THINKING")) {
+              spin.stop();
+              write(dim(t));
+            }
           },
         }, this.abort.signal);
       } catch (e) {
@@ -144,6 +151,7 @@ export class Agent {
         if (!(e instanceof LLMError)) throw e;
         return;
       } finally {
+        spin.stop();
         this.abort = null;
       }
       if (printed) write("\n");
@@ -268,7 +276,13 @@ export async function repl(agent: Agent): Promise<void> {
           );
           break;
         case "/model":
-          console.log(`bootstrap: ${s.router.bootstrap.label} (${s.router.bootstrap.baseUrl})`);
+          console.log(
+            `bootstrap: ${s.router.bootstrap.label} (${
+              s.router.bootstrapUp()
+                ? s.router.bootstrap.baseUrl
+                : "stopped while the full model runs"
+            })`,
+          );
           console.log(
             `smart:     ${
               s.router.smart ? `${s.router.smart.label} (${s.router.smart.baseUrl})` : "none"

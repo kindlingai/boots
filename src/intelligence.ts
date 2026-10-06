@@ -22,7 +22,9 @@ stop() { trap '' TERM; kill -TERM 0 2>/dev/null; }
 trap 'stop; exit 143' INT TERM HUP
 while kill -0 "$pid" 2>/dev/null; do
   kill -0 "$watch" 2>/dev/null || { stop; exit 0; }
-  sleep 1
+  # In the background, so a signal is handled at once rather than after the sleep.
+  sleep 1 &
+  wait $!
 done
 wait "$pid"
 `;
@@ -134,7 +136,14 @@ export async function supervise(script: string, args: string[], log: string): Pr
             stdout: "null",
             stderr: "null",
           }).outputSync();
-        } else proc.kill("SIGTERM");
+        } else {
+          // The whole group at once (the supervisor leads it): no waiting on its trap.
+          try {
+            Deno.kill(-proc.pid, "SIGTERM");
+          } catch {
+            proc.kill("SIGTERM");
+          }
+        }
       } catch {
         // gone
       }

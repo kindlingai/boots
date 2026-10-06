@@ -170,6 +170,17 @@ ${lib}exec ${sq(server)} ${args} --port "\${1:-${port}}"
 `;
 }
 
+/** The bootstrap's endpoint before it is started (no URL yet): see Router.ensureBootstrap. */
+export function notStarted(): Endpoint {
+  const model = Deno.env.get("AIBOOT_BOOTSTRAP_MODEL") ?? DEFAULT_MODEL;
+  return {
+    label: `${model.split("/").pop()} (local llama.cpp)`,
+    baseUrl: "",
+    model,
+    contextChars: contextFor(4, false),
+  };
+}
+
 /** Models from before models/ existed were in the cache; move them rather than download again. */
 async function moveOldModels(to: string) {
   const old = join(cacheDir(), "models");

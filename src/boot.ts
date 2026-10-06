@@ -4,7 +4,7 @@
 
 import type { Endpoint } from "./llm.ts";
 import { scanApiKeys, scanLocal, type Source } from "./discover.ts";
-import { installedServer, installLlama, type Running, startLlama } from "./llama.ts";
+import { installedServer, installLlama, notStarted, type Running, startLlama } from "./llama.ts";
 import type { Memory } from "./memory.ts";
 import { bold, choose, confirm, dim, info, warn } from "./ui.ts";
 import { freeBytes } from "./hardware.ts";
@@ -14,6 +14,8 @@ export interface Booted {
   bootstrap: Endpoint;
   sources: Source[];
   llama: Running | null;
+  /** The installed llama-server for the bootstrap, when it was left unstarted (deferLocal). */
+  deferred: string | null;
   facts: string;
 }
 
@@ -50,13 +52,18 @@ async function machineFacts(): Promise<string> {
   ].join("\n");
 }
 
-export async function boot(memory: Memory): Promise<Booted> {
+/**
+ * `deferLocal`: the full model has a start script, so an installed local
+ * bootstrap is not started yet (it only would be handed over at once).
+ */
+export async function boot(memory: Memory, deferLocal = false): Promise<Booted> {
   info("looking for local AI sources...");
   const [local, facts] = await Promise.all([scanLocal(), machineFacts()]);
   const sources = [...local, ...(await scanApiKeys())];
   const installed = await installedServer();
   let bootstrap: Endpoint;
   let llama: Running | null = null;
+  let deferred: string | null = null;
 
   if (!sources.length) {
     if (!installed) {
@@ -78,9 +85,16 @@ export async function boot(memory: Memory): Promise<Booted> {
           "nothing to bootstrap with. Set OPENROUTER_API_KEY, OPENAI_API_KEY, or OPENAI_BASE_URL (+ OPENAI_MODEL), or start a local model server",
         );
       }
+    } else if (deferLocal) {
+      info("the full model has a start script: starting it first; the small model waits");
     } else info("no running AI found; starting the installed llama.cpp");
-    llama = await startLlama(installed ?? (await installLlama()));
-    bootstrap = llama.endpoint;
+    if (installed && deferLocal) {
+      deferred = installed;
+      bootstrap = notStarted();
+    } else {
+      llama = await startLlama(installed ?? (await installLlama()));
+      bootstrap = llama.endpoint;
+    }
   } else {
     const labels = sources.map((s) => s.label);
     labels.push(
@@ -97,15 +111,15 @@ export async function boot(memory: Memory): Promise<Booted> {
       bootstrap = sources[pick].endpoint;
     }
   }
-  console.log(`${bold("bootstrap:")} ${bootstrap.label} ${dim(bootstrap.baseUrl)}`);
+  if (!deferred) console.log(`${bold("bootstrap:")} ${bootstrap.label} ${dim(bootstrap.baseUrl)}`);
 
   const found = sources.length
     ? sources.map((s) => `  - ${s.label} (${s.endpoint.baseUrl})`).join("\n")
     : "  - none";
   const allFacts =
-    `${facts}\n- AI sources found at boot:\n${found}\n- bootstrap this session: ${bootstrap.label} (${bootstrap.baseUrl})${
-      llama ? `, started by ${llama.script}` : ""
-    }`;
+    `${facts}\n- AI sources found at boot:\n${found}\n- bootstrap this session: ${bootstrap.label}${
+      deferred ? " (started only if the full model is not up)" : ` (${bootstrap.baseUrl})`
+    }${llama ? `, started by ${llama.script}` : ""}`;
   await memory.recordLocalSetup(allFacts);
-  return { bootstrap, sources, llama, facts: allFacts };
+  return { bootstrap, sources, llama, deferred, facts: allFacts };
 }

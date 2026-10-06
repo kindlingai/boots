@@ -16,6 +16,52 @@ export function write(s: string): void {
   Deno.stdout.writeSync(enc.encode(s));
 }
 
+export interface Spinner {
+  stop(): void;
+}
+
+const FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
+/**
+ * "⠋ thinking..." on the current line, animated, with the seconds once it
+ * takes a while; stop() clears the line. Nothing when stdout is not a terminal.
+ */
+export function spinner(label: string): Spinner {
+  if (!Deno.stdout.isTerminal()) return { stop() {} };
+  const t0 = Date.now();
+  let i = 0;
+  let live = true;
+  const draw = () => {
+    const s = Math.floor((Date.now() - t0) / 1000);
+    write(
+      `\r${cyan(FRAMES[i++ % FRAMES.length])} ${dim(`${label}...${s >= 3 ? ` ${s}s` : ""}`)}\x1b[K`,
+    );
+  };
+  // Whatever else prints meanwhile (notices, tool output) starts on a clean line.
+  const log = console.log;
+  const error = console.error;
+  console.log = (...a: unknown[]) => {
+    write("\r\x1b[K");
+    log(...a);
+  };
+  console.error = (...a: unknown[]) => {
+    write("\r\x1b[K");
+    error(...a);
+  };
+  draw();
+  const timer = setInterval(draw, 100);
+  return {
+    stop() {
+      if (!live) return;
+      live = false;
+      clearInterval(timer);
+      console.log = log;
+      console.error = error;
+      write("\r\x1b[K");
+    },
+  };
+}
+
 export function info(s: string): void {
   console.error(dim(s));
 }

@@ -27,6 +27,7 @@ import {
   green,
   info,
   red,
+  spinner,
   yellow,
 } from "./ui.ts";
 import { Classifier, type Verdict } from "./classify.ts";
@@ -433,7 +434,10 @@ export class Session {
    */
   private async check(cmd: string): Promise<{ verdict: Verdict | null; checked: boolean }> {
     if (isReadonly(cmd)) return { verdict: "readonly", checked: false };
-    const verdict = await this.classifier.classify(cmd, this.here.info.osName);
+    const spin = spinner("checking the command");
+    const verdict = await this.classifier.classify(cmd, this.here.info.osName).finally(() =>
+      spin.stop()
+    );
     if (verdict === "complex") {
       const n = (this.complexTries.get(cmd) ?? 0) + 1;
       this.complexTries.set(cmd, n);

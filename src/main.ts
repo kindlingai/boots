@@ -34,11 +34,13 @@ async function interactive(): Promise<number> {
   await memory.init();
   const pulled = await memory.pull();
   if (pulled) console.log(dim(pulled));
-  const booted = await boot(memory);
+  const hasFull = await exists(scriptPath("full"));
+  const booted = await boot(memory, hasFull);
   // The local bootstrap is stopped while the full model runs (handover), and
   // started again if that fails or stops answering.
   let llama = booted.llama;
-  const control: BootstrapControl | undefined = llama
+  const server = booted.llama?.server ?? booted.deferred;
+  const control: BootstrapControl | undefined = server
     ? {
       running: () => llama !== null,
       stop: async () => {
@@ -48,7 +50,7 @@ async function interactive(): Promise<number> {
         await l?.exited;
       },
       start: async () => {
-        llama = await startLlama(booted.llama!.server);
+        llama = await startLlama(server);
         return llama.endpoint;
       },
     }
@@ -57,16 +59,17 @@ async function interactive(): Promise<number> {
   router.onNotice = (s) => warn(s);
   let smart = await restoreSmart(router);
   let failure: FullFailure | null = null;
-  if (!smart && (await exists(scriptPath("full")))) {
+  if (!smart && hasFull) {
     // Nothing answering: hand over to the full model's start script.
-    const handed = await router.handover();
+    await router.handover();
     const r = await startFull((await loadSmart()).find((e) => !e.keyInMemory) ?? null).catch(
       (e) => {
         warn(`could not start the full model: ${(e as Error).message}`);
         return null;
       },
     );
-    if (handed && !(r && "ep" in r)) await router.ensureBootstrap();
+    // Not up: the small model takes over (started now if it was never started).
+    if (!(r && "ep" in r)) await router.ensureBootstrap();
     if (r && "ep" in r) {
       smart = r.ep;
       router.setSmart(smart);
