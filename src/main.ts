@@ -93,16 +93,6 @@ async function main(args: string[]): Promise<number> {
       for (const h of hits) console.log(`${h.source}:${h.line}: ${h.text}`);
       return hits.length ? 0 : 1;
     }
-    case "--docs": {
-      // The knowledge base bundled into this binary.
-      for (const n of await new Memory().docNames()) console.log(`docs/${n}`);
-      return 0;
-    }
-    case "--search": {
-      const hits = await new Memory().search(args.slice(1).join(" "));
-      for (const h of hits) console.log(`${h.source}:${h.line}: ${h.text}`);
-      return hits.length ? 0 : 1;
-    }
     case "--paths":
       console.log(`data:  ${dataDir()}\ncache: ${cacheDir()}`);
       return 0;
