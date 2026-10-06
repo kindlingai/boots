@@ -10,7 +10,7 @@ Easy.
 
 `ai-bootstrap` - boots the program, discovers any bootstrap intelligence that it can use and
 starts the prompt loop to understand what you'd like to do. If it doesn't find a bootstrap
-intelligence, it'll prompt you to download a small Qwen 4B model to start.
+intelligence, it'll prompt you to download a small, CPU-based Qwen 4B model to start.
 
 Once the small Qwen model is installed, `ai-bootstrap` will try to get a more intelligent,
 hardware-accelerated model up and running somewhere, based on your local hardware's capability and your
