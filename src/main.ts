@@ -6,6 +6,7 @@
 
 import { askpassMain } from "./askpass.ts";
 import { farMain } from "./far.ts";
+import { jsonEvalMain } from "./jsoneval.ts";
 import { Memory } from "./memory.ts";
 import { McpManager } from "./mcp.ts";
 import { type BootstrapControl, Router } from "./llm.ts";
@@ -139,6 +140,9 @@ async function main(args: string[]): Promise<number> {
     return await askpassMain(args.join(" "));
   }
   switch (args[0]) {
+    case "--json-eval":
+      // The json_eval sandbox (jsoneval.ts): gives up every permission first.
+      return await jsonEvalMain();
     case "--far":
       return await farMain();
     case "--version":

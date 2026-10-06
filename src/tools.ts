@@ -32,6 +32,7 @@ import {
   yellow,
 } from "./ui.ts";
 import { Classifier, type Verdict } from "./classify.ts";
+import { jsonEval } from "./jsoneval.ts";
 import {
   CATALOG,
   describePlan,
@@ -329,6 +330,17 @@ TOOLS.push(
     ["list_models", "set_up_model", "read_log", "remove_downloads"].includes(t.function.name)
   ),
 );
+
+TOOLS.push(fn(
+  "json_eval",
+  "Edit a JSON memory (fleet.json) with JavaScript instead of rewriting it. The code runs in a sandbox with no file, network or process access: the current document is the global `json`, your data is the global `input`. Change `json` in place or assign a new value to it; whatever `json` holds when the code ends is saved (it must be a JSON object). console.log output is returned. Example: json.hosts['spark-1'].models.push(input)",
+  {
+    memory: str("the JSON memory to edit: fleet.json"),
+    code: str("JavaScript statements (synchronous)"),
+    input: { description: "any JSON value, available to the code as `input`" },
+  },
+  ["code"],
+));
 
 export class Session {
   readonly host: Host;
@@ -646,6 +658,33 @@ export class Session {
         );
         console.log(dim(`  memory: ${r}`));
         return r;
+      }
+      case "json_eval": {
+        const name = String(args.memory ?? "fleet.json");
+        if (name !== "fleet.json" && name !== "fleet") {
+          return `json_eval edits fleet.json only (there is no JSON memory called ${name})`;
+        }
+        const code = String(args.code ?? "");
+        console.log(dim(`  json_eval fleet.json: ${code.replace(/\s+/g, " ").slice(0, 100)}`));
+        let doc: unknown = {};
+        try {
+          doc = JSON.parse((await this.memory.fleet()) || "{}");
+        } catch {
+          return "fleet.json is not valid JSON now: rewrite it with memory_write first";
+        }
+        const r = await jsonEval(doc, args.input ?? null, code);
+        const logs = r.logs.length ? `\nconsole output:\n${r.logs.join("\n")}` : "";
+        if (r.error) return `not saved: ${r.error}${logs}`;
+        const text = JSON.stringify(r.json, null, 2);
+        try {
+          const saved = await this.memory.write("fleet.json", text);
+          console.log(dim(`  memory: ${saved}`));
+        } catch (e) {
+          return `not saved: ${(e as Error).message}${logs}`;
+        }
+        return `fleet.json saved (${text.length} bytes)${logs}${
+          text.length <= 3000 ? `\nnow:\n${text}` : ""
+        }`;
       }
       case "memory_search": {
         const hits = await this.memory.search(String(args.query ?? ""));
