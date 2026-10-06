@@ -62,6 +62,8 @@ export class Host {
         return await this.read(String(args.path), args.maxBytes);
       case "write":
         return await this.write(String(args.path), String(args.b64 ?? ""), args.mode);
+      case "git_clone":
+        return await this.gitClone(String(args.url), args.ref ? String(args.ref) : undefined);
       case "ssh_open":
         return await this.sshOpen(String(args.dest), args.port);
       case "ssh_close":
@@ -278,6 +280,62 @@ export class Host {
     await Deno.writeFile(full, bytes);
     if (mode && !isWindows) await Deno.chmod(full, parseInt(mode, 8));
     return { path: full, bytes: bytes.length };
+  }
+
+  /**
+   * Shallow clone into a fresh temp folder. Read-only for the rest of the
+   * system: no credentials are asked for, hooks and submodules don't run.
+   */
+  async gitClone(url: string, ref?: string) {
+    if (!/^(https?:\/\/|git@[\w.-]+:|ssh:\/\/|file:\/\/)/.test(url) || /\s/.test(url)) {
+      return { error: "use an https, ssh://, git@host:path or file:// URL" };
+    }
+    if (ref && !/^[\w./-]+$/.test(ref)) return { error: "bad ref" };
+    const dir = await Deno.makeTempDir({ prefix: "ai-bootstrap-clone-" });
+    const path = join(dir, (url.split(/[/:]/).pop() ?? "repo").replace(/\.git$/, "") || "repo");
+    const args = [
+      "-c",
+      "core.hooksPath=" + (isWindows ? "NUL" : "/dev/null"),
+      "clone",
+      "--depth",
+      "1",
+      "--single-branch",
+      "--no-recurse-submodules",
+      ...(ref ? ["--branch", ref] : []),
+      "--",
+      url,
+      path,
+    ];
+    const o = await new Deno.Command("git", {
+      args,
+      env: {
+        GIT_TERMINAL_PROMPT: "0",
+        GIT_ASKPASS: isWindows ? "echo" : "/bin/false",
+        GIT_SSH_COMMAND: "ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new",
+      },
+      stdin: "null",
+      stdout: "piped",
+      stderr: "piped",
+      signal: AbortSignal.timeout(5 * 60_000),
+    }).output().catch((e) => ({
+      code: 127,
+      stdout: new Uint8Array(),
+      stderr: new TextEncoder().encode(e.message),
+    }));
+    if (o.code !== 0) {
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+      return { error: new TextDecoder().decode(o.stderr).trim().split("\n").slice(-3).join("\n") };
+    }
+    const files: string[] = [];
+    let readme = "";
+    for await (const e of Deno.readDir(path)) {
+      if (e.name === ".git") continue;
+      files.push(e.isDirectory ? `${e.name}/` : e.name);
+      if (!readme && /^readme(\.md|\.txt|\.rst)?$/i.test(e.name)) {
+        readme = (await Deno.readTextFile(join(path, e.name)).catch(() => "")).slice(0, 3000);
+      }
+    }
+    return { path, files: files.sort(), readme };
   }
 
   async sshOpen(dest: string, port?: number | string) {

@@ -35,6 +35,8 @@ Once the user agrees:
    set up (machine, server, model, port, how it starts) with memory_write, and add one line for it
    to INDEX.
 
+{{onboarding}}
+
 ## Rules
 
 - Read-only commands run at once; anything else is shown to the user to approve.

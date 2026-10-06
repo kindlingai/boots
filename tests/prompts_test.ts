@@ -28,6 +28,7 @@ const vars: PromptVars = {
   other_sources: "",
   index: "# Memory index",
   plan: "(none yet)",
+  fresh: false,
 };
 
 Deno.test("small models are the base tier", () => {
@@ -88,4 +89,20 @@ Deno.test("a capable model gets the main prompt; fallback is announced", async (
 Deno.test("unknown placeholders are errors", () => {
   assertThrows(() => render("{{nope}}", {}), Error, "nope");
   assertEquals(render("a {{x}} b", { x: "1" }), "a 1 b");
+});
+
+Deno.test("empty memory adds onboarding; the full prompt offers recipes", async () => {
+  const t = await loadTemplates();
+  const full = new Router(ep("gpt-oss-120b"));
+  const known = flat(systemPrompt(t, full, vars));
+  assertStringIncludes(known, 'point you at a "recipe"');
+  assert(!known.includes("learn what hardware they have"));
+  const fresh = flat(systemPrompt(t, full, { ...vars, fresh: true }));
+  assertStringIncludes(fresh, "learn what hardware they have");
+  assertStringIncludes(fresh, "a few DGX Sparks");
+  assertStringIncludes(fresh, "Open the session with a one-line greeting");
+  const base = flat(systemPrompt(t, new Router(ep("qwen3-4b")), { ...vars, fresh: true }));
+  assertStringIncludes(base, "ask these after the user agrees to set up a smarter model");
+  assert(!base.includes('"recipe"'));
+  assert(!base.includes("{{") && !fresh.includes("{{"));
 });

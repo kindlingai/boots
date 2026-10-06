@@ -30,12 +30,15 @@ export interface Templates {
   base: string;
   main: string;
   context: string;
+  onboarding: string;
 }
 
 export async function loadTemplates(dir = join(docsDir(), "prompts")): Promise<Templates> {
   const read = (n: string) => Deno.readTextFile(join(dir, `${n}.md`));
-  const [base, main, context] = await Promise.all([read("base"), read("main"), read("context")]);
-  return { base, main, context };
+  const [base, main, context, onboarding] = await Promise.all(
+    ["base", "main", "context", "onboarding"].map(read),
+  );
+  return { base, main, context, onboarding };
 }
 
 /** Fills {{name}} placeholders. Unknown names are an error, so typos surface in tests. */
@@ -59,6 +62,8 @@ export interface PromptVars {
   other_sources: string;
   index: string;
   plan: string;
+  /** Memory holds nothing about the user yet: onboard them. */
+  fresh: boolean;
 }
 
 export function systemPrompt(t: Templates, router: Router, v: PromptVars): string {
@@ -83,7 +88,16 @@ export function systemPrompt(t: Templates, router: Router, v: PromptVars): strin
     index: v.index.trim(),
     plan: v.plan,
   });
-  return render(tierOf(ep) === "base" ? t.base : t.main, {
+  const base = tierOf(ep) === "base";
+  const onboarding = v.fresh
+    ? render(t.onboarding, {
+      onboarding_timing: base
+        ? "\nYou are on the base model: ask these after the user agrees to set up a smarter model, since the answers decide where it should run. Keep it to a few questions."
+        : "\nOpen the session with a one-line greeting, mention recipes, and ask the first of these questions.",
+    }).trim()
+    : "";
+  return render(base ? t.base : t.main, {
+    onboarding,
     model: ep.label,
     bootstrap: router.bootstrap.label,
     smart: router.smart?.label ?? "none",

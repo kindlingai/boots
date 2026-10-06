@@ -50,11 +50,12 @@ export class Agent {
   async system(): Promise<() => string> {
     this.templates ??= await loadTemplates();
     const t = this.templates;
-    const [index, docs, memories, remote] = await Promise.all([
+    const [index, docs, memories, remote, fresh] = await Promise.all([
       this.s.memory.index(),
       this.s.memory.docNames(),
       this.s.memory.list(),
       this.s.memory.remote(),
+      this.s.memory.isEmpty(),
     ]);
     const extra = this.extraContext();
     // Rendered lazily: the router may fall back to the bootstrap model mid-request.
@@ -72,6 +73,7 @@ export class Agent {
         other_sources: extra,
         index,
         plan: this.s.plan.length ? plain(renderPlan(this.s.plan)) : "(none yet)",
+        fresh,
       });
   }
 
@@ -165,8 +167,9 @@ const HELP = `commands:
 
 export async function repl(agent: Agent): Promise<void> {
   const s = agent.s;
-  if (currentTier(s.router) === "base") {
-    // The base model opens by asking to set up a smarter one (docs/prompts/base.md).
+  if (currentTier(s.router) === "base" || (await s.memory.isEmpty())) {
+    // The model speaks first: the base model asks to set up a smarter one, and
+    // a new user is asked about their hardware (docs/prompts).
     console.log(dim("(/help for commands)"));
     await agent.turn("(New session. Open as your instructions say.)");
   } else {

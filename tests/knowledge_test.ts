@@ -111,3 +111,17 @@ Deno.test("on the base model the session opens by asking to set up a smarter one
     await m.close();
   }
 });
+
+Deno.test("a new user on a capable model is asked about their hardware first", async () => {
+  const m = serveMock([{ content: "Hi! What machines do you have?" }]);
+  try {
+    const r = await run([], { OPENAI_BASE_URL: m.url, OPENAI_MODEL: "big-70b" }, "1\n/quit\n");
+    assertEquals(r.code, 0, r.out + r.err);
+    assert(!r.out.includes("What would you like to do?"), r.out);
+    const sys = m.seen.find((b) => b.tools)?.messages[0].content ?? "";
+    assertStringIncludes(sys, "learn what hardware they have");
+    assertStringIncludes(sys, "recipe");
+  } finally {
+    await m.close();
+  }
+});

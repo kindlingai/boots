@@ -77,6 +77,15 @@ export class Memory {
     return join(this.dir, `${n}.md`);
   }
 
+  /**
+   * True until the user's setup is recorded: no memories besides the
+   * automatic local-setup, and INDEX as seeded.
+   */
+  async isEmpty(): Promise<boolean> {
+    const own = (await this.list()).filter((n) => n !== "INDEX" && n !== "local-setup");
+    return !own.length && (await this.index()).trim() === SEED.trim();
+  }
+
   async index(): Promise<string> {
     try {
       return await Deno.readTextFile(this.indexPath());

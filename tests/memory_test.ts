@@ -74,3 +74,12 @@ Deno.test("search matches whole words and ranks doc names", async () => {
   assertEquals(hits.map((h) => h.source), ["docs/ray"]);
   assertEquals((await m.search("the and of")).length, 0);
 });
+
+Deno.test("memory is empty until something about the user is recorded", async () => {
+  const m = await mem();
+  assert(await m.isEmpty());
+  await m.recordLocalSetup("- host: x");
+  assert(await m.isEmpty(), "the automatic local-setup does not count");
+  await m.write("machines", "- gpu-1");
+  assert(!(await m.isEmpty()));
+});

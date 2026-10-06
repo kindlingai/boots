@@ -139,6 +139,21 @@ export const TOOLS: ToolDef[] = [
     },
     ["name"],
   ),
+  fn(
+    "fetch_url",
+    "Read a web page or file over HTTP(S) as text, e.g. a recipe or a project's README. GitHub blob links are fetched raw.",
+    { url: str("http(s) URL") },
+    ["url"],
+  ),
+  fn(
+    "git_clone",
+    "Shallow-clone a git repository into a new temporary folder on the current host, without asking the user. Returns the folder, its top-level files and the start of its README; then read files with read_file or run read-only commands there. Use it for recipes, examples and project docs.",
+    {
+      url: str("https URL (or git@host:org/repo for ssh)"),
+      ref: str("branch or tag, default the repository's default branch"),
+    },
+    ["url"],
+  ),
   fn("models_at", "List the models an OpenAI-compatible endpoint serves (GET /models).", {
     base_url: str("e.g. http://10.0.0.5:8000/v1"),
   }, ["base_url"]),
@@ -347,6 +362,22 @@ export class Session {
         await this.mcp.add(String(args.name), cfg);
         return `added; tools:\n${this.clip(await this.mcp.list(String(args.name)))}`;
       }
+      case "fetch_url":
+        return await this.fetchUrl(String(args.url ?? ""));
+      case "git_clone": {
+        const url = String(args.url ?? "");
+        console.log(dim(`  [${this.where()}] git clone ${url}${args.ref ? ` (${args.ref})` : ""}`));
+        const r = await this.call("git_clone", {
+          url,
+          ref: args.ref ? String(args.ref) : undefined,
+        });
+        if (r.error) return `clone failed: ${r.error}`;
+        return this.clip(
+          `cloned into ${r.path}\n\nfiles:\n${r.files.join("\n")}${
+            r.readme ? `\n\n${r.readme}` : ""
+          }`,
+        );
+      }
       case "models_at": {
         const base = String(args.base_url).replace(/\/$/, "");
         const r = await fetch(`${base}/models`, { signal: AbortSignal.timeout(8000) });
@@ -360,6 +391,37 @@ export class Session {
       default:
         return `unknown tool ${name}`;
     }
+  }
+
+  private async fetchUrl(raw: string): Promise<string> {
+    let url: URL;
+    try {
+      url = new URL(raw);
+    } catch {
+      return `not a URL: ${raw}`;
+    }
+    if (url.protocol !== "http:" && url.protocol !== "https:") return "only http and https URLs";
+    // github.com/o/r/blob/ref/path -> the raw file, so the model gets text rather than a page.
+    const m = url.hostname === "github.com" &&
+      url.pathname.match(/^\/([^/]+)\/([^/]+)\/blob\/(.+)$/);
+    if (m) url = new URL(`https://raw.githubusercontent.com/${m[1]}/${m[2]}/${m[3]}`);
+    console.log(dim(`  fetch ${url}`));
+    const r = await fetch(url, {
+      signal: AbortSignal.timeout(30_000),
+      headers: { "user-agent": "ai-bootstrap" },
+    });
+    const type = r.headers.get("content-type") ?? "";
+    if (!r.ok) {
+      await r.body?.cancel();
+      return `HTTP ${r.status} from ${url}`;
+    }
+    if (type && !/text|json|xml|yaml|markdown|javascript|toml/.test(type)) {
+      await r.body?.cancel();
+      return `${url} is ${type}, not text`;
+    }
+    let text = await r.text();
+    if (type.includes("html")) text = htmlToText(text);
+    return this.clip(text.trim());
   }
 
   private async useModel(args: any): Promise<string> {
@@ -463,4 +525,17 @@ export async function restoreSmart(router: Router): Promise<Endpoint | null> {
     }
   }
   return null;
+}
+
+/** Rough HTML to text: drop scripts, styles and tags; decode the common entities. */
+export function htmlToText(html: string): string {
+  return html
+    .replace(/<(script|style)[\s\S]*?<\/\1>/gi, "")
+    .replace(/<(br|\/p|\/div|\/h[1-6]|\/li|\/tr)[^>]*>/gi, "\n")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/g, " ").replace(/&lt;/g, "<").replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, "&")
+    .replace(/[ \t]+/g, " ")
+    .replace(/\n[ \t]+/g, "\n")
+    .replace(/\n{3,}/g, "\n\n");
 }
