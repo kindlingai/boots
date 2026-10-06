@@ -73,6 +73,7 @@ export class Agent {
         models: this.s.here.info.models,
         scripts: this.s.here.info.scripts,
         free_port: this.s.here.info.freePort,
+        hardware: this.s.here.info.hardware,
         docs,
         memories,
         memory_sync: remote,

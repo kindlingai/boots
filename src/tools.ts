@@ -77,6 +77,9 @@ export function refuseInRun(cmd: string): string | null {
   return null;
 }
 
+/** The same command again within this window is not run (the model is going in circles). */
+const REPEAT_WINDOW_MS = 60_000;
+
 /** Lines of each command's output shown to the user (the model gets more). */
 const SHOWN_LINES = 5;
 
@@ -296,6 +299,13 @@ export class Session {
   }
 
   private render(r: ExecResult): string {
+    if (r.code !== 0 && !r.stdout.trim() && !r.stderr.trim()) {
+      return `exit ${r.code}, no output${
+        /\bgrep\b/.test(r.cmd ?? "")
+          ? " (grep exits 1 when nothing matches: what you searched for is not in that output; look at it unfiltered, or look elsewhere)"
+          : ""
+      }`;
+    }
     let s = `exit ${r.code}`;
     if (r.cwd) s += ` (cwd now ${r.cwd})`;
     if (r.stdout.trim()) s += `\n${r.stdout.trimEnd()}`;
@@ -369,6 +379,20 @@ export class Session {
   }
 
   /** Runs a command op on the current host; `signal` cancels it there, across hops too. */
+  /** When each command last ran here, and what it returned, to catch a model repeating itself. */
+  private recent = new Map<string, { at: number; result: string }>();
+
+  private repeated(key: string): string | null {
+    const last = this.recent.get(key);
+    if (!last || Date.now() - last.at > REPEAT_WINDOW_MS) return null;
+    return `Not run: you ran exactly this a moment ago, and it returned:\n${last.result}\nRunning it again will not change that. Do something different, or ask the user.`;
+  }
+
+  private remember(key: string, result: string): string {
+    this.recent.set(key, { at: Date.now(), result: result.slice(0, 2000) });
+    return result;
+  }
+
   private async command(op: "exec" | "sudo", cmd: string, args: any, signal?: AbortSignal) {
     const token = crypto.randomUUID();
     const via = this.here.via;
@@ -376,7 +400,8 @@ export class Session {
     signal?.addEventListener("abort", cancel);
     try {
       const timeoutMs = (Number(args.timeout_s) || DEFAULT_TIMEOUT_MS / 1000) * 1000;
-      return await this.host.handle(op, { cmd, token, timeoutMs }, via) as ExecResult;
+      const r = await this.host.handle(op, { cmd, token, timeoutMs }, via) as ExecResult;
+      return { ...r, cmd };
     } finally {
       signal?.removeEventListener("abort", cancel);
     }
@@ -387,6 +412,12 @@ export class Session {
       case "run": {
         const cmd = String(args.command ?? "");
         const loc = this.where();
+        const again = this.repeated(`${loc}\0${cmd}`);
+        if (again) {
+          console.log(dim(`  [${loc}] $ ${cmd}`));
+          console.log(yellow("    not run: the same command again"));
+          return again;
+        }
         const refused = refuseInRun(cmd);
         if (refused) {
           console.log(dim(`  [${loc}] $ ${cmd}`));
@@ -413,7 +444,7 @@ export class Session {
         }
         const r = await this.command("exec", cmd, args, signal);
         this.show(r);
-        return this.render(r);
+        return r.cancelled ? this.render(r) : this.remember(`${loc}\0${cmd}`, this.render(r));
       }
       case "sudo": {
         const cmd = String(args.command ?? "").replace(/^\s*sudo\s+/, "");

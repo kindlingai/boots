@@ -4,6 +4,7 @@
 - Operating system here: {{os_name}} on {{arch}}
 - Hardware-accelerated model options for this OS: {{os_doc}}
 - Host details: {{host}}
+- Hardware here: {{hardware}}
 - Models folder here (keep model weights in it): {{models}}
 - Startup scripts folder here: {{scripts}}
 - A random free port here, for the next server you set up: {{free_port}}

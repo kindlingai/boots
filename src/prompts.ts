@@ -61,6 +61,7 @@ export interface PromptVars {
   models: string;
   scripts: string;
   free_port: number;
+  hardware: string;
   /** The installed llama-server, if ai-bootstrap downloaded one. */
   llama_server?: string | null;
   docs: string[];
@@ -94,6 +95,7 @@ export function systemPrompt(t: Templates, router: Router, v: PromptVars): strin
     models: v.models,
     scripts: v.scripts,
     free_port: String(v.free_port),
+    hardware: v.hardware,
     shell_note: v.shell === "powershell" ? "Commands here run in PowerShell.\n" : "",
     docs: v.docs.join(", ") || "none",
     memories: v.memories.join(", ") || "none",
@@ -108,6 +110,7 @@ export function systemPrompt(t: Templates, router: Router, v: PromptVars): strin
     const f = v.failure;
     return render(t.diagnose, {
       model: ep.label,
+      bootstrap_url: router.bootstrap.baseUrl,
       tier_note: base
         ? "This is the small base model: it is limited, so be careful and check each step."
         : "",
@@ -143,6 +146,7 @@ export function systemPrompt(t: Templates, router: Router, v: PromptVars): strin
   return render(base ? t.base : t.main, {
     onboarding,
     model: ep.label,
+    bootstrap_url: router.bootstrap.baseUrl,
     bootstrap: router.bootstrap.label,
     smart: router.smart?.label ?? "none",
     fallback_note: fallback,

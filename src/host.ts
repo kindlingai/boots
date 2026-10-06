@@ -5,6 +5,7 @@
 import { dirname, isAbsolute, join } from "@std/path";
 import { decodeBase64, encodeBase64 } from "@std/encoding/base64";
 import type { Asker } from "./secrets.ts";
+import { hardwareSummary } from "./hardware.ts";
 import {
   currentTarget,
   isWindows,
@@ -32,6 +33,8 @@ export interface HostInfo {
   scripts: string;
   /** A random free high port here, for the next server set up on this machine. */
   freePort: number;
+  /** CPU, memory, GPUs and free disk, in one line. */
+  hardware: string;
 }
 
 export interface ExecResult {
@@ -41,6 +44,8 @@ export interface ExecResult {
   timedOut?: boolean;
   /** Stopped by the user (^C). */
   cancelled?: boolean;
+  /** The command, as the caller sent it. */
+  cmd?: string;
   cwd?: string;
 }
 
@@ -117,6 +122,7 @@ export class Host {
       models: modelsDir(),
       scripts: scriptsDir(),
       freePort: randomFreePort(),
+      hardware: await hardwareSummary(),
     };
   }
 

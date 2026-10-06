@@ -27,6 +27,7 @@ would you like to do?" prompt, so the model can ask its opening question.
 | ------------------- | ----------------------------------------------------------------------------------------------------- |
 | `model`             | label of the model answering now                                                                      |
 | `bootstrap`         | label of the bootstrap model                                                                          |
+| `bootstrap_url`     | base URL of the bootstrap model (base.md: "that server is you")                                       |
 | `smart`             | label of the registered smarter model, or `none`                                                      |
 | `fallback_note`     | a sentence when the smarter model is unavailable and the bootstrap is standing in, else empty         |
 | `context`           | `context.md`, rendered                                                                                |
@@ -39,6 +40,7 @@ would you like to do?" prompt, so the model can ask its opening question.
 | `models`            | the models folder on the current machine                                                              |
 | `scripts`           | the startup scripts folder on the current machine                                                     |
 | `free_port`         | a random free port (20000-59999) on the current machine, for the next server                          |
+| `hardware`          | CPU, memory, GPUs and free disk on the current machine, gathered once                                 |
 | `script`, `log`, `reason`| diagnose.md: the failed start script, its log, and what went wrong                                    |
 | `tail`, `errors`         | diagnose.md: the last 5 log lines, and the last 5 lines mentioning "error" (any case)                 |
 | `tier_note`              | diagnose.md: a note when the answering model is the small base model                                  |

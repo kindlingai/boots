@@ -25,6 +25,8 @@ const vars: PromptVars = {
   models: "/home/u/.local/share/ai-bootstrap/models",
   scripts: "/home/u/.local/share/ai-bootstrap/intelligence",
   free_port: 41234,
+  hardware:
+    "AMD Ryzen 9 7950X, 32 CPU threads; 64 GB RAM; NVIDIA GPU: NVIDIA RTX 4090 with 24564 MiB",
   docs: ["vllm", "ray"],
   memories: ["local-setup"],
   memory_sync: null,
@@ -183,4 +185,27 @@ Deno.test("base prompt on a Mac: use the installed llama.cpp, with a filled-in s
   // Linux suggests vLLM in Docker for NVIDIA, on the same free port.
   const linux = systemPrompt(t, new Router(ep("qwen3-4b")), vars);
   assertStringIncludes(linux, "docker run --rm --gpus all -p 41234:8000");
+});
+
+Deno.test("hardware summaries", async () => {
+  const { summarizeMac, summarizeLinux } = await import("../src/hardware.ts");
+  assertEquals(
+    summarizeMac(
+      "Apple M3 Pro",
+      36 * 2 ** 30,
+      "12",
+      "Graphics/Displays:\n    Apple M3 Pro:\n      Chipset Model: Apple M3 Pro\n      Total Number of Cores: 18\n",
+      0,
+    ),
+    "Apple M3 Pro, 12 CPU cores; 36 GB unified memory (the GPU can use about 27 GB by default); GPU: Apple M3 Pro (18 cores, Metal)",
+  );
+  assertEquals(
+    summarizeLinux(
+      "Model name:  AMD EPYC 9654\nCPU(s):  192\n",
+      "MemTotal:  792723456 kB\n",
+      "NVIDIA H100 80GB HBM3, 81559 MiB\n",
+      "",
+    ),
+    "AMD EPYC 9654, 192 CPU threads; 756 GB RAM; NVIDIA GPU: NVIDIA H100 80GB HBM3 with 81559 MiB",
+  );
 });
