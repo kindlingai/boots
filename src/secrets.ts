@@ -73,6 +73,11 @@ export class SecretStore {
   keys(): string[] {
     return [...this.m.keys()].sort();
   }
+
+  /** The secret values themselves, to scrub them from anything written to disk. */
+  values(): string[] {
+    return [...this.m.values()];
+  }
 }
 
 export const secrets = new SecretStore();

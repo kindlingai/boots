@@ -2,7 +2,10 @@
 // next scripted reply; requests without tools (liveness pings) get "ok".
 // Replies stream as SSE with tool-call deltas split across chunks.
 
-export type Scripted = { content?: string; calls?: { name: string; args: unknown }[] } | "down";
+export type Scripted =
+  | { content?: string; calls?: { name: string; args: unknown }[] }
+  | "down"
+  | "too-long";
 
 /**
  * `classify`, when given, answers the command checker (src/classify.ts):
@@ -31,6 +34,14 @@ export function serveMock(script: Scripted[], port = 0, classify?: (cmd: string)
     if (!body.tools) return sse([{ choices: [{ delta: { content: "ok" } }] }]);
     const r = script[Math.min(i++, script.length - 1)];
     if (r === "down") return new Response("overloaded", { status: 503 });
+    if (r === "too-long") {
+      return Response.json({
+        error: {
+          message: "the request exceeds the available context size",
+          type: "exceed_context_size_error",
+        },
+      }, { status: 400 });
+    }
     const chunks: any[] = [];
     if (r.content) {
       for (const part of r.content.match(/.{1,7}/gs) ?? []) {

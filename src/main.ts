@@ -4,6 +4,7 @@
 //   ai-bootstrap --far        far agent (started by ai-bootstrap over ssh)
 //   ai-bootstrap --version
 
+import { Transcript } from "./transcript.ts";
 import { checkForUpdate } from "./update.ts";
 import { askpassMain } from "./askpass.ts";
 import { farMain } from "./far.ts";
@@ -111,6 +112,10 @@ async function interactive(tui: boolean): Promise<number> {
 
   const session = new Session(router, memory, new McpManager(), makeNearAsker());
   session.fullFailure = failure;
+  if (Deno.env.get("AIBOOT_HISTORY") !== "0") {
+    session.transcript = new Transcript();
+    await session.transcript.init();
+  }
   updateCheck.then((u) => {
     if (!u) return;
     session.update = u;
@@ -133,6 +138,12 @@ async function interactive(tui: boolean): Promise<number> {
         }\n`
         : "",
   );
+  const restored = await agent.restore(6);
+  if (restored) {
+    say(
+      dim(`restored the last ${restored} turn${restored === 1 ? "" : "s"} of the previous session`),
+    );
+  }
 
   // ^C stops a model reply; outside one it quits. (At the prompt the
   // terminal is raw, and the line reader sees ^C itself.)

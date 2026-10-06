@@ -1,6 +1,7 @@
 // The tools the model can call, and the session state they act on.
 
 import type { Update } from "./update.ts";
+import type { Transcript } from "./transcript.ts";
 import { join } from "@std/path";
 import { b64, DEFAULT_TIMEOUT_MS, type ExecResult, Host, type HostInfo } from "./host.ts";
 import { chat, type Endpoint, reachable, type Router, type ToolDef } from "./llm.ts";
@@ -221,6 +222,15 @@ export const TOOLS: ToolDef[] = [
     ["query"],
   ),
   fn(
+    "history_search",
+    "Search the conversation log of this and earlier sessions (what the user asked, what you ran and what came back). Every word must match. Newest first.",
+    {
+      query: str("a few keywords, e.g. 'vllm port' or 'gx10 ssh'"),
+      limit: { type: "number", description: "most lines to return (default 20)" },
+    },
+    ["query"],
+  ),
+  fn(
     "memory_sync",
     "Sync memory with a private git repository (asks the user), so the setup can be maintained from several machines and survives losing this one. Pass remote_url the first time.",
     { remote_url: str("e.g. git@github.com:you/ai-setup-memory.git; only needed once") },
@@ -363,6 +373,8 @@ export class Session {
   fullFailure: FullFailure | null = null;
   /** A newer release, found by the startup check: the prompt asks the model to offer it. */
   update: Update | null = null;
+  /** The conversation log (set by main; tests run without one). */
+  transcript: Transcript | null = null;
 
   constructor(
     readonly router: Router,
@@ -707,6 +719,12 @@ export class Session {
         return hits.length
           ? hits.map((h) => `${h.source}:${h.line}: ${h.text}`).join("\n")
           : "no matches; try fewer or different words, or memory_read docs/<name> from the list in the system prompt";
+      }
+      case "history_search": {
+        if (!this.transcript) return "no conversation log in this session";
+        const limit = Math.max(1, Math.min(100, Number(args.limit) || 20));
+        const hits = await this.transcript.search(String(args.query ?? ""), limit);
+        return hits.length ? hits.join("\n") : "no matches; try fewer or different words";
       }
       case "memory_sync": {
         const url = args.remote_url ? String(args.remote_url) : undefined;

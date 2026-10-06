@@ -70,3 +70,63 @@ Deno.test("a capable model chooses freely and has no reply tool", async () => {
     await done();
   }
 });
+
+Deno.test("too long for the model: older turns are summarised, the last 2 kept, and it retries", async () => {
+  const { m, agent, done } = await session("gpt-oss-120b", ["too-long", { content: "Done." }]);
+  try {
+    for (const n of [1, 2, 3]) {
+      agent.history.push({ role: "user", content: `old question ${n}` });
+      agent.history.push({ role: "assistant", content: `old answer ${n}` });
+    }
+    await agent.turn("new question");
+    const h = agent.history;
+    assert(h[0].content.startsWith("(The earlier conversation was compacted"), h[0].content);
+    assertEquals(h.slice(2).map((x) => x.content), [
+      "old question 3",
+      "old answer 3",
+      "new question",
+      "Done.",
+    ]);
+    // The summariser saw the old turns; the retry carried the summary.
+    const summary = m.seen.find((b) => !b.tools && b.messages[0].content.startsWith("You compact"));
+    assert(summary.messages[1].content.includes("old question 1"));
+    const retry = m.seen.filter((b) => b.tools).at(-1);
+    assert(retry.messages[1].content.startsWith("(The earlier conversation was compacted"));
+  } finally {
+    await done();
+  }
+});
+
+Deno.test("a restored session and its log", async () => {
+  const { Transcript } = await import("../src/transcript.ts");
+  const dir = await Deno.makeTempDir();
+  try {
+    const path = join(dir, "t.jsonl");
+    const before = new Transcript(path);
+    await before.init();
+    for (let n = 1; n <= 8; n++) {
+      before.append({ role: "user", content: `question ${n}` });
+      before.append({ role: "assistant", content: `answer ${n}` });
+    }
+    const { s, agent, done } = await session("gpt-oss-120b", [{ content: "Hi again." }]);
+    try {
+      s.transcript = new Transcript(path);
+      assertEquals(await agent.restore(6), 6);
+      assertEquals(agent.history[0].content, "question 3");
+      assertEquals(agent.history.length, 12);
+      assert(agent.restoredAt);
+      const sys = (await agent.system())();
+      assert(sys.includes("## Restored conversation"));
+      await agent.turn("hello");
+      // This session is logged too, and history_search finds both.
+      const hits = await s.exec("history_search", { query: "question" });
+      assert(hits.split("\n")[0].includes("user: hello") === false);
+      assert(hits.includes("question 8") && hits.includes("question 1"), hits);
+      assert((await s.exec("history_search", { query: "again" })).includes("assistant: Hi again."));
+    } finally {
+      await done();
+    }
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});

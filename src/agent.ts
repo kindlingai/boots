@@ -8,6 +8,7 @@ import { currentTier, loadTemplates, systemPrompt, type Templates, tierOf } from
 import { secrets } from "./secrets.ts";
 import { ask, bold, dim, Interrupted, plain, red, say, spinner, warn } from "./ui.ts";
 import { emit } from "./frontend.ts";
+import { clipTools, compact, isContextError, SUMMARY_PROMPT } from "./compact.ts";
 
 const MAX_STEPS = 60;
 
@@ -49,12 +50,58 @@ function fit(history: Message[], budget: number): Message[] {
 
 export class Agent {
   history: Message[] = [];
+  /** When the restored turns were last active, if the history was restored. */
+  restoredAt: string | null = null;
   private abort: AbortController | null = null;
   private busy = false;
 
   private templates: Templates | null = null;
 
   constructor(readonly s: Session, private extraContext: () => string) {}
+
+  /** Adds to the history and to the conversation log. */
+  private push(m: Message): void {
+    this.history.push(m);
+    this.s.transcript?.append(m);
+  }
+
+  /** Picks up the last turns of the previous session from the log. */
+  async restore(turns = 6): Promise<number> {
+    const r = await this.s.transcript?.restore(turns);
+    if (!r) return 0;
+    this.history = r.messages;
+    this.restoredAt = r.at;
+    return r.messages.filter((m) => m.role === "user").length;
+  }
+
+  /**
+   * Summarises all but the last two turns with the model in use. Returns
+   * what happened, for the user; null when there was nothing to compact.
+   */
+  async compact(signal?: AbortSignal): Promise<string | null> {
+    const ep = this.s.router.current();
+    const r = await compact(
+      this.history,
+      async (text) =>
+        (await this.s.router.chat(
+          () => [{ role: "system", content: SUMMARY_PROMPT }, { role: "user", content: text }],
+          [],
+          {},
+          signal,
+        )).content,
+      2,
+      Math.floor(ep.contextChars * 0.6),
+    );
+    if (!r) return null;
+    this.history = r.history;
+    this.s.transcript?.append({
+      role: "system",
+      content: `(compacted ${r.summarized} turns)${r.summary ? `\n${r.summary}` : ""}`,
+    });
+    return `compacted ${r.summarized} older turn${r.summarized === 1 ? "" : "s"}${
+      r.summary ? " into a summary" : " (no summary: they were dropped)"
+    }; the last 2 are kept as they were`;
+  }
 
   /** Stops a model reply or a running tool. False when no turn is running. */
   interrupt(): boolean {
@@ -100,6 +147,7 @@ export class Agent {
         fresh,
         failure: this.s.fullFailure,
         update: this.s.update,
+        restored: this.restoredAt,
       });
   }
 
@@ -129,10 +177,11 @@ export class Agent {
   }
 
   private async steps(userText: string): Promise<void> {
-    this.history.push({ role: "user", content: userText });
+    this.push({ role: "user", content: userText });
+    let compactions = 0;
     for (let step = 0; step < MAX_STEPS; step++) {
       this.abort = new AbortController();
-      let reply: Reply;
+      let reply: Reply | undefined;
       let printed = false;
       const current = this.s.router.current();
       emit({
@@ -142,6 +191,7 @@ export class Agent {
         full: current !== this.s.router.bootstrap,
       });
       const spin = spinner("thinking");
+      let tooLong = false;
       try {
         reply = await this.s.router.chat(await this.messages(), shape, {
           content: (t) => {
@@ -160,20 +210,44 @@ export class Agent {
         if (this.abort.signal.aborted) {
           if (printed) emit({ type: "assistant", phase: "end" });
           say("[interrupted]", "dim");
-          this.history.push({ role: "user", content: "(the user interrupted your last reply)" });
+          this.push({ role: "user", content: "(the user interrupted your last reply)" });
           return;
         }
         if (printed) emit({ type: "assistant", phase: "end" });
-        say(`model error: ${(e as Error).message}`, "error");
-        if (!(e instanceof LLMError)) throw e;
-        return;
+        if (isContextError(e) && compactions < 2) {
+          tooLong = true;
+        } else {
+          say(`model error: ${(e as Error).message}`, "error");
+          if (!(e instanceof LLMError)) throw e;
+          return;
+        }
       } finally {
         spin.stop();
         this.abort = null;
       }
+      if (tooLong) {
+        // Too long for the model: summarise the older turns and try again;
+        // the second time, also clip long tool output in the turns kept.
+        compactions++;
+        const busy = spinner("compacting the conversation");
+        let done: string | null = null;
+        try {
+          done = await this.compact();
+        } finally {
+          busy.stop();
+        }
+        if (!done || compactions === 2) {
+          this.history = clipTools(this.history);
+          done ??= "clipped long tool output to fit the context";
+        }
+        say(done, "dim");
+        step--;
+        continue;
+      }
+      if (!reply) return;
       if (printed) emit({ type: "assistant", phase: "end" });
       else if (reply.content) this.speak(reply.content);
-      this.history.push({
+      this.push({
         role: "assistant",
         content: reply.content,
         tool_calls: reply.toolCalls.length ? reply.toolCalls : undefined,
@@ -185,7 +259,7 @@ export class Agent {
       for (const [n, tc] of reply.toolCalls.entries()) {
         let result: string;
         if (!offered.has(tc.function.name)) {
-          this.history.push({
+          this.push({
             role: "tool",
             tool_call_id: tc.id,
             content: `${tc.function.name} is not available to you. Your tools: ${
@@ -202,7 +276,7 @@ export class Agent {
             msg = tc.function.arguments;
           }
           if (msg.trim()) this.speak(msg.trim());
-          this.history.push({ role: "tool", tool_call_id: tc.id, content: "shown to the user" });
+          this.push({ role: "tool", tool_call_id: tc.id, content: "shown to the user" });
           replied = true;
           continue;
         }
@@ -212,15 +286,15 @@ export class Agent {
           const args = tc.function.arguments.trim() ? JSON.parse(tc.function.arguments) : {};
           result = await this.s.exec(tc.function.name, args, ac.signal);
           if (ac.signal.aborted) {
-            this.history.push({ role: "tool", tool_call_id: tc.id, content: result });
+            this.push({ role: "tool", tool_call_id: tc.id, content: result });
             for (const rest of reply.toolCalls.slice(n + 1)) {
-              this.history.push({
+              this.push({
                 role: "tool",
                 tool_call_id: rest.id,
                 content: "not run: the user interrupted",
               });
             }
-            this.history.push({ role: "user", content: "(the user stopped that command)" });
+            this.push({ role: "user", content: "(the user stopped that command)" });
             say("[interrupted]", "dim");
             return;
           }
@@ -236,7 +310,7 @@ export class Agent {
         } finally {
           this.abort = null;
         }
-        this.history.push({ role: "tool", tool_call_id: tc.id, content: result });
+        this.push({ role: "tool", tool_call_id: tc.id, content: result });
       }
       // reply hands the turn back to the user.
       if (replied) return;
@@ -253,6 +327,7 @@ const HELP = `commands:
   /secrets      list remembered secrets (names only)
   /forget [k]   forget remembered secrets (all, or a location prefix)
   /sync         sync memory with its git repository
+  /compact      summarise older turns to free context (keeps the last 2)
   /exit         leave the current remote host
   /quit         quit`;
 
@@ -333,6 +408,17 @@ export async function repl(agent: Agent): Promise<void> {
         case "/exit":
           say(await s.exec("ssh_exit", {}));
           break;
+        case "/compact": {
+          const busy = spinner("compacting the conversation");
+          try {
+            say((await agent.compact()) ?? "nothing to compact yet", "dim");
+          } catch (e) {
+            say(red((e as Error).message));
+          } finally {
+            busy.stop();
+          }
+          break;
+        }
         default:
           say(HELP);
       }

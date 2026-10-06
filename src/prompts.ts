@@ -80,11 +80,25 @@ export interface PromptVars {
   failure?: FullFailure | null;
   /** A newer ai-bootstrap release: offer to update. */
   update?: Update | null;
+  /** The history was restored from the previous session, last active then. */
+  restored?: string | null;
 }
 
 export function systemPrompt(t: Templates, router: Router, v: PromptVars): string {
-  const prompt = basePrompt(t, router, v);
-  return v.update ? `${prompt}\n\n${updateNote(v.update)}` : prompt;
+  let prompt = basePrompt(t, router, v);
+  if (v.restored) prompt += `\n\n${restoredNote(v.restored)}`;
+  if (v.update) prompt += `\n\n${updateNote(v.update)}`;
+  return prompt;
+}
+
+/** The conversation starts with turns restored from the previous session. */
+export function restoredNote(at: string): string {
+  return `## Restored conversation
+
+The first turns of this conversation are the end of the previous session (last active ${
+    at.slice(0, 16).replace("T", " ")
+  } UTC), restored when ai-bootstrap restarted. Things may have changed since: check before relying
+on them. history_search looks further back.`;
 }
 
 function basePrompt(t: Templates, router: Router, v: PromptVars): string {
