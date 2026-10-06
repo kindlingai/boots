@@ -56,7 +56,7 @@ Deno.test("start-full.sh for a catalog model", () => {
 
 Deno.test("downloads: what belongs to whom, and what can go", async () => {
   const { downloads, removable } = await import("../src/rails.ts");
-  const { join } = await import("@std/path");
+  const { basename, join } = await import("@std/path");
   const dir = await Deno.makeTempDir();
   try {
     await Deno.writeFile(
@@ -88,7 +88,7 @@ Deno.test("downloads: what belongs to whom, and what can go", async () => {
     assertEquals(by("my-own").models, []);
     // Never the bootstrap or a file that is not ours; the kept model stays, even unfinished.
     const names = (k?: string) =>
-      removable(all, k).map((d) => d.path.split("/").pop()!.slice(0, 22)).sort();
+      removable(all, k).map((d) => basename(d.path).slice(0, 22)).sort();
     assertEquals(names(), ["unsloth_Qwen3-14B-GGUF", "unsloth_Qwen3-30B-A3B-"]);
     assertEquals(names("qwen3-30b-a3b"), ["unsloth_Qwen3-14B-GGUF"]);
   } finally {
