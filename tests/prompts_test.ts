@@ -27,6 +27,7 @@ const vars: PromptVars = {
   memory_sync: null,
   other_sources: "",
   index: "# Memory index",
+  fleet: "",
   plan: "(none yet)",
   fresh: false,
 };
@@ -105,4 +106,22 @@ Deno.test("empty memory adds onboarding; the full prompt offers recipes", async 
   assertStringIncludes(base, "ask these after the user agrees to set up a smarter model");
   assert(!base.includes('"recipe"'));
   assert(!base.includes("{{") && !fresh.includes("{{"));
+});
+
+Deno.test("fleet.json is shown in the prompt; the full prompt explains its shape", async () => {
+  const t = await loadTemplates();
+  const fleet = JSON.stringify({ hosts: { "spark-1": { models: [{ name: "glm53" }] } } }, null, 2);
+  const full = systemPrompt(t, new Router(ep("gpt-oss-120b")), { ...vars, fleet });
+  assertStringIncludes(full, "Fleet inventory (memory fleet.json):\n\n```json\n" + fleet + "\n```");
+  assertStringIncludes(flat(full), "There is no schema. We recommend this shape");
+  assertStringIncludes(full, '"openai_url": "http://10.0.0.21:8000/v1"');
+  const empty = systemPrompt(t, new Router(ep("gpt-oss-120b")), vars);
+  assertStringIncludes(empty, "{} (empty: nothing recorded yet)");
+  // Fields stay on their own lines (the templates are not reflowed).
+  assertStringIncludes(
+    full,
+    "- Location: local\n- Operating system here: Ubuntu 24.04.5 LTS on x86_64\n",
+  );
+  const base = systemPrompt(t, new Router(ep("qwen3-4b")), { ...vars, fleet });
+  assertStringIncludes(base, fleet);
 });

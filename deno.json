@@ -12,7 +12,8 @@
     "lineWidth": 100,
     "exclude": [
       "README.md",
-      "dist/"
+      "dist/",
+      "docs/prompts/"
     ]
   },
   "lint": {

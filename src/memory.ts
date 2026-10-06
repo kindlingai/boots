@@ -9,6 +9,10 @@ import { dataDir, docsDir, ensureDir, exists } from "./platform.ts";
 
 export const INDEX_LIMIT = 4096;
 
+/** The fleet inventory: always in context, always a valid JSON object. */
+export const FLEET = "fleet.json";
+export const FLEET_LIMIT = 8192;
+
 const STOPWORDS = new Set([
   "a",
   "an",
@@ -69,6 +73,7 @@ export class Memory {
   }
 
   private path(name: string): string {
+    if (isFleet(name)) return join(this.dir, FLEET);
     const n = name.replace(/\.md$/, "");
     if (n === "INDEX") return this.indexPath();
     if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,80}$/.test(n)) {
@@ -83,7 +88,14 @@ export class Memory {
    */
   async isEmpty(): Promise<boolean> {
     const own = (await this.list()).filter((n) => n !== "INDEX" && n !== "local-setup");
-    return !own.length && (await this.index()).trim() === SEED.trim();
+    const fleet = (await this.fleet()).replace(/\s/g, "");
+    return !own.length && (fleet === "" || fleet === "{}") &&
+      (await this.index()).trim() === SEED.trim();
+  }
+
+  /** fleet.json as stored, or "" when there is none yet. */
+  async fleet(): Promise<string> {
+    return await Deno.readTextFile(join(this.dir, FLEET)).catch(() => "");
   }
 
   async index(): Promise<string> {
@@ -128,6 +140,7 @@ export class Memory {
         throw new Error(`no doc ${n}; available: ${(await this.docNames()).join(", ")}`);
       }
     }
+    if (isFleet(name)) return (await this.fleet()) || "{}\n";
     try {
       return await Deno.readTextFile(this.path(name));
     } catch (e) {
@@ -140,6 +153,7 @@ export class Memory {
 
   async write(name: string, content: string, append = false): Promise<string> {
     if (name.startsWith("docs/")) throw new Error("docs are read-only; write a memory instead");
+    if (isFleet(name)) return await this.writeFleet(content, append);
     const p = this.path(name);
     let next = content;
     if (append) {
@@ -155,6 +169,35 @@ export class Memory {
     }
     await Deno.writeTextFile(p, next);
     return `${append ? "appended to" : "wrote"} ${name} (${bytes} bytes)`;
+  }
+
+  /** Replaces fleet.json, which must be a JSON object; it is stored pretty-printed. */
+  private async writeFleet(content: string, append: boolean): Promise<string> {
+    if (append) {
+      throw new Error(
+        `${FLEET} cannot be appended to: read it, change it, and write the whole document`,
+      );
+    }
+    let doc: unknown;
+    try {
+      doc = JSON.parse(content);
+    } catch (e) {
+      throw new Error(
+        `${FLEET} was not changed: the content is not valid JSON (${(e as Error).message})`,
+      );
+    }
+    if (doc === null || typeof doc !== "object" || Array.isArray(doc)) {
+      throw new Error(`${FLEET} was not changed: it must be a JSON object, e.g. {"hosts": {}}`);
+    }
+    const text = JSON.stringify(doc, null, 2) + "\n";
+    const bytes = new TextEncoder().encode(text).length;
+    if (bytes > FLEET_LIMIT) {
+      throw new Error(
+        `${FLEET} would be ${bytes} bytes; the limit is ${FLEET_LIMIT}. Keep it to hosts, models and endpoints, and move notes into a separate memory.`,
+      );
+    }
+    await Deno.writeTextFile(join(this.dir, FLEET), text);
+    return `wrote ${FLEET} (${bytes} bytes)`;
   }
 
   /**
@@ -173,6 +216,7 @@ export class Memory {
     );
     const files: [string, string][] = [];
     for (const n of await this.list()) files.push([n, join(this.dir, `${n}.md`)]);
+    if (await this.fleet()) files.push([FLEET, join(this.dir, FLEET)]);
     for (const n of await this.docNames()) files.push([`docs/${n}`, join(this.docs, `${n}.md`)]);
     const hits: Hit[] = [];
     for (const [source, p] of files) {
@@ -299,4 +343,8 @@ export class Memory {
     const r = await this.git(args);
     if (r.code !== 0) throw new Error(`git ${args[0]} failed: ${r.out}`);
   }
+}
+
+function isFleet(name: string): boolean {
+  return name === FLEET || name === "fleet";
 }

@@ -125,3 +125,38 @@ Deno.test("a new user on a capable model is asked about their hardware first", a
     await m.close();
   }
 });
+
+Deno.test("the model records the fleet as JSON and sees it in the next prompt", async () => {
+  const fleet = {
+    hosts: { "spark-1": { models: [{ name: "glm53", openai_url: "http://10.0.0.21:8000/v1" }] } },
+  };
+  const m = serveMock([
+    { calls: [{ name: "memory_write", args: { name: "fleet.json", content: "{hosts: oops}" } }] },
+    {
+      calls: [{
+        name: "memory_write",
+        args: { name: "fleet.json", content: JSON.stringify(fleet) },
+      }],
+    },
+    { content: "Recorded spark-1." },
+    { content: "still here" },
+  ]);
+  try {
+    const r = await run(
+      [],
+      { OPENAI_BASE_URL: m.url, OPENAI_MODEL: "big-70b" },
+      "1\nwhat do I have?\n/quit\n",
+    );
+    assertEquals(r.code, 0, r.out + r.err);
+    const reqs = m.seen.filter((b) => b.tools);
+    const tools = reqs.at(-1).messages.filter((x: any) => x.role === "tool");
+    assertStringIncludes(tools[0].content, "not valid JSON");
+    assertStringIncludes(tools[1].content, "wrote fleet.json");
+    assertStringIncludes(
+      reqs.at(-1).messages[0].content,
+      '"openai_url": "http://10.0.0.21:8000/v1"',
+    );
+  } finally {
+    await m.close();
+  }
+});

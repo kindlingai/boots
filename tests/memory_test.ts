@@ -1,6 +1,6 @@
 import { assert, assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { join } from "@std/path";
-import { INDEX_LIMIT, Memory } from "../src/memory.ts";
+import { FLEET_LIMIT, INDEX_LIMIT, Memory } from "../src/memory.ts";
 
 async function mem() {
   const d = await Deno.makeTempDir();
@@ -82,4 +82,32 @@ Deno.test("memory is empty until something about the user is recorded", async ()
   assert(await m.isEmpty(), "the automatic local-setup does not count");
   await m.write("machines", "- gpu-1");
   assert(!(await m.isEmpty()));
+});
+
+Deno.test("fleet.json only accepts a valid JSON object", async () => {
+  const m = await mem();
+  assertEquals(await m.read("fleet.json"), "{}\n");
+  assertEquals(await m.fleet(), "");
+  await assertRejects(() => m.write("fleet.json", "{hosts: {}}"), Error, "not valid JSON");
+  await assertRejects(() => m.write("fleet.json", "[1, 2]"), Error, "must be a JSON object");
+  await assertRejects(() => m.write("fleet.json", "null"), Error, "must be a JSON object");
+  await assertRejects(() => m.write("fleet.json", "{}", true), Error, "cannot be appended");
+  await assertRejects(
+    () => m.write("fleet.json", JSON.stringify({ notes: "x".repeat(FLEET_LIMIT) })),
+    Error,
+    "limit",
+  );
+  assertEquals(await m.fleet(), "", "a refused write leaves no file");
+  assert(await m.isEmpty());
+  const r = await m.write(
+    "fleet.json",
+    '{"hosts":{"spark-1":{"models":[{"name":"glm53","openai_url":"http://10.0.0.21:8000/v1"}]}}}',
+  );
+  assertStringIncludes(r, "wrote fleet.json");
+  const stored = await m.read("fleet");
+  assertEquals(JSON.parse(stored).hosts["spark-1"].models[0].name, "glm53");
+  assertStringIncludes(stored, '\n  "hosts": {', "stored pretty-printed");
+  assert(!(await m.isEmpty()), "a fleet counts as knowing the user");
+  assert((await m.search("glm53")).some((h) => h.source === "fleet.json"));
+  assert(!(await m.list()).includes("fleet.json"), "listed separately from Markdown memories");
 });

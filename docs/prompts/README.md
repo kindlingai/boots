@@ -2,7 +2,7 @@
 
 ai-bootstrap builds its system prompt from these templates on every model turn, so edits here change
 its behaviour without touching code. They are compiled into the binary along with the rest of
-`docs/`.
+`docs/`, and `deno fmt` leaves them alone so their layout is exactly what the model sees.
 
 | file            | used when                                                                                                                                                                  |
 | --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -41,4 +41,5 @@ would you like to do?" prompt, so the model can ask its opening question.
 | `memory_sync`       | the git remote memory syncs to, or `not set up`                                                       |
 | `other_sources`     | other AI sources seen at boot, or empty                                                               |
 | `index`             | memory INDEX.md (4 kB at most)                                                                        |
+| `fleet` | memory fleet.json (8 kB at most), or a note that it is empty |
 | `plan`              | the current plan, or `(none yet)`                                                                     |

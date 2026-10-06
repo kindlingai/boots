@@ -19,6 +19,6 @@ Don't ask what you can check. Inspect this machine with read-only commands, and 
 others to confirm their details rather than relying on memory alone. "Just this machine" is a fine
 answer: move on.
 
-Save what you learn as you go: one `machines` memory with a short entry per machine (name, how to
-reach it, hardware, OS, role), a `goals` memory for what they want, and one INDEX line for each.
+Save what you learn as you go: record each machine in fleet.json (how to reach it, hardware, OS,
+role), put what they want in a `goals` memory, and add an INDEX line for `goals`.
 {{onboarding_timing}}

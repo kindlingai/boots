@@ -31,9 +31,9 @@ Once the user agrees:
    plan and ask before starting.
 5. Do one step at a time, and check that it worked before the next. If you are stuck, say so and
    ask; do not guess.
-6. When the server answers, list its models with models_at and switch with use_model. Save what you
-   set up (machine, server, model, port, how it starts) with memory_write, and add one line for it
-   to INDEX.
+6. When the server answers, list its models with models_at and switch with use_model. Record the
+   machine and the model (name, server, openai_url) in fleet.json, and how it is started in a
+   memory file with a line in INDEX.
 
 {{onboarding}}
 

@@ -98,12 +98,12 @@ export const TOOLS: ToolDef[] = [
     },
     ["steps"],
   ),
-  fn("memory_read", "Read a memory file, or a bundled doc as docs/<name>.", {
-    name: str("e.g. local-setup, gpu-boxes, docs/vllm"),
+  fn("memory_read", "Read a memory file, fleet.json, or a bundled doc as docs/<name>.", {
+    name: str("e.g. local-setup, goals, fleet.json, docs/vllm"),
   }, ["name"]),
   fn(
     "memory_write",
-    "Save durable facts about the user's setup. Write INDEX to update the always-visible index (4 kB limit; one line per memory file).",
+    "Save durable facts about the user's setup. Write INDEX to update the always-visible index (4 kB limit; one line per memory file). Write fleet.json to update the always-visible fleet inventory: the content must be a complete, valid JSON object (it replaces the file; 8 kB limit).",
     {
       name: str("memory name, letters digits - _ ."),
       content: str("Markdown"),
