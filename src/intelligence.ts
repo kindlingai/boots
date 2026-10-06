@@ -8,6 +8,7 @@ import { join } from "@std/path";
 import { ensureDir, exists, isWindows, modelsDir, scriptsDir } from "./platform.ts";
 import { chat, type Endpoint, reachable } from "./llm.ts";
 import { info } from "./ui.ts";
+import { Progress } from "./frontend.ts";
 
 export const SUPERVISE_SH = `#!/bin/sh
 # Written by ai-bootstrap. usage: supervise.sh PID SCRIPT [ARGS...]
@@ -264,6 +265,7 @@ export async function startFull(
   fallback: Endpoint | null,
   timeoutMs = Number(Deno.env.get("AIBOOT_FULL_TIMEOUT_S") ?? 1200) * 1000,
   signal?: AbortSignal,
+  size?: DownloadSize,
 ): Promise<{ ep: Endpoint } | { failure: FullFailure } | null> {
   const script = scriptPath("full");
   if (!(await exists(script))) return null;
@@ -286,7 +288,7 @@ export async function startFull(
     );
   }
   for (let attempt = 1;; attempt++) {
-    const r = await runFull(ep, script, log, timeoutMs, signal);
+    const r = await runFull(ep, script, log, timeoutMs, signal, size);
     if ("ep" in r) return r;
     const summary = await logSummary(log);
     const cause = causeOf([r.reason, ...summary.tail, ...summary.errors], r.downloading);
@@ -313,55 +315,59 @@ async function runFull(
   log: string,
   timeoutMs: number,
   signal?: AbortSignal,
+  size?: DownloadSize,
 ): Promise<{ ep: Endpoint } | { reason: string; downloading: boolean; final?: boolean }> {
   full?.stop();
   info(`starting the full model ${ep.model} with ${script} (log: ${log})`);
+  const progress = new Progress("full", `starting ${ep.model}`);
+  const watch = new DownloadWatch(modelsDir(), progress, size?.expect, size?.have);
   try {
     full = await supervise(script, [], log);
   } catch (e) {
     // e.g. no space left for the log itself.
+    progress.end(false);
     return { reason: (e as Error).message, downloading: false, final: true };
   }
   const t0 = Date.now();
-  let shown = 0;
-  let had = await dirSize(modelsDir());
-  let growing = false;
+  // When the models folder last grew: a start that dies soon after died mid-download.
+  let grewAt = 0;
+  let last = await dirSize(modelsDir());
+  const done = (
+    r: { ep: Endpoint } | { reason: string; downloading: boolean; final?: boolean },
+  ) => {
+    progress.end("ep" in r);
+    return r;
+  };
   while (true) {
-    if (await answers(ep)) return { ep };
-    if (signal?.aborted) return { reason: "stopped by the user", downloading: false, final: true };
-    if (!full.isRunning()) {
-      // Did the folder grow since the last look? Then it died mid-download.
-      const size = await dirSize(modelsDir());
-      return {
-        reason: `start-full exited with status ${await full.exited} before ${ep.baseUrl} answered`,
-        downloading: growing || size > had,
-      };
+    if (await answers(ep)) return done({ ep });
+    if (signal?.aborted) {
+      return done({ reason: "stopped by the user", downloading: false, final: true });
     }
-    const el = Math.floor((Date.now() - t0) / 1000);
+    const now = await dirSize(modelsDir());
+    if (now > last) grewAt = Date.now();
+    last = now;
+    if (!full.isRunning()) {
+      return done({
+        reason: `start-full exited with status ${await full.exited} before ${ep.baseUrl} answered`,
+        downloading: Date.now() - grewAt < 20_000,
+      });
+    }
     if (Date.now() - t0 > timeoutMs) {
-      return {
-        reason: `${ep.baseUrl} did not answer within ${el}s`,
+      return done({
+        reason: `${ep.baseUrl} did not answer within ${Math.floor((Date.now() - t0) / 1000)}s`,
         downloading: false,
         final: true,
-      };
+      });
     }
-    if (el - shown >= 15) {
-      const size = await dirSize(modelsDir());
-      const rate = (size - had) / (el - shown);
-      growing = rate > 0;
-      shown = el;
-      had = size;
-      const { tail } = await logSummary(log, 1);
-      info(
-        rate > 0
-          ? `  waiting for the full model (${el}s): models folder ${gb(size)}, growing ${
-            (rate / 1e6).toFixed(1)
-          } MB/s`
-          : `  waiting for the full model (${el}s): ${(tail[0] ?? "").slice(0, 120)}`,
-      );
-    }
+    await watch.tick();
     await new Promise((r) => setTimeout(r, 2000));
   }
+}
+
+/** A model download's size, for progress: the whole of it, and how much is already there. */
+export interface DownloadSize {
+  expect: number;
+  have: number;
 }
 
 /** A full model started by ai-bootstrap is running. */
@@ -401,5 +407,35 @@ export async function gpuOffload(log: string): Promise<string | null> {
     return m ? `${m[1]} of ${m[2]} layers on the GPU` : null;
   } catch {
     return null;
+  }
+}
+
+/**
+ * Follows a model download by the growth of `dir` (llama-server shows its own
+ * progress only on a terminal). `expect`: the download's size, when known;
+ * `have`: how much of it was already there.
+ */
+export class DownloadWatch {
+  private start = -1;
+  private last = -1;
+
+  constructor(
+    private dir: string,
+    private p: Progress,
+    private expect?: number,
+    private have = 0,
+  ) {}
+
+  async tick(): Promise<void> {
+    const size = await dirSize(this.dir);
+    if (this.start < 0) this.start = size;
+    const growth = size - this.start;
+    const growing = this.last >= 0 && size > this.last;
+    this.last = size;
+    if (growth > 0) {
+      const done = this.have + growth;
+      this.p.total = this.expect ? Math.max(this.expect, done) : undefined;
+      this.p.update(done, growing ? undefined : "loading the model", true);
+    } else this.p.update(0, "loading the model", true);
   }
 }

@@ -28,6 +28,7 @@ import {
   green,
   info,
   red,
+  say,
   spinner,
   yellow,
 } from "./ui.ts";
@@ -412,12 +413,12 @@ export class Session {
       .filter((l) => l.trim() && !/^\((stopped by the user|timed out;)/.test(l));
     const tail = lines.slice(-SHOWN_LINES);
     if (lines.length > tail.length) {
-      console.log(dim(`    … ${lines.length - tail.length} more lines`));
+      say(dim(`    … ${lines.length - tail.length} more lines`));
     }
-    for (const l of tail) console.log(dim(`    │ ${l.length > 160 ? `${l.slice(0, 157)}...` : l}`));
-    if (r.cancelled) console.log(yellow("    (stopped)"));
-    else if (r.timedOut) console.log(red("    (timed out; stopped it and everything it started)"));
-    else if (r.code !== 0) console.log(red(`    (exit ${r.code})`));
+    for (const l of tail) say(dim(`    │ ${l.length > 160 ? `${l.slice(0, 157)}...` : l}`));
+    if (r.cancelled) say(yellow("    (stopped)"));
+    else if (r.timedOut) say(red("    (timed out; stopped it and everything it started)"));
+    else if (r.code !== 0) say(red(`    (exit ${r.code})`));
   }
 
   /** The catalog model our running full model is, if any: its memory counts as free for a switch. */
@@ -443,12 +444,12 @@ export class Session {
 
   /** A failed model start, as the user sees it: why, and the end of the log. */
   private showFailure(f: FullFailure): void {
-    console.log(red(`  the full model did not start: ${f.reason}`));
-    if (f.cause) console.log(yellow(`  likely cause: ${f.cause}`));
+    say(red(`  the full model did not start: ${f.reason}`));
+    if (f.cause) say(yellow(`  likely cause: ${f.cause}`));
     for (const l of f.tail) {
-      console.log(dim(`    │ ${l.length > 160 ? `${l.slice(0, 157)}...` : l}`));
+      say(dim(`    │ ${l.length > 160 ? `${l.slice(0, 157)}...` : l}`));
     }
-    console.log(dim(`    (log: ${f.log})`));
+    say(dim(`    (log: ${f.log})`));
   }
 
   /** The user allowed every read-only command for this session. */
@@ -543,25 +544,25 @@ export class Session {
         const loc = this.where();
         const again = this.repeated(`${loc}\0${cmd}`);
         if (again) {
-          console.log(dim(`  [${loc}] $ ${cmd}`));
-          console.log(yellow("    not run: the same command again"));
+          say(dim(`  [${loc}] $ ${cmd}`));
+          say(yellow("    not run: the same command again"));
           return again;
         }
         const refused = refuseInRun(cmd);
         if (refused) {
-          console.log(dim(`  [${loc}] $ ${cmd}`));
-          console.log(yellow(`    not run: ${refused.split(":")[0]}`));
+          say(dim(`  [${loc}] $ ${cmd}`));
+          say(yellow(`    not run: ${refused.split(":")[0]}`));
           return `Not run: ${refused}`;
         }
         const { verdict, checked } = await this.check(cmd);
         if (verdict === "complex") {
-          console.log(dim(`  [${loc}] $ ${cmd}`));
-          console.log(yellow("    too complex to check; asking for smaller steps"));
+          say(dim(`  [${loc}] $ ${cmd}`));
+          say(yellow("    too complex to check; asking for smaller steps"));
           return Session.TOO_COMPLEX;
         }
         const label = Session.label(verdict, checked);
         if (verdict === "readonly" && this.allowReadonly) {
-          console.log(dim(`  [${loc}] $ ${cmd}`) + label);
+          say(dim(`  [${loc}] $ ${cmd}`) + label);
         } else {
           const kind = verdict === "readonly"
             ? "readonly"
@@ -580,8 +581,8 @@ export class Session {
         // Root always asks; the check still catches the complex and the dangerous.
         const { verdict, checked } = await this.check(cmd);
         if (verdict === "complex") {
-          console.log(dim(`  [${this.where()}] sudo ${cmd}`));
-          console.log(yellow("    too complex to check; asking for smaller steps"));
+          say(dim(`  [${this.where()}] sudo ${cmd}`));
+          say(yellow("    too complex to check; asking for smaller steps"));
           return Session.TOO_COMPLEX;
         }
         const no = await this.gate(
@@ -595,7 +596,7 @@ export class Session {
         return this.render(r);
       }
       case "read_file": {
-        console.log(dim(`  [${this.where()}] read ${args.path}`));
+        say(dim(`  [${this.where()}] read ${args.path}`));
         const r = await this.call("read", { path: String(args.path) });
         if (r.binary) return `${r.path} is binary (${r.size} bytes)`;
         return this.clip(r.content) +
@@ -628,7 +629,7 @@ export class Session {
         const r = await this.call("ssh_open", { dest, port: args.port });
         const top = this.here;
         this.stack.push({ label: dest, via: [...top.via, r.id], info: r.info });
-        console.log(
+        say(
           green(
             `  now on ${this.where()} (${r.info.os}/${r.info.arch}, ${r.info.user}@${r.info.hostname})`,
           ),
@@ -641,7 +642,7 @@ export class Session {
         await this.host.handle("ssh_close", { id: leaving.via.at(-1) }, this.here.via).catch(
           () => {},
         );
-        console.log(green(`  back on ${this.where()}`));
+        say(green(`  back on ${this.where()}`));
         return `left ${leaving.label}; location is ${this.where()}`;
       }
       case "plan": {
@@ -650,7 +651,7 @@ export class Session {
           status: s.status ?? "pending",
           note: s.note,
         }));
-        console.log(renderPlan(this.plan));
+        say(renderPlan(this.plan));
         return "plan recorded";
       }
       case "memory_read":
@@ -661,7 +662,7 @@ export class Session {
           String(args.content ?? ""),
           !!args.append,
         );
-        console.log(dim(`  memory: ${r}`));
+        say(dim(`  memory: ${r}`));
         return r;
       }
       case "json_eval": {
@@ -672,7 +673,7 @@ export class Session {
           }`;
         }
         const code = String(args.code ?? "");
-        console.log(dim(`  json_eval ${m.file}: ${code.replace(/\s+/g, " ").slice(0, 100)}`));
+        say(dim(`  json_eval ${m.file}: ${code.replace(/\s+/g, " ").slice(0, 100)}`));
         let doc: unknown;
         try {
           doc = JSON.parse((await this.memory.json(m.file)) || m.empty);
@@ -685,7 +686,7 @@ export class Session {
         const text = JSON.stringify(r.json, null, 2);
         try {
           const saved = await this.memory.write(m.file, text);
-          console.log(dim(`  memory: ${saved}`));
+          say(dim(`  memory: ${saved}`));
         } catch (e) {
           return `not saved: ${(e as Error).message}${logs}`;
         }
@@ -712,7 +713,7 @@ export class Session {
       case "mcp_list":
         return this.clip(await this.mcp.list(args.server));
       case "mcp_call": {
-        console.log(dim(`  mcp ${args.server}.${args.tool}`));
+        say(dim(`  mcp ${args.server}.${args.tool}`));
         return this.clip(
           await this.mcp.call(String(args.server), String(args.tool), args.arguments ?? {}),
         );
@@ -734,7 +735,7 @@ export class Session {
         return await this.fetchUrl(String(args.url ?? ""));
       case "git_clone": {
         const url = String(args.url ?? "");
-        console.log(dim(`  [${this.where()}] git clone ${url}${args.ref ? ` (${args.ref})` : ""}`));
+        say(dim(`  [${this.where()}] git clone ${url}${args.ref ? ` (${args.ref})` : ""}`));
         const r = await this.call("git_clone", {
           url,
           ref: args.ref ? String(args.ref) : undefined,
@@ -758,7 +759,7 @@ export class Session {
         return await this.useModel(args);
       case "list_models": {
         if (this.stack.length > 1) return "models are set up on the local machine only";
-        console.log(dim("  checking the GPU and the model catalog"));
+        say(dim("  checking the GPU and the model catalog"));
         return describePlan(await plan(this.here.info.hardware, this.holding()));
       }
       case "remove_downloads": {
@@ -780,7 +781,7 @@ export class Session {
         if (no) return no;
         const gone = await removeDownloads(keep);
         const freed = gone.reduce((n, d) => n + d.bytes, 0);
-        console.log(green(`  freed ${(freed / 2 ** 30).toFixed(1)} GB`));
+        say(green(`  freed ${(freed / 2 ** 30).toFixed(1)} GB`));
         return `removed ${gone.length} download(s), ${(freed / 2 ** 30).toFixed(1)} GB freed`;
       }
       case "read_log": {
@@ -790,7 +791,7 @@ export class Session {
           : which === "full-previous"
           ? prevLog(logPath("full"))
           : logPath("full");
-        console.log(dim(`  read ${path}`));
+        say(dim(`  read ${path}`));
         return this.clip(await readLog(path, Number(args.lines) || 30));
       }
       case "set_up_model": {
@@ -809,13 +810,13 @@ export class Session {
         );
         if ("error" in r) {
           if (r.failure) this.showFailure(r.failure);
-          else console.log(red(`  ${r.error.split("\n")[0]}`));
+          else say(red(`  ${r.error.split("\n")[0]}`));
           return r.error;
         }
         this.fullFailure = null;
         this.router.setSmart(r.ep);
         await saveSmart(r.ep);
-        console.log(green(`  ${r.summary}`));
+        say(green(`  ${r.summary}`));
         return `${r.summary} You are now replaced by it: tell the user it is ready, in one sentence.`;
       }
       case "start_full_model": {
@@ -839,7 +840,7 @@ export class Session {
         this.fullFailure = null;
         this.router.setSmart(r.ep);
         await saveSmart(r.ep);
-        console.log(green(`  the full model ${r.ep.model} is up; switched to it`));
+        say(green(`  the full model ${r.ep.model} is up; switched to it`));
         return `the full model ${r.ep.model} is answering at ${r.ep.baseUrl}; switched to it.`;
       }
       default:
@@ -859,7 +860,7 @@ export class Session {
     const m = url.hostname === "github.com" &&
       url.pathname.match(/^\/([^/]+)\/([^/]+)\/blob\/(.+)$/);
     if (m) url = new URL(`https://raw.githubusercontent.com/${m[1]}/${m[2]}/${m[3]}`);
-    console.log(dim(`  fetch ${url}`));
+    say(dim(`  fetch ${url}`));
     const r = await fetch(url, {
       signal: AbortSignal.timeout(30_000),
       headers: { "user-agent": "ai-bootstrap" },
@@ -915,7 +916,7 @@ export class Session {
     }
     this.router.setSmart(ep);
     await saveSmart(ep);
-    console.log(
+    say(
       green(`  now using ${model}; ${this.router.bootstrap.label} stays as the fallback`),
     );
     return `switched to ${model}. The bootstrap model remains the fallback.`;

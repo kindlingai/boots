@@ -6,7 +6,8 @@ import { type ChatShape, type Endpoint, LLMError } from "./llm.ts";
 import { BASE_TOOLS, describe, renderPlan, type Session, TOOLS } from "./tools.ts";
 import { currentTier, loadTemplates, systemPrompt, type Templates, tierOf } from "./prompts.ts";
 import { secrets } from "./secrets.ts";
-import { ask, bold, cyan, dim, Interrupted, plain, red, spinner, warn, write } from "./ui.ts";
+import { ask, bold, dim, Interrupted, plain, red, say, spinner, warn } from "./ui.ts";
+import { emit } from "./frontend.ts";
 
 const MAX_STEPS = 60;
 
@@ -119,45 +120,52 @@ export class Agent {
     }
   }
 
+  /** A whole assistant message at once. */
+  private speak(text: string): void {
+    emit({ type: "assistant", phase: "start" });
+    emit({ type: "assistant", phase: "delta", text });
+    emit({ type: "assistant", phase: "end" });
+  }
+
   private async steps(userText: string): Promise<void> {
     this.history.push({ role: "user", content: userText });
     for (let step = 0; step < MAX_STEPS; step++) {
       this.abort = new AbortController();
       let reply: Reply;
       let printed = false;
+      emit({ type: "status", model: this.s.router.current().label, location: this.s.where() });
       const spin = spinner("thinking");
       try {
         reply = await this.s.router.chat(await this.messages(), shape, {
           content: (t) => {
             if (!printed) {
               spin.stop();
-              write(cyan("● "));
+              emit({ type: "assistant", phase: "start" });
             }
             printed = true;
-            write(t);
+            emit({ type: "assistant", phase: "delta", text: t });
           },
           reasoning: (t) => {
-            if (Deno.env.get("AIBOOT_SHOW_THINKING")) {
-              spin.stop();
-              write(dim(t));
-            }
+            if (Deno.env.get("AIBOOT_SHOW_THINKING")) say(t, "dim");
           },
         }, this.abort.signal);
       } catch (e) {
         if (this.abort.signal.aborted) {
-          console.log(dim("\n[interrupted]"));
+          if (printed) emit({ type: "assistant", phase: "end" });
+          say("[interrupted]", "dim");
           this.history.push({ role: "user", content: "(the user interrupted your last reply)" });
           return;
         }
-        console.log(red(`\nmodel error: ${(e as Error).message}`));
+        if (printed) emit({ type: "assistant", phase: "end" });
+        say(`model error: ${(e as Error).message}`, "error");
         if (!(e instanceof LLMError)) throw e;
         return;
       } finally {
         spin.stop();
         this.abort = null;
       }
-      if (printed) write("\n");
-      else if (reply.content) console.log(`${cyan("●")} ${reply.content}`);
+      if (printed) emit({ type: "assistant", phase: "end" });
+      else if (reply.content) this.speak(reply.content);
       this.history.push({
         role: "assistant",
         content: reply.content,
@@ -186,7 +194,7 @@ export class Agent {
           } catch {
             msg = tc.function.arguments;
           }
-          if (msg.trim()) console.log(`${cyan("●")} ${msg.trim()}`);
+          if (msg.trim()) this.speak(msg.trim());
           this.history.push({ role: "tool", tool_call_id: tc.id, content: "shown to the user" });
           replied = true;
           continue;
@@ -206,7 +214,7 @@ export class Agent {
               });
             }
             this.history.push({ role: "user", content: "(the user stopped that command)" });
-            console.log(dim("[interrupted]"));
+            say("[interrupted]", "dim");
             return;
           }
         } catch (e) {
@@ -217,7 +225,7 @@ export class Agent {
           } else {
             result = `error: ${(e as Error).message}`;
           }
-          if (!(e instanceof SyntaxError)) console.log(red(`  ${result}`));
+          if (!(e instanceof SyntaxError)) say(`  ${result}`, "error");
         } finally {
           this.abort = null;
         }
@@ -247,10 +255,10 @@ export async function repl(agent: Agent): Promise<void> {
     // The model speaks first: it reports a full model that failed to start, the
     // base model asks to set up a smarter one, and a new user is asked about
     // their hardware (docs/prompts).
-    console.log(dim("(/help for commands)"));
+    say(dim("(/help for commands)"));
     await agent.turn("(New session. Open as your instructions say.)");
   } else {
-    console.log(`\n${bold("What would you like to do?")} ${dim("(/help for commands)")}`);
+    say(`\n${bold("What would you like to do?")} ${dim("(/help for commands)")}`);
   }
   while (true) {
     let line: string | null;
@@ -270,56 +278,56 @@ export async function repl(agent: Agent): Promise<void> {
         case "/q":
           return;
         case "/help":
-          console.log(HELP);
+          say(HELP);
           break;
         case "/where":
-          console.log(
+          say(
             s.stack.map((l, i) => `${"  ".repeat(i)}${l.label}: ${describe(l.info)}`).join("\n"),
           );
           break;
         case "/model":
-          console.log(
+          say(
             `bootstrap: ${s.router.bootstrap.label} (${
               s.router.bootstrapUp()
                 ? s.router.bootstrap.baseUrl
                 : "stopped while the full model runs"
             })`,
           );
-          console.log(
+          say(
             `smart:     ${
               s.router.smart ? `${s.router.smart.label} (${s.router.smart.baseUrl})` : "none"
             }`,
           );
-          console.log(`in use:    ${s.router.current().label}`);
+          say(`in use:    ${s.router.current().label}`);
           break;
         case "/plan":
-          console.log(renderPlan(s.plan));
+          say(renderPlan(s.plan));
           break;
         case "/memory":
-          console.log(await s.memory.index());
+          say(await s.memory.index());
           break;
         case "/secrets":
-          console.log(secrets.keys().join("\n") || "(none)");
+          say(secrets.keys().join("\n") || "(none)");
           break;
         case "/forget":
-          if (rest.length) console.log(`forgot ${secrets.forget(rest.join(" "))}`);
+          if (rest.length) say(`forgot ${secrets.forget(rest.join(" "))}`);
           else {
             secrets.clear();
-            console.log("forgot everything");
+            say("forgot everything");
           }
           break;
         case "/sync":
           try {
-            console.log(await s.memory.sync());
+            say(await s.memory.sync());
           } catch (e) {
-            console.log(red((e as Error).message));
+            say(red((e as Error).message));
           }
           break;
         case "/exit":
-          console.log(await s.exec("ssh_exit", {}));
+          say(await s.exec("ssh_exit", {}));
           break;
         default:
-          console.log(HELP);
+          say(HELP);
       }
       continue;
     }

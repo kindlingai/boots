@@ -14,7 +14,8 @@ import {
 import type { Endpoint } from "./llm.ts";
 import { contextFor } from "./discover.ts";
 import { info } from "./ui.ts";
-import { dirSize, gb, logPath, logSummary, scriptPath, supervise } from "./intelligence.ts";
+import { dirSize, DownloadWatch, logPath, scriptPath, supervise } from "./intelligence.ts";
+import { downloadTo, Progress } from "./frontend.ts";
 
 export { dirSize };
 
@@ -105,7 +106,12 @@ export async function installLlama(flavor: Flavor = "cpu"): Promise<string> {
   const r = await fetch(url);
   if (!r.ok || !r.body) throw new Error(`download failed: HTTP ${r.status}`);
   const f = await Deno.open(archive, { write: true, create: true, truncate: true });
-  await r.body.pipeTo(f.writable);
+  const p = new Progress(`llama-${flavor}`, `downloading llama.cpp ${tag}`);
+  try {
+    await downloadTo(r, f.writable, p);
+  } finally {
+    p.end();
+  }
   // bsdtar (macOS, Windows 10+) reads zip as well as tar.gz.
   const x = await new Deno.Command("tar", {
     args: ["-xf", archive, "-C", dir],
@@ -222,9 +228,9 @@ export async function startLlama(server: string): Promise<Running> {
     stop: () => proc.stop(),
     exited: proc.exited,
   };
-  const t0 = Date.now();
-  let shown = 0;
-  let had = await dirSize(models);
+  // The 4B Q4_K_M is about 2.5 GB.
+  const progress = new Progress("bootstrap", `starting ${model.split("/").pop()}`);
+  const watch = new DownloadWatch(models, progress, 2.5e9);
   try {
     while (true) {
       if (!proc.isRunning()) throw new Error(`llama-server exited; see ${log}`);
@@ -237,26 +243,14 @@ export async function startLlama(server: string): Promise<Running> {
       } catch {
         // not up yet
       }
-      const el = Math.floor((Date.now() - t0) / 1000);
-      if (el - shown >= 10) {
-        // llama-server draws download progress only on a terminal, so watch the cache grow.
-        const size = await dirSize(models);
-        const rate = (size - had) / (el - shown);
-        shown = el;
-        had = size;
-        info(
-          rate > 0
-            ? `  downloading the model (${el}s): ${gb(size)} so far, ${
-              (rate / 1e6).toFixed(1)
-            } MB/s`
-            : `  waiting for the model (${el}s): ${(await logSummary(log, 1)).tail[0] ?? ""}`,
-        );
-      }
+      await watch.tick();
       await new Promise((r) => setTimeout(r, 1000));
     }
   } catch (e) {
+    progress.end(false);
     run.stop();
     throw e;
   }
+  progress.end();
   return run;
 }

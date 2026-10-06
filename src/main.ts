@@ -14,6 +14,7 @@ import { makeNearAsker } from "./secrets.ts";
 import { loadSmart, restoreSmart, saveSmart, Session } from "./tools.ts";
 import { type FullFailure, gpuOffload, logPath, scriptPath, startFull } from "./intelligence.ts";
 import { startLlama } from "./llama.ts";
+import { downloadSize } from "./rails.ts";
 import { Agent, repl } from "./agent.ts";
 import { boot } from "./boot.ts";
 import {
@@ -25,16 +26,28 @@ import {
   scriptsDir,
   VERSION,
 } from "./platform.ts";
-import { bold, dim, red, warn } from "./ui.ts";
+import { bold, dim, red, say, warn } from "./ui.ts";
+import { emit, frontend, setFrontend } from "./frontend.ts";
+import { TuiFrontend } from "./frontends/tui.ts";
 
-async function interactive(): Promise<number> {
-  console.log(
-    `${bold("ai-bootstrap")} ${VERSION} ${dim(`(${currentTarget()}; memory in ${dataDir()})`)}`,
-  );
+async function interactive(tui: boolean): Promise<number> {
+  // ^C at the TUI's input arrives as a key, not a signal: it goes through here too.
+  let onInterrupt = () => {};
+  if (tui) {
+    if (Deno.stdin.isTerminal() && Deno.stdout.isTerminal()) {
+      const f = new TuiFrontend({
+        title: `ai-bootstrap ${VERSION}`,
+        onInterrupt: () => onInterrupt(),
+      });
+      setFrontend(f);
+      f.start();
+    } else warn("--tui needs a terminal; using the line interface");
+  }
+  say(`${bold("ai-bootstrap")} ${VERSION} ${dim(`(${currentTarget()}; memory in ${dataDir()})`)}`);
   const memory = new Memory();
   await memory.init();
   const pulled = await memory.pull();
-  if (pulled) console.log(dim(pulled));
+  if (pulled) say(pulled, "dim");
   const hasFull = await exists(scriptPath("full"));
   const booted = await boot(memory, hasFull);
   // The local bootstrap is stopped while the full model runs (handover), and
@@ -63,7 +76,9 @@ async function interactive(): Promise<number> {
   if (!smart && hasFull) {
     // Nothing answering: hand over to the full model's start script.
     await router.handover();
-    const r = await startFull((await loadSmart()).find((e) => !e.keyInMemory) ?? null).catch(
+    const saved = (await loadSmart()).find((e) => !e.keyInMemory) ?? null;
+    const size = saved ? await downloadSize(saved.model) : undefined;
+    const r = await startFull(saved, undefined, undefined, size).catch(
       (e) => {
         warn(`could not start the full model: ${(e as Error).message}`);
         return null;
@@ -86,7 +101,7 @@ async function interactive(): Promise<number> {
   }
   if (smart) {
     const gpu = hasFull ? await gpuOffload(logPath("full")) : null;
-    console.log(
+    say(
       `${bold("smart model:")} ${smart.label} ${dim(smart.baseUrl)}${gpu ? dim(` (${gpu})`) : ""}`,
     );
   }
@@ -116,9 +131,12 @@ async function interactive(): Promise<number> {
   const onSigint = () => {
     if (!agent.interrupt()) {
       llama?.stop();
+      frontend().close();
       Deno.exit(130);
     }
   };
+  onInterrupt = onSigint;
+  emit({ type: "status", model: router.current().label, location: session.where() });
   try {
     Deno.addSignalListener("SIGINT", onSigint);
   } catch {
@@ -129,8 +147,30 @@ async function interactive(): Promise<number> {
   } finally {
     await session.closeAll();
     llama?.stop();
+    frontend().close();
   }
   return 0;
+}
+
+/** A terminal that can take the full-screen interface. */
+export function modernTerminal(
+  env: (k: string) => string | undefined = (k) => Deno.env.get(k),
+): boolean {
+  const term = env("TERM") ?? "";
+  if (term === "dumb") return false;
+  if (env("WT_SESSION") || env("TERM_PROGRAM")) return true;
+  return /^(xterm|screen|tmux|rxvt|kitty|alacritty|wezterm|ghostty|foot|konsole|gnome|vte|st-|iterm|linux)/
+    .test(term);
+}
+
+/** --tui or --repl decide; then AIBOOT_UI; otherwise the TUI on a capable terminal. */
+function wantTui(flag?: string): boolean {
+  if (flag === "--tui") return true;
+  if (flag === "--repl") return false;
+  const ui = Deno.env.get("AIBOOT_UI");
+  if (ui === "tui") return true;
+  if (ui === "repl" || ui === "line") return false;
+  return Deno.stdin.isTerminal() && Deno.stdout.isTerminal() && modernTerminal();
 }
 
 async function main(args: string[]): Promise<number> {
@@ -164,9 +204,13 @@ async function main(args: string[]): Promise<number> {
       );
       return 0;
     case undefined:
-      return await interactive();
+    case "--tui":
+    case "--repl":
+      return await interactive(wantTui(args[0]));
     default:
-      console.log("usage: ai-bootstrap [--version | --paths | --docs | --search WORDS]");
+      console.log(
+        "usage: ai-bootstrap [--tui | --repl | --version | --paths | --docs | --search WORDS]",
+      );
       return 2;
   }
 }
@@ -175,6 +219,7 @@ if (import.meta.main) {
   try {
     Deno.exit(await main(Deno.args));
   } catch (e) {
+    frontend().close();
     console.error(red(`ai-bootstrap: ${(e as Error).message}`));
     Deno.exit(1);
   }

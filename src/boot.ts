@@ -6,7 +6,7 @@ import type { Endpoint } from "./llm.ts";
 import { scanApiKeys, scanLocal, type Source } from "./discover.ts";
 import { installedServer, installLlama, notStarted, type Running, startLlama } from "./llama.ts";
 import type { Memory } from "./memory.ts";
-import { bold, choose, confirm, dim, info, warn } from "./ui.ts";
+import { bold, choose, confirm, dim, info, say, warn } from "./ui.ts";
 import { freeBytes } from "./hardware.ts";
 import { modelsDir } from "./platform.ts";
 
@@ -111,7 +111,7 @@ export async function boot(memory: Memory, deferLocal = false): Promise<Booted> 
       bootstrap = sources[pick].endpoint;
     }
   }
-  if (!deferred) console.log(`${bold("bootstrap:")} ${bootstrap.label} ${dim(bootstrap.baseUrl)}`);
+  if (!deferred) say(`${bold("bootstrap:")} ${bootstrap.label} ${dim(bootstrap.baseUrl)}`);
 
   const found = sources.length
     ? sources.map((s) => `  - ${s.label} (${s.endpoint.baseUrl})`).join("\n")

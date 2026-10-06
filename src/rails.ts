@@ -482,7 +482,8 @@ export async function setUpModel(
     tier: "full",
   };
   // The first start downloads several GB.
-  const r = await startFull(want, 3 * 3600_000, signal);
+  const have = p.downloads.filter((d) => d.models.includes(m.id)).reduce((n, d) => n + d.bytes, 0);
+  const r = await startFull(want, 3 * 3600_000, signal, { expect: m.fileGB * 1e9, have });
   if (!r) return { error: `${script} disappeared` };
   if ("failure" in r) {
     const f = r.failure;
@@ -496,4 +497,15 @@ export async function setUpModel(
       layers ? ` (${layers})` : ""
     }, started by ${script}.${p.warning ? ` Warning: ${p.warning}` : ""}`,
   };
+}
+
+/** The download a catalog model still needs, for progress: its size, and what is already here. */
+export async function downloadSize(
+  id: string,
+): Promise<{ expect: number; have: number } | undefined> {
+  const m = CATALOG.find((c) => c.id === id);
+  if (!m) return undefined;
+  const have = (await downloads()).filter((d) => d.models.includes(id))
+    .reduce((n, d) => n + d.bytes, 0);
+  return { expect: m.fileGB * 1e9, have };
 }

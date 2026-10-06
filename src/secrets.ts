@@ -10,7 +10,7 @@
 // A sudo prompt on a box falls back to that box's ssh password, which is
 // usually the same.
 
-import { ask, askSecret, confirm, dim, warn } from "./ui.ts";
+import { ask, askSecret, confirm, dim, say, warn } from "./ui.ts";
 
 export type SecretKind = "ssh" | "sudo" | "apikey";
 
@@ -86,7 +86,7 @@ export function makeNearAsker(store: SecretStore = secrets): Asker {
     const loc = where(req.path);
     if (req.kind === "confirm") {
       // Host-key questions are not secret; show what is typed.
-      console.log(`\n${req.prompt.trim()} ${dim(`(${loc})`)}`);
+      say(`${req.prompt.trim()} ${dim(`(${loc})`)}`);
       return await ask(/yes\/no/.test(req.prompt) ? "  answer (yes/no): " : "  answer: ");
     }
     if (req.attempt === 0) {
