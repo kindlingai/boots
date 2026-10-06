@@ -157,3 +157,48 @@ Deno.test({ name: "startFull: up, failed, and no script", ignore: !unix }, async
     await Deno.remove(dir, { recursive: true });
   }
 });
+
+Deno.test("failure causes from the log", async () => {
+  const { causeOf } = await import("../src/intelligence.ts");
+  assertEquals(causeOf(["ggml_metal: error: failed to allocate buffer"], false), "memory");
+  assertEquals(causeOf(["common_download_file_single_online: HTTP error 503"], false), "download");
+  assertEquals(causeOf(["exiting"], true), "download");
+  assertEquals(causeOf(["ggml_vulkan: no devices found"], false), "gpu");
+  assertEquals(causeOf(["segfault"], false), "other");
+});
+
+Deno.test(
+  { name: "an interrupted download is resumed; the previous log is kept", ignore: !unix },
+  async () => {
+    const dir = await Deno.makeTempDir();
+    Deno.env.set("AIBOOT_HOME", dir);
+    try {
+      await Deno.mkdir(join(dir, "intelligence"), { recursive: true });
+      const count = join(dir, "count");
+      // Fails like a dropped download twice, then serves.
+      const port = 19000 + Math.floor(Math.random() * 1000);
+      const mock = fromFileUrl(new URL("./fixtures/mock_llm.ts", import.meta.url));
+      await Deno.writeTextFile(join(dir, "s.json"), "[]");
+      await Deno.writeTextFile(
+        scriptPath("full"),
+        `#!/bin/sh
+# endpoint: http://127.0.0.1:${port}/v1 big
+n=$(cat '${count}' 2>/dev/null || echo 0); n=$((n+1)); echo $n > '${count}'
+if [ $n -lt 3 ]; then echo "attempt $n: common_download_file: connection reset"; exit 1; fi
+exec '${Deno.execPath()}' run -A '${mock}' '${join(dir, "s.json")}' ${port}
+`,
+      );
+      const r = await startFull(null);
+      assertEquals(r && "ep" in r && r.ep.model, "big");
+      assertEquals((await Deno.readTextFile(count)).trim(), "3");
+      assertStringIncludes(
+        await Deno.readTextFile(join(dir, "intelligence", "full.prev.log")),
+        "attempt 2",
+      );
+    } finally {
+      stopFull();
+      Deno.env.delete("AIBOOT_HOME");
+      await Deno.remove(dir, { recursive: true });
+    }
+  },
+);

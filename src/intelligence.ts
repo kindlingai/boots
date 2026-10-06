@@ -35,6 +35,20 @@ export function logPath(name: "bootstrap" | "full"): string {
   return join(scriptsDir(), `${name}.log`);
 }
 
+/** full.log -> full.prev.log */
+export function prevLog(log: string): string {
+  return log.replace(/\.log$/, ".prev.log");
+}
+
+/** The last `n` lines of a log for reading, and the lines that mention errors. */
+export async function readLog(path: string, n = 30): Promise<string> {
+  const { tail, errors } = await logSummary(path, Math.min(Math.max(n, 1), 200));
+  if (!tail.length) return `${path} is empty or missing`;
+  return `last ${tail.length} lines of ${path}:\n${tail.join("\n")}\n\nlines mentioning errors:\n${
+    errors.join("\n") || "(none)"
+  }`;
+}
+
 export interface Supervised {
   script: string;
   log: string;
@@ -69,6 +83,8 @@ function stopAllOnExit() {
 /** Runs a start script under supervision, its output going to `log` (truncated). */
 export async function supervise(script: string, args: string[], log: string): Promise<Supervised> {
   await ensureDir(scriptsDir());
+  // Keep the previous attempt's log: a retry would otherwise hide why the first one failed.
+  await Deno.rename(log, prevLog(log)).catch(() => {});
   const out = await Deno.open(log, { write: true, create: true, truncate: true });
   let cmd: Deno.Command;
   if (isWindows) {
@@ -150,17 +166,52 @@ export async function logSummary(
 }
 
 /** Why the full model did not start, for the diagnosis prompt and the start_full_model tool. */
+export type FailureCause = "download" | "memory" | "gpu" | "other";
+
 export interface FullFailure {
   script: string;
   log: string;
   reason: string;
   tail: string[];
   errors: string[];
+  /** The likely cause, from the log (and whether the download was still going). */
+  cause?: FailureCause;
 }
+
+/** What a failed start's log says, most specific first. */
+export function causeOf(lines: string[], downloading: boolean): FailureCause {
+  const t = lines.join("\n");
+  if (
+    /out of memory|failed to allocate|insufficient memory|not enough memory|OutOfMemory|cannot allocate/i
+      .test(t)
+  ) {
+    return "memory";
+  }
+  if (
+    downloading ||
+    /download|curl|HTTP (error|status)|status code|SSL|TLS|connection|could not resolve|timed out|failed to fetch|hf_hub|huggingface/i
+      .test(t)
+  ) {
+    return "download";
+  }
+  if (/vulkan|metal|no (usable )?gpu|ggml_backend.*fail/i.test(t)) return "gpu";
+  return "other";
+}
+
+export const CAUSE_HINT: Record<FailureCause, string> = {
+  download:
+    "the model download was interrupted (ai-bootstrap already resumed it automatically, and it still failed). Check the network; then try again with start_full_model, which continues the download.",
+  memory:
+    "it ran out of memory loading the model. Set up the next smaller model that fits (set_up_model).",
+  gpu: "llama.cpp could not use the GPU. Read the log (read_log) and tell the user what it says.",
+  other: "unclear. Read more of the log (read_log) and tell the user what it says.",
+};
 
 export function describeFailure(f: FullFailure): string {
   const block = (l: string[]) => l.length ? l.join("\n") : "(none)";
-  return `${f.reason}\nscript: ${f.script}\nlog: ${f.log}\n\nlast lines of the log:\n${
+  return `${f.reason}\n${
+    f.cause ? `likely cause: ${CAUSE_HINT[f.cause]}\n` : ""
+  }script: ${f.script}\nlog: ${f.log}\n\nlast lines of the log:\n${
     block(f.tail)
   }\n\nlines mentioning errors:\n${block(f.errors)}`;
 }
@@ -220,27 +271,65 @@ export async function startFull(
       "the script has no `# endpoint: <base_url> <model>` line, so ai-bootstrap cannot tell when it is up",
     );
   }
+  for (let attempt = 1;; attempt++) {
+    const r = await runFull(ep, script, log, timeoutMs, signal);
+    if ("ep" in r) return r;
+    const summary = await logSummary(log);
+    const cause = causeOf([...summary.tail, ...summary.errors], r.downloading);
+    full?.stop();
+    full = null;
+    // An interrupted download resumes where it stopped: try again, a few times.
+    if (cause === "download" && !r.final && attempt < DOWNLOAD_ATTEMPTS) {
+      info(
+        `  the download was interrupted; resuming (attempt ${attempt + 1} of ${DOWNLOAD_ATTEMPTS})`,
+      );
+      await new Promise((res) => setTimeout(res, 5000 * attempt));
+      continue;
+    }
+    return { failure: { script, log, reason: r.reason, ...summary, cause } };
+  }
+}
+
+const DOWNLOAD_ATTEMPTS = 3;
+
+/** One start: up, or why not (and whether the model folder was still growing). */
+async function runFull(
+  ep: Endpoint,
+  script: string,
+  log: string,
+  timeoutMs: number,
+  signal?: AbortSignal,
+): Promise<{ ep: Endpoint } | { reason: string; downloading: boolean; final?: boolean }> {
   full?.stop();
   info(`starting the full model ${ep.model} with ${script} (log: ${log})`);
   full = await supervise(script, [], log);
   const t0 = Date.now();
   let shown = 0;
   let had = await dirSize(modelsDir());
+  let growing = false;
   while (true) {
     if (await answers(ep)) return { ep };
-    if (signal?.aborted) return await fail("stopped by the user");
+    if (signal?.aborted) return { reason: "stopped by the user", downloading: false, final: true };
     if (!full.isRunning()) {
-      return await fail(
-        `start-full exited with status ${await full.exited} before ${ep.baseUrl} answered`,
-      );
+      // Did the folder grow since the last look? Then it died mid-download.
+      const size = await dirSize(modelsDir());
+      return {
+        reason: `start-full exited with status ${await full.exited} before ${ep.baseUrl} answered`,
+        downloading: growing || size > had,
+      };
     }
     const el = Math.floor((Date.now() - t0) / 1000);
     if (Date.now() - t0 > timeoutMs) {
-      return await fail(`${ep.baseUrl} did not answer within ${el}s`);
+      return {
+        reason: `${ep.baseUrl} did not answer within ${el}s`,
+        downloading: false,
+        final: true,
+      };
     }
     if (el - shown >= 15) {
       const size = await dirSize(modelsDir());
       const rate = (size - had) / (el - shown);
+      growing = rate > 0;
       shown = el;
       had = size;
       const { tail } = await logSummary(log, 1);

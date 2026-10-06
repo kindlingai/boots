@@ -6,7 +6,15 @@ import { chat, type Endpoint, reachable, type Router, type ToolDef } from "./llm
 import type { Memory } from "./memory.ts";
 import type { McpManager } from "./mcp.ts";
 import { isReadonly, stages } from "./readonly.ts";
-import { describeFailure, type FullFailure, scriptPath, startFull } from "./intelligence.ts";
+import {
+  describeFailure,
+  type FullFailure,
+  logPath,
+  prevLog,
+  readLog,
+  scriptPath,
+  startFull,
+} from "./intelligence.ts";
 import { secrets } from "./secrets.ts";
 import { contextFor, sizeFromName } from "./discover.ts";
 import { dataDir, ensureDir } from "./platform.ts";
@@ -267,6 +275,19 @@ export const REPLY_TOOL = fn(
   ["message"],
 );
 
+export const READ_LOG_TOOL = fn(
+  "read_log",
+  "Read the end of a model server's log, with the lines that mention errors: full (the full model, latest start), full-previous (the start before that), or bootstrap.",
+  {
+    log: { type: "string", enum: ["full", "full-previous", "bootstrap"] },
+    lines: {
+      type: "integer",
+      description: "how many lines from the end (default 30, at most 200)",
+    },
+  },
+  ["log"],
+);
+
 /** The base model's rails: it sets up a catalog model on this machine, and that is all. */
 export const BASE_TOOLS = [
   REPLY_TOOL,
@@ -283,6 +304,7 @@ export const BASE_TOOLS = [
     ["model"],
   ),
   ...TOOLS.filter((t) => t.function.name === "start_full_model"),
+  READ_LOG_TOOL,
 ];
 
 export class Session {
@@ -356,6 +378,16 @@ export class Session {
     if (r.cancelled) console.log(yellow("    (stopped)"));
     else if (r.timedOut) console.log(red("    (timed out; stopped it and everything it started)"));
     else if (r.code !== 0) console.log(red(`    (exit ${r.code})`));
+  }
+
+  /** A failed model start, as the user sees it: why, and the end of the log. */
+  private showFailure(f: FullFailure): void {
+    console.log(red(`  the full model did not start: ${f.reason}`));
+    if (f.cause) console.log(yellow(`  likely cause: ${f.cause}`));
+    for (const l of f.tail) {
+      console.log(dim(`    │ ${l.length > 160 ? `${l.slice(0, 157)}...` : l}`));
+    }
+    console.log(dim(`    (log: ${f.log})`));
   }
 
   /** The user allowed every read-only command for this session. */
@@ -633,6 +665,16 @@ export class Session {
         console.log(dim("  checking the GPU and the model catalog"));
         return describePlan(await plan(this.here.info.hardware));
       }
+      case "read_log": {
+        const which = String(args.log ?? "full");
+        const path = which === "bootstrap"
+          ? logPath("bootstrap")
+          : which === "full-previous"
+          ? prevLog(logPath("full"))
+          : logPath("full");
+        console.log(dim(`  read ${path}`));
+        return this.clip(await readLog(path, Number(args.lines) || 30));
+      }
       case "set_up_model": {
         if (this.stack.length > 1) return "models are set up on the local machine only";
         const id = String(args.model ?? "");
@@ -645,7 +687,8 @@ export class Session {
         if (no) return no;
         const r = await setUpModel(id, this.here.info.hardware, this.memory, signal);
         if ("error" in r) {
-          console.log(red(`  ${r.error.split("\n")[0]}`));
+          if (r.failure) this.showFailure(r.failure);
+          else console.log(red(`  ${r.error.split("\n")[0]}`));
           return r.error;
         }
         this.fullFailure = null;
@@ -666,6 +709,7 @@ export class Session {
         if (!r) return `there is no ${script}; write it first`;
         if ("failure" in r) {
           this.fullFailure = r.failure;
+          this.showFailure(r.failure);
           return `the full model did not start: ${describeFailure(r.failure)}`;
         }
         this.fullFailure = null;

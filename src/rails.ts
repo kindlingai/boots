@@ -5,7 +5,13 @@
 
 import { join } from "@std/path";
 import { installLlama } from "./llama.ts";
-import { logPath, scriptPath, startFull } from "./intelligence.ts";
+import {
+  describeFailure,
+  type FullFailure,
+  logPath,
+  scriptPath,
+  startFull,
+} from "./intelligence.ts";
 import type { Endpoint } from "./llm.ts";
 import type { Memory } from "./memory.ts";
 import { isWindows, modelsDir, randomFreePort } from "./platform.ts";
@@ -278,7 +284,7 @@ export async function setUpModel(
   hardware: string,
   memory: Memory,
   signal?: AbortSignal,
-): Promise<{ ep: Endpoint; summary: string } | { error: string }> {
+): Promise<{ ep: Endpoint; summary: string } | { error: string; failure?: FullFailure }> {
   const p = await plan(hardware);
   const fit = p.fits.find((f) => f.model.id === id);
   if (!fit) return { error: `no model ${id} in the catalog.\n${describePlan(p)}` };
@@ -300,11 +306,7 @@ export async function setUpModel(
   if (!r) return { error: `${script} disappeared` };
   if ("failure" in r) {
     const f = r.failure;
-    return {
-      error: `${m.id} did not start: ${f.reason}\nlast lines of ${f.log}:\n${
-        f.tail.join("\n") || "(empty)"
-      }\nlines mentioning errors:\n${f.errors.join("\n") || "(none)"}`,
-    };
+    return { error: `${m.id} did not start: ${describeFailure(f)}`, failure: f };
   }
   await record(memory, m, r.ep, script, p.accel);
   const layers = await offload(logPath("full"));

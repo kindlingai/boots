@@ -5,7 +5,7 @@ import { join } from "@std/path";
 import type { Endpoint, Router } from "./llm.ts";
 import { sizeFromName } from "./discover.ts";
 import { docsDir } from "./platform.ts";
-import type { FullFailure } from "./intelligence.ts";
+import { CAUSE_HINT, type FullFailure } from "./intelligence.ts";
 
 export type Tier = "base" | "full";
 
@@ -124,9 +124,13 @@ Lines that mention errors:
 ${block(v.failure.errors, "(none)")}
 \`\`\`
 
-Skip the opening question. Open by telling the user, with reply, that the full model did not start
-and what the lines above suggest, in plain words. Then offer, as in step 4: try again
-(start_full_model), a smaller model (list_models, set_up_model), or a hosted model.
+${
+      v.failure.cause
+        ? `Likely cause: ${CAUSE_HINT[v.failure.cause]}\n\n`
+        : ""
+    }Skip the opening question. Open by telling the user, with reply, that the full model did not start
+and what the lines above suggest, in plain words (read_log shows more). Then offer what step 4
+says for that cause.
 `
     : "";
   if (v.failure && !base) {

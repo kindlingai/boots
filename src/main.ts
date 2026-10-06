@@ -39,7 +39,11 @@ async function interactive(): Promise<number> {
       await saveSmart(smart);
     } else if (r) {
       failure = r.failure;
-      warn(`the full model did not start: ${failure.reason}`);
+      warn(
+        `the full model did not start: ${failure.reason}${
+          failure.cause ? ` (likely cause: ${failure.cause})` : ""
+        }`,
+      );
     }
   }
   if (smart) console.log(`${bold("smart model:")} ${smart.label} ${dim(smart.baseUrl)}`);

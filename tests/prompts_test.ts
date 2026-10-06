@@ -166,7 +166,7 @@ Deno.test("the base prompt is on rails: setup tools only", async () => {
   assertStringIncludes(sys, "Call set_up_model with the recommended model");
   assertStringIncludes(
     sys,
-    "Your only tools are reply, list_models, set_up_model and start_full_model",
+    "Your only tools are reply, list_models, set_up_model, start_full_model and read_log",
   );
   assertStringIncludes(sys, "You are served at http://x/v1");
   assertStringIncludes(sys, "NVIDIA RTX 4090");

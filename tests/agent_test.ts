@@ -41,7 +41,13 @@ Deno.test("base model: on rails, tool calls required, reply ends the turn", asyn
     const asks = m.seen.filter((b) => b.tools);
     assertEquals(asks.length, 2, "the turn ends at reply");
     assertEquals(asks[0].tool_choice, "required");
-    assertEquals(toolNames(asks[0]), ["reply", "list_models", "set_up_model", "start_full_model"]);
+    assertEquals(toolNames(asks[0]), [
+      "reply",
+      "list_models",
+      "set_up_model",
+      "start_full_model",
+      "read_log",
+    ]);
     // A tool it was not offered is refused, not run.
     const last = asks[1].messages.at(-1);
     assertEquals(last.role, "tool");
