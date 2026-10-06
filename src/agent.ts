@@ -9,6 +9,7 @@ import { secrets } from "./secrets.ts";
 import { ask, bold, dim, Interrupted, plain, red, say, spinner, warn } from "./ui.ts";
 import { emit } from "./frontend.ts";
 import { clipTools, compact, isContextError, SUMMARY_PROMPT } from "./compact.ts";
+import { Backoff } from "./backoff.ts";
 
 const MAX_STEPS = 60;
 
@@ -90,6 +91,8 @@ export class Agent {
   restoredAt: string | null = null;
   private abort: AbortController | null = null;
   private busy = false;
+  /** Slows down tool calls that come in rapid succession. */
+  private pace = new Backoff();
 
   private templates: Templates | null = null;
 
@@ -318,9 +321,24 @@ export class Agent {
         }
         // ^C during a tool stops it (and everything it started) and ends the turn.
         const ac = this.abort = new AbortController();
+        const wait = this.pace.next();
+        if (wait) {
+          const s = spinner(`pacing tool calls (${(wait / 1000).toFixed(1)}s)`);
+          await new Promise<void>((ok) => {
+            const t = setTimeout(ok, wait);
+            ac.signal.addEventListener("abort", () => {
+              clearTimeout(t);
+              ok();
+            });
+          });
+          s.stop();
+        }
         try {
           const args = tc.function.arguments.trim() ? JSON.parse(tc.function.arguments) : {};
-          result = await this.s.exec(tc.function.name, args, ac.signal);
+          // ^C while pacing: not run, and the turn ends below like any interrupt.
+          result = ac.signal.aborted
+            ? "not run: the user interrupted"
+            : await this.s.exec(tc.function.name, args, ac.signal);
           if (ac.signal.aborted) {
             this.push({ role: "tool", tool_call_id: tc.id, content: result });
             for (const rest of reply.toolCalls.slice(n + 1)) {
@@ -345,6 +363,7 @@ export class Agent {
           if (!(e instanceof SyntaxError)) say(`  ${result}`, "error");
         } finally {
           this.abort = null;
+          this.pace.done();
         }
         this.push({ role: "tool", tool_call_id: tc.id, content: result });
       }
