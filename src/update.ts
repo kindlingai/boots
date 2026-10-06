@@ -6,7 +6,8 @@ import { basename, dirname } from "@std/path";
 import { currentTarget, isWindows, VERSION } from "./platform.ts";
 import { packageName } from "./package.ts";
 
-export const RELEASE_REPOS = ["mmastrac/ai-bootstrap", "kindlingai/boots"];
+// kindlingai/boots is the home now; the old name still redirects there.
+export const RELEASE_REPOS = ["kindlingai/boots", "mmastrac/ai-bootstrap"];
 
 export interface Update {
   /** e.g. "0.1.18" */

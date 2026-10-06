@@ -28,7 +28,7 @@ export interface SshChild {
   close(): Promise<void>;
 }
 
-const RELEASES = "https://github.com/mmastrac/ai-bootstrap/releases/download";
+const RELEASES = "https://github.com/kindlingai/boots/releases/download";
 
 /** Unix socket paths are limited to ~104 bytes; %C adds 40. */
 function controlDir(): string {

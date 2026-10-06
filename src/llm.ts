@@ -123,7 +123,7 @@ export async function chat(
   const key = apiKey(ep);
   if (key) headers.authorization = `Bearer ${key}`;
   if (ep.baseUrl.includes("openrouter.ai")) {
-    headers["HTTP-Referer"] = "https://github.com/mmastrac/ai-bootstrap";
+    headers["HTTP-Referer"] = "https://github.com/kindlingai/boots";
     headers["X-Title"] = "ai-bootstrap";
   }
   const sampling: Record<string, unknown> = plain ? {} : { ...ep.sampling };
