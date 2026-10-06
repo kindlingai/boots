@@ -153,3 +153,34 @@ Deno.test("a failed full model start gets the diagnosis prompt, with the log lin
   assertStringIncludes(full, "The full model failed to start");
   assert(!full.includes("small base model"));
 });
+
+Deno.test("base prompt on a Mac: use the installed llama.cpp, with a filled-in start script", async () => {
+  const t = await loadTemplates();
+  const sys = systemPrompt(t, new Router(ep("qwen3-4b")), {
+    ...vars,
+    os: "darwin",
+    os_name: "macOS 15.3",
+    models: "/Users/m/Library/Application Support/ai-bootstrap/models",
+    llama_server: "/Users/m/Library/Caches/ai-bootstrap/llama/b9000/llama-server",
+  });
+  assertStringIncludes(
+    sys,
+    "On this Mac use llama.cpp: already installed at /Users/m/Library/Caches",
+  );
+  assertStringIncludes(sys, "Do not install Ollama");
+  assertStringIncludes(sys, "# endpoint: http://127.0.0.1:41234/v1 <name>");
+  assertStringIncludes(
+    sys,
+    "export LLAMA_CACHE='/Users/m/Library/Application Support/ai-bootstrap/models/llama.cpp'",
+  );
+  assertStringIncludes(
+    sys,
+    "exec '/Users/m/Library/Caches/ai-bootstrap/llama/b9000/llama-server' -hf",
+  );
+  assertStringIncludes(sys, "--port 41234");
+  assertStringIncludes(flat(sys), "Never start a server with run");
+  assert(!sys.includes("{{"), "unfilled placeholder");
+  // Linux suggests vLLM in Docker for NVIDIA, on the same free port.
+  const linux = systemPrompt(t, new Router(ep("qwen3-4b")), vars);
+  assertStringIncludes(linux, "docker run --rm --gpus all -p 41234:8000");
+});

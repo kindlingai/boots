@@ -39,8 +39,13 @@ export interface ExecResult {
   stdout: string;
   stderr: string;
   timedOut?: boolean;
+  /** Stopped by the user (^C). */
+  cancelled?: boolean;
   cwd?: string;
 }
+
+/** How long a command may run unless the caller asks for longer. */
+export const DEFAULT_TIMEOUT_MS = 30_000;
 
 const CWD_MARK = "\x1eAIBOOT-CWD ";
 const SUDO_REJECTED =
@@ -52,6 +57,8 @@ export class Host {
   private nextChild = 1;
   private shellPath: string | null = null;
   private osNameCache: string | null = null;
+  /** Commands in flight, by the token their caller can cancel them with. */
+  private running = new Map<string, AbortController>();
 
   constructor(private ask: Asker, private log: (s: string) => void = () => {}) {}
 
@@ -67,9 +74,18 @@ export class Host {
       case "info":
         return await this.info();
       case "exec":
-        return await this.exec(String(args.cmd), args.timeoutMs);
+        return await this.cancellable(
+          args.token,
+          (signal) => this.exec(String(args.cmd), args.timeoutMs, signal),
+        );
       case "sudo":
-        return await this.sudo(String(args.cmd), args.timeoutMs);
+        return await this.cancellable(
+          args.token,
+          (signal) => this.sudo(String(args.cmd), args.timeoutMs, signal),
+        );
+      case "cancel":
+        this.running.get(String(args.token))?.abort();
+        return true;
       case "read":
         return await this.read(String(args.path), args.maxBytes);
       case "write":
@@ -164,40 +180,94 @@ export class Host {
     }%s\\n' "$(pwd)"\nexit $__aiboot_rc`;
   }
 
-  private async spawn(argv: string[], opts: { stdin?: string; timeoutMs?: number; cwd?: string }) {
+  private async cancellable<T>(
+    token: unknown,
+    run: (signal: AbortSignal) => Promise<T>,
+  ): Promise<T> {
     const ac = new AbortController();
-    const ms = opts.timeoutMs ?? 10 * 60_000;
+    const key = token ? String(token) : null;
+    if (key) this.running.set(key, ac);
+    try {
+      return await run(ac.signal);
+    } finally {
+      if (key) this.running.delete(key);
+    }
+  }
+
+  /**
+   * Runs a command in its own process group (so the terminal's ^C does not
+   * reach it), and on timeout or cancel takes the whole tree down: TERM,
+   * then KILL two seconds later.
+   */
+  private async spawn(
+    argv: string[],
+    opts: { stdin?: string; timeoutMs?: number; cwd?: string; signal?: AbortSignal },
+  ) {
+    const ms = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     let timedOut = false;
+    let cancelled = false;
+    let p: Deno.ChildProcess;
+    let done = false;
+    const kill = (sig: Deno.Signal) => {
+      if (done) return;
+      try {
+        if (isWindows) {
+          new Deno.Command("taskkill", {
+            args: ["/pid", String(p.pid), "/t", "/f"],
+            stdout: "null",
+            stderr: "null",
+          }).outputSync();
+        } else Deno.kill(-p.pid, sig);
+      } catch {
+        // gone
+      }
+    };
+    let hard: ReturnType<typeof setTimeout> | undefined;
+    const stop = () => {
+      kill("SIGTERM");
+      hard = setTimeout(() => kill("SIGKILL"), 2000);
+    };
     const t = setTimeout(() => {
       timedOut = true;
-      ac.abort();
+      stop();
     }, ms);
+    const onCancel = () => {
+      cancelled = true;
+      stop();
+    };
     try {
-      const p = new Deno.Command(argv[0], {
+      p = new Deno.Command(argv[0], {
         args: argv.slice(1),
         cwd: opts.cwd ?? this.cwd,
         stdin: opts.stdin !== undefined ? "piped" : "null",
         stdout: "piped",
         stderr: "piped",
-        signal: ac.signal,
+        detached: !isWindows,
       }).spawn();
+      if (opts.signal?.aborted) onCancel();
+      opts.signal?.addEventListener("abort", onCancel);
       if (opts.stdin !== undefined) {
         const w = p.stdin.getWriter();
         await w.write(new TextEncoder().encode(opts.stdin)).catch(() => {});
         await w.close().catch(() => {});
       }
       const out = await p.output();
+      done = true;
       const dec = new TextDecoder();
       return {
         code: out.code,
         stdout: dec.decode(out.stdout),
         stderr: dec.decode(out.stderr),
         timedOut,
+        cancelled,
       };
     } catch (e) {
-      return { code: 127, stdout: "", stderr: (e as Error).message, timedOut };
+      return { code: 127, stdout: "", stderr: (e as Error).message, timedOut, cancelled };
     } finally {
+      done = true;
       clearTimeout(t);
+      clearTimeout(hard);
+      opts.signal?.removeEventListener("abort", onCancel);
     }
   }
 
@@ -211,7 +281,8 @@ export class Host {
         r.cwd = cwd;
       }
     }
-    if (r.timedOut) r.stderr += "\n(timed out)";
+    if (r.cancelled) r.stderr += "\n(stopped by the user)";
+    else if (r.timedOut) r.stderr += "\n(timed out; it and everything it started were stopped)";
     return r;
   }
 
@@ -221,19 +292,23 @@ export class Host {
       : [sh, "-c", script];
   }
 
-  async exec(cmd: string, timeoutMs?: number): Promise<ExecResult> {
+  async exec(cmd: string, timeoutMs?: number, signal?: AbortSignal): Promise<ExecResult> {
     const sh = await this.shell();
-    return this.finish(await this.spawn(this.shellArgv(sh, this.wrap(cmd)), { timeoutMs }));
+    return this.finish(
+      await this.spawn(this.shellArgv(sh, this.wrap(cmd)), { timeoutMs, signal }),
+    );
   }
 
   /** Runs as root, asking up the hop chain for a password only if sudo wants one. */
-  async sudo(cmd: string, timeoutMs?: number): Promise<ExecResult> {
+  async sudo(cmd: string, timeoutMs?: number, signal?: AbortSignal): Promise<ExecResult> {
     if (isWindows) return { code: 1, stdout: "", stderr: "sudo is not available on Windows hosts" };
     const sh = await this.shell();
     const script = this.wrap(cmd);
     const quick = await this.spawn(["sudo", "-n", "true"], { timeoutMs: 15_000 });
     if (quick.code === 0) {
-      return this.finish(await this.spawn(["sudo", "-n", sh, "-c", script], { timeoutMs }));
+      return this.finish(
+        await this.spawn(["sudo", "-n", sh, "-c", script], { timeoutMs, signal }),
+      );
     }
     if (quick.code === 127) return { code: 127, stdout: "", stderr: "sudo is not installed here" };
     const i = await this.info();
@@ -261,6 +336,7 @@ export class Host {
         await this.spawn(["sudo", "-S", "-p", "", sh, "-c", script], {
           stdin: pw + "\n",
           timeoutMs,
+          signal,
         }),
       );
     }

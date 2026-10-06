@@ -5,8 +5,8 @@
 // server and everything it started when ai-bootstrap exits, even on kill -9.
 
 import { join } from "@std/path";
-import { ensureDir, exists, isWindows, scriptsDir } from "./platform.ts";
-import { type Endpoint, reachable } from "./llm.ts";
+import { ensureDir, exists, isWindows, modelsDir, scriptsDir } from "./platform.ts";
+import { chat, type Endpoint, reachable } from "./llm.ts";
 import { info } from "./ui.ts";
 
 export const SUPERVISE_SH = `#!/bin/sh
@@ -165,6 +165,24 @@ export function describeFailure(f: FullFailure): string {
   }\n\nlines mentioning errors:\n${block(f.errors)}`;
 }
 
+/** Up and loaded: it lists models and completes a tiny chat (servers list before loading). */
+async function answers(ep: Endpoint): Promise<boolean> {
+  if (!(await reachable(ep))) return false;
+  try {
+    await chat(
+      ep,
+      [{ role: "user", content: "Reply with the word ok." }],
+      [],
+      {},
+      AbortSignal.timeout(60_000),
+      0,
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** `# endpoint: <base_url> <model>` in start-full.sh says what it serves. */
 export function endpointFromScript(text: string): { baseUrl: string; model: string } | null {
   const m = text.match(/^\s*(?:#|rem|::)\s*endpoint:\s*(\S+)\s+(\S+)/im);
@@ -206,8 +224,9 @@ export async function startFull(
   full = await supervise(script, [], log);
   const t0 = Date.now();
   let shown = 0;
+  let had = await dirSize(modelsDir());
   while (true) {
-    if (await reachable(ep)) return { ep };
+    if (await answers(ep)) return { ep };
     if (!full.isRunning()) {
       return await fail(
         `start-full exited with status ${await full.exited} before ${ep.baseUrl} answered`,
@@ -218,9 +237,18 @@ export async function startFull(
       return await fail(`${ep.baseUrl} did not answer within ${el}s`);
     }
     if (el - shown >= 15) {
+      const size = await dirSize(modelsDir());
+      const rate = (size - had) / (el - shown);
       shown = el;
+      had = size;
       const { tail } = await logSummary(log, 1);
-      info(`  waiting for the full model (${el}s): ${(tail[0] ?? "").slice(0, 120)}`);
+      info(
+        rate > 0
+          ? `  waiting for the full model (${el}s): models folder ${gb(size)}, growing ${
+            (rate / 1e6).toFixed(1)
+          } MB/s`
+          : `  waiting for the full model (${el}s): ${(tail[0] ?? "").slice(0, 120)}`,
+      );
     }
     await new Promise((r) => setTimeout(r, 2000));
   }
@@ -229,4 +257,23 @@ export async function startFull(
 export function stopFull(): void {
   full?.stop();
   full = null;
+}
+
+export function gb(n: number): string {
+  return `${(n / 1e9).toFixed(2)} GB`;
+}
+
+/** Bytes under `dir`, partial downloads included. */
+export async function dirSize(dir: string): Promise<number> {
+  let n = 0;
+  try {
+    for await (const e of Deno.readDir(dir)) {
+      const p = join(dir, e.name);
+      if (e.isDirectory) n += await dirSize(p);
+      else if (e.isFile) n += (await Deno.stat(p).catch(() => ({ size: 0 }))).size;
+    }
+  } catch {
+    // not there yet
+  }
+  return n;
 }

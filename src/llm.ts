@@ -101,6 +101,7 @@ export async function chat(
   tools: ToolDef[],
   sink: StreamSink = {},
   signal?: AbortSignal,
+  temperature = 0.3,
 ): Promise<Reply> {
   const headers: Record<string, string> = { "content-type": "application/json" };
   const key = apiKey(ep);
@@ -114,7 +115,7 @@ export async function chat(
     messages,
     tools: tools.length ? tools : undefined,
     stream: true,
-    temperature: 0.3,
+    temperature,
   };
   let r: Response;
   try {

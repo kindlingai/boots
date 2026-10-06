@@ -35,6 +35,14 @@ Deno.test({
     assertEquals((await Deno.stat(`${dir}/sub/f.txt`)).mode! & 0o777, 0o600);
     r = await rpc.call("exec", { cmd: "sleep 5", timeoutMs: 300 });
     assertStringIncludes(r.stderr, "timed out");
+    // A cancel sent while the command runs stops it there (^C over ssh).
+    const t0 = Date.now();
+    const running = rpc.call("exec", { cmd: "sleep 30", token: "c1", timeoutMs: 60_000 });
+    await new Promise((res) => setTimeout(res, 300));
+    await rpc.call("cancel", { token: "c1" });
+    r = await running;
+    assertStringIncludes(r.stderr, "stopped by the user");
+    assertEquals(Date.now() - t0 < 5000, true);
   } finally {
     await rpc.close();
     await p.status;

@@ -42,6 +42,8 @@ would you like to do?" prompt, so the model can ask its opening question.
 | `script`, `log`, `reason`| diagnose.md: the failed start script, its log, and what went wrong                                    |
 | `tail`, `errors`         | diagnose.md: the last 5 log lines, and the last 5 lines mentioning "error" (any case)                 |
 | `tier_note`              | diagnose.md: a note when the answering model is the small base model                                  |
+| `server_advice`          | base.md: which server to use on this OS (llama.cpp on macOS and Windows; vLLM in Docker or llama.cpp on Linux)|
+| `full_script_example`    | base.md: a start-full.sh to fill in, with this machine's llama-server, models folder and free port            |
 | `shell_note`        | a line when commands run in PowerShell, else empty                                                    |
 | `docs`              | the knowledge-base docs, comma separated                                                              |
 | `memories`          | memory file names                                                                                     |

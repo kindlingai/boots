@@ -70,6 +70,8 @@ async function sshRun(
     stdin: stdin ? "piped" : "null",
     stdout: "piped",
     stderr: "piped",
+    // Out of the terminal's process group: ^C stops a command, not the connection.
+    detached: !isWindows,
   }).spawn();
   if (stdin) await stdin.pipeTo(p.stdin).catch(() => {});
   const o = await p.output();
@@ -168,6 +170,7 @@ export async function openSsh(
       stdin: "piped",
       stdout: "piped",
       stderr: "piped",
+      detached: !isWindows,
     }).spawn();
     relay(proc.stderr, (l) => log(`[${dest}] ${l}`));
     const rpc = new Rpc(proc.stdout, proc.stdin, (l) => log(`[${dest}] ${l}`));

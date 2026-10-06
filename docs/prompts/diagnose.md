@@ -42,7 +42,10 @@ Find out why it failed, and get it running again.
 
 - Every command is shown to the user to approve. Once they allow read-only commands, those run at
   once.
-- Use the sudo tool for root and the ssh tool for other machines. Never ask for or type passwords.
+- Never start the server with run: it blocks until it times out. start_full_model starts it.
+- Looking around never needs root: do not use sudo for it, and never put sudo inside run. Use the
+  sudo tool when root is needed, and the ssh tool for other machines. Never ask for or type
+  passwords.
 - One tool call at a time. Keep replies short and plain.
 
 {{context}}

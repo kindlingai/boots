@@ -14,7 +14,9 @@ import {
 import type { Endpoint } from "./llm.ts";
 import { contextFor } from "./discover.ts";
 import { info } from "./ui.ts";
-import { logPath, logSummary, scriptPath, supervise } from "./intelligence.ts";
+import { dirSize, gb, logPath, logSummary, scriptPath, supervise } from "./intelligence.ts";
+
+export { dirSize };
 
 /** A release known to ship CPU builds for every platform below. */
 const PINNED_TAG = "b9000";
@@ -227,23 +229,4 @@ export async function startLlama(server: string): Promise<Running> {
     throw e;
   }
   return run;
-}
-
-function gb(n: number): string {
-  return `${(n / 1e9).toFixed(2)} GB`;
-}
-
-/** Bytes under `dir`, partial downloads included. */
-export async function dirSize(dir: string): Promise<number> {
-  let n = 0;
-  try {
-    for await (const e of Deno.readDir(dir)) {
-      const p = join(dir, e.name);
-      if (e.isDirectory) n += await dirSize(p);
-      else if (e.isFile) n += (await Deno.stat(p).catch(() => ({ size: 0 }))).size;
-    }
-  } catch {
-    // not there yet
-  }
-  return n;
 }

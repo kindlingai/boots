@@ -1,6 +1,6 @@
 // Supervised model servers: they die with ai-bootstrap, and a failed
 // start-full is summarised for the diagnosis prompt.
-import { join } from "@std/path";
+import { fromFileUrl, join } from "@std/path";
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
   endpointFromScript,
@@ -121,16 +121,14 @@ Deno.test({ name: "startFull: up, failed, and no script", ignore: !unix }, async
     await Deno.mkdir(join(dir, "intelligence"), { recursive: true });
     const script = scriptPath("full");
 
-    // A server that answers /v1/models.
+    // A model server that answers (the scripted mock: /models, and "ok" to a plain chat).
     const port = 18000 + Math.floor(Math.random() * 1000);
-    const server = join(dir, "server.ts");
-    await Deno.writeTextFile(
-      server,
-      `Deno.serve({ port: ${port}, onListen() { console.log("listening") } }, () => Response.json({ data: [{ id: "big" }] }));`,
-    );
+    const mock = fromFileUrl(new URL("./fixtures/mock_llm.ts", import.meta.url));
+    const server = join(dir, "script.json");
+    await Deno.writeTextFile(server, "[]");
     await Deno.writeTextFile(
       script,
-      `#!/bin/sh\n# endpoint: http://127.0.0.1:${port}/v1 big\nexec '${Deno.execPath()}' run -A '${server}'\n`,
+      `#!/bin/sh\n# endpoint: http://127.0.0.1:${port}/v1 big\nexec '${Deno.execPath()}' run -A '${mock}' '${server}' ${port}\n`,
     );
     const up = await startFull(null);
     assertEquals(up && "ep" in up && up.ep.model, "big");

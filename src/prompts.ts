@@ -61,6 +61,8 @@ export interface PromptVars {
   models: string;
   scripts: string;
   free_port: number;
+  /** The installed llama-server, if ai-bootstrap downloaded one. */
+  llama_server?: string | null;
   docs: string[];
   memories: string[];
   memory_sync: string | null;
@@ -124,6 +126,20 @@ export function systemPrompt(t: Templates, router: Router, v: PromptVars): strin
         : "\nOpen the session with a one-line greeting, mention recipes, and ask the first of these questions.",
     }).trim()
     : "";
+  const server = v.llama_server ?? (v.os === "windows" ? "llama-server.exe" : "llama-server");
+  const sep = v.os === "windows" ? "\\" : "/";
+  const cache = `${v.models}${sep}llama.cpp`;
+  const args =
+    `-hf <huggingface repo>:<quant> --alias <name> --host 127.0.0.1 --port ${v.free_port} --jinja -c 32768 -ngl 99`;
+  const fullScriptExample = v.os === "windows"
+    ? `@echo off\nrem endpoint: http://127.0.0.1:${v.free_port}/v1 <name>\nset "LLAMA_CACHE=${cache}"\n"${server}" ${args}`
+    : `#!/bin/sh\n# endpoint: http://127.0.0.1:${v.free_port}/v1 <name>\nexport LLAMA_CACHE='${cache}'\nexec '${server}' ${args}`;
+  const llamaWhere = v.llama_server ? `already installed at ${v.llama_server}` : "llama-server";
+  const serverAdvice = v.os === "darwin"
+    ? `On this Mac use llama.cpp: ${llamaWhere}, it runs on the GPU (Metal), and the template in step 6 uses it. Do not install Ollama or anything else. Pick a GGUF model from ${osDoc} that leaves at least a quarter of the memory free.`
+    : v.os === "windows"
+    ? `Use llama.cpp: ${llamaWhere}, and the template in step 6 uses it. Pick a GGUF model from ${osDoc} that fits.`
+    : `With an NVIDIA GPU and Docker, vLLM is best: replace the exec line in the template with \`exec docker run --rm --gpus all -p ${v.free_port}:8000 -v '${v.models}/huggingface:/root/.cache/huggingface' vllm/vllm-openai:latest --model <huggingface repo> --served-model-name <name>\`. Otherwise use llama.cpp (${llamaWhere}; the template uses it). Pick the model from ${osDoc}.`;
   return render(base ? t.base : t.main, {
     onboarding,
     model: ep.label,
@@ -131,6 +147,8 @@ export function systemPrompt(t: Templates, router: Router, v: PromptVars): strin
     smart: router.smart?.label ?? "none",
     fallback_note: fallback,
     os_doc: osDoc,
+    server_advice: serverAdvice,
+    full_script_example: fullScriptExample,
     context,
   }).trim();
 }

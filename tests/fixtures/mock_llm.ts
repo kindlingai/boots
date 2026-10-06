@@ -4,7 +4,11 @@
 
 export type Scripted = { content?: string; calls?: { name: string; args: unknown }[] } | "down";
 
-export function serveMock(script: Scripted[], port = 0) {
+/**
+ * `classify`, when given, answers the command checker (src/classify.ts):
+ * it gets the command and returns the reply.
+ */
+export function serveMock(script: Scripted[], port = 0, classify?: (cmd: string) => string) {
   const seen: any[] = [];
   let i = 0;
   const server = Deno.serve({ port, hostname: "127.0.0.1", onListen() {} }, async (req) => {
@@ -16,6 +20,11 @@ export function serveMock(script: Scripted[], port = 0) {
     if (last?.role === "tool" && Deno.env.get("MOCK_LOG")) console.error(`tool> ${last.content}`);
     if (body.tools && Deno.env.get("MOCK_SYSTEM") && body.messages?.[0]?.role === "system") {
       console.error(`system> ${body.messages[0].content}`);
+    }
+    const sys = body.messages?.[0]?.content ?? "";
+    if (!body.tools && classify && sys.startsWith("You check shell commands")) {
+      const cmd = (body.messages.at(-1).content.match(/```\n([\s\S]*)\n```/) ?? [])[1] ?? "";
+      return sse([{ choices: [{ delta: { content: classify(cmd) } }] }]);
     }
     if (!body.tools) return sse([{ choices: [{ delta: { content: "ok" } }] }]);
     const r = script[Math.min(i++, script.length - 1)];
@@ -66,6 +75,7 @@ function sse(chunks: unknown[]): Response {
 if (import.meta.main) {
   // deno run -A tests/fixtures/mock_llm.ts SCRIPT.json PORT
   const script = JSON.parse(await Deno.readTextFile(Deno.args[0]));
-  const m = serveMock(script, Number(Deno.args[1] ?? 0));
+  const verdict = Deno.env.get("MOCK_VERDICT");
+  const m = serveMock(script, Number(Deno.args[1] ?? 0), verdict ? () => verdict : undefined);
   console.log(m.url);
 }

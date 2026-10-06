@@ -6,6 +6,7 @@ import { LLMError } from "./llm.ts";
 import { describe, renderPlan, type Session, TOOLS } from "./tools.ts";
 import { currentTier, loadTemplates, systemPrompt, type Templates } from "./prompts.ts";
 import { secrets } from "./secrets.ts";
+import { installedServer } from "./llama.ts";
 import { ask, bold, cyan, dim, Interrupted, plain, red, warn, write } from "./ui.ts";
 
 const MAX_STEPS = 60;
@@ -40,7 +41,7 @@ export class Agent {
 
   constructor(readonly s: Session, private extraContext: () => string) {}
 
-  /** Stops a model reply. False when no turn is running. */
+  /** Stops a model reply or a running tool. False when no turn is running. */
   interrupt(): boolean {
     this.abort?.abort();
     return this.busy;
@@ -50,13 +51,14 @@ export class Agent {
   async system(): Promise<() => string> {
     this.templates ??= await loadTemplates();
     const t = this.templates;
-    const [index, fleet, docs, memories, remote, fresh] = await Promise.all([
+    const [index, fleet, docs, memories, remote, fresh, llama] = await Promise.all([
       this.s.memory.index(),
       this.s.memory.fleet(),
       this.s.memory.docNames(),
       this.s.memory.list(),
       this.s.memory.remote(),
       this.s.memory.isEmpty(),
+      installedServer(),
     ]);
     const extra = this.extraContext();
     // Rendered lazily: the router may fall back to the bootstrap model mid-request.
@@ -80,6 +82,8 @@ export class Agent {
         plan: this.s.plan.length ? plain(renderPlan(this.s.plan)) : "(none yet)",
         fresh,
         failure: this.s.fullFailure,
+        // Installed here, so only of use while working on this machine.
+        llama_server: this.s.stack.length === 1 ? llama : null,
       });
   }
 
@@ -138,11 +142,26 @@ export class Agent {
         tool_calls: reply.toolCalls.length ? reply.toolCalls : undefined,
       });
       if (!reply.toolCalls.length) return;
-      for (const tc of reply.toolCalls) {
+      for (const [n, tc] of reply.toolCalls.entries()) {
         let result: string;
+        // ^C during a tool stops it (and everything it started) and ends the turn.
+        const ac = this.abort = new AbortController();
         try {
           const args = tc.function.arguments.trim() ? JSON.parse(tc.function.arguments) : {};
-          result = await this.s.exec(tc.function.name, args);
+          result = await this.s.exec(tc.function.name, args, ac.signal);
+          if (ac.signal.aborted) {
+            this.history.push({ role: "tool", tool_call_id: tc.id, content: result });
+            for (const rest of reply.toolCalls.slice(n + 1)) {
+              this.history.push({
+                role: "tool",
+                tool_call_id: rest.id,
+                content: "not run: the user interrupted",
+              });
+            }
+            this.history.push({ role: "user", content: "(the user stopped that command)" });
+            console.log(dim("[interrupted]"));
+            return;
+          }
         } catch (e) {
           if (e instanceof Interrupted) {
             result = "interrupted by the user";
@@ -152,6 +171,8 @@ export class Agent {
             result = `error: ${(e as Error).message}`;
           }
           if (!(e instanceof SyntaxError)) console.log(red(`  ${result}`));
+        } finally {
+          this.abort = null;
         }
         this.history.push({ role: "tool", tool_call_id: tc.id, content: result });
       }

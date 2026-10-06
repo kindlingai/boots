@@ -1,16 +1,84 @@
 // The tools the model can call, and the session state they act on.
 
 import { join } from "@std/path";
-import { b64, type ExecResult, Host, type HostInfo } from "./host.ts";
+import { b64, DEFAULT_TIMEOUT_MS, type ExecResult, Host, type HostInfo } from "./host.ts";
 import { chat, type Endpoint, reachable, type Router, type ToolDef } from "./llm.ts";
 import type { Memory } from "./memory.ts";
 import type { McpManager } from "./mcp.ts";
-import { isReadonly } from "./readonly.ts";
+import { isReadonly, stages } from "./readonly.ts";
 import { describeFailure, type FullFailure, scriptPath, startFull } from "./intelligence.ts";
 import { secrets } from "./secrets.ts";
 import { contextFor, sizeFromName } from "./discover.ts";
 import { dataDir, ensureDir } from "./platform.ts";
-import { approve, askSecret, bold, dim, green, info, red, yellow } from "./ui.ts";
+import {
+  type ApprovalKind,
+  approve,
+  askSecret,
+  bold,
+  dim,
+  green,
+  info,
+  red,
+  yellow,
+} from "./ui.ts";
+import { Classifier, type Verdict } from "./classify.ts";
+
+/** Wrappers that run the command after them. */
+const WRAPPERS = new Set([
+  "nohup",
+  "exec",
+  "env",
+  "time",
+  "setsid",
+  "caffeinate",
+  "nice",
+  "command",
+]);
+
+/** The program each stage runs, past assignments and wrappers, with its arguments. */
+function commands(cmd: string): string[][] {
+  const st = stages(cmd) ??
+    cmd.split(/&&|\|\||[;|&\n()]/).map((p) => p.trim().split(/\s+/).filter(Boolean));
+  return st.map((words) => {
+    let i = 0;
+    while (
+      i < words.length &&
+      (/^[A-Za-z_][A-Za-z0-9_]*=/.test(words[i]) || WRAPPERS.has(words[i]) ||
+        (i > 0 && WRAPPERS.has(words[i - 1]) && words[i].startsWith("-")))
+    ) i++;
+    return words.slice(i).map((w, j) => j === 0 ? w.replace(/^.*\//, "") : w);
+  }).filter((w) => w.length);
+}
+
+/** Starts an inference server that stays in the foreground. */
+function startsServer(words: string[]): boolean {
+  const [head, ...rest] = words;
+  if (rest.some((w) => /^(--version|--help|-h)$/.test(w))) return false;
+  if (["llama-server", "tritonserver", "text-generation-launcher"].includes(head)) return true;
+  if (head === "ollama" || head === "vllm") return rest[0] === "serve";
+  if (head === "lms") return rest[0] === "server" && rest[1] === "start";
+  if (/^python[0-9.]*$/.test(head)) {
+    const m = rest[rest.indexOf("-m") + 1] ?? "";
+    return rest.includes("-m") && /^(vllm|sglang|llama_cpp|mlx_lm)\b/.test(m) &&
+      /server|serve|entrypoints/.test(rest.join(" "));
+  }
+  return false;
+}
+
+/** Commands that run must not take: they need another tool. Returns why, or null. */
+export function refuseInRun(cmd: string): string | null {
+  const cmds = commands(cmd);
+  if (cmds.some((w) => w[0] === "sudo")) {
+    return "sudo inside run: use the sudo tool, with the command without the word sudo. (Inspection rarely needs root: try it without first.)";
+  }
+  if (cmds.some(startsServer)) {
+    return "this starts a model server, which would block until it times out. Write the command into a start script instead: for the model ai-bootstrap should use, start-full.sh in the startup scripts folder, started with start_full_model. For another server, start-<name>.sh in that machine's startup scripts folder, run in the background with its output to a log: nohup sh <script> > <name>.log 2>&1 &";
+  }
+  return null;
+}
+
+/** Lines of each command's output shown to the user (the model gets more). */
+const SHOWN_LINES = 5;
 
 export interface Location {
   label: string;
@@ -41,7 +109,11 @@ export const TOOLS: ToolDef[] = [
     "Run a shell command on the current host (see Location). Read-only commands run at once; anything else asks the user first. cd persists between calls; environment variables do not. Use the sudo tool for root, and the ssh tool to reach other machines.",
     {
       command: str("the command"),
-      timeout_s: { type: "integer", description: "default 600" },
+      timeout_s: {
+        type: "integer",
+        description:
+          "seconds before the command and everything it started are stopped (default 30); raise it only for a known long step such as a download or build",
+      },
     },
     ["command"],
   ),
@@ -50,7 +122,7 @@ export const TOOLS: ToolDef[] = [
     "Run a command as root on the current host. Always asks the user; handles the sudo password itself. Never put `sudo` inside `run`.",
     {
       command: str("the command, without the word sudo"),
-      timeout_s: { type: "integer" },
+      timeout_s: { type: "integer", description: "as for run (default 30)" },
     },
     ["command"],
   ),
@@ -231,43 +303,136 @@ export class Session {
     return this.clip(s);
   }
 
+  /** Prints what a command printed: the last few lines, so the user can follow along. */
+  private show(r: ExecResult): void {
+    const lines = `${r.stdout}${r.stderr ? `\n${r.stderr}` : ""}`.split("\n")
+      .map((l) => l.trimEnd())
+      .filter((l) => l.trim() && !/^\((stopped by the user|timed out;)/.test(l));
+    const tail = lines.slice(-SHOWN_LINES);
+    if (lines.length > tail.length) {
+      console.log(dim(`    … ${lines.length - tail.length} more lines`));
+    }
+    for (const l of tail) console.log(dim(`    │ ${l.length > 160 ? `${l.slice(0, 157)}...` : l}`));
+    if (r.cancelled) console.log(yellow("    (stopped)"));
+    else if (r.timedOut) console.log(red("    (timed out; stopped it and everything it started)"));
+    else if (r.code !== 0) console.log(red(`    (exit ${r.code})`));
+  }
+
   /** The user allowed every read-only command for this session. */
   allowReadonly = false;
+  readonly classifier = new Classifier(() => this.router.bootstrap);
+  private complexTries = new Map<string, number>();
 
-  private async gate(what: string, key: string, readonly = false): Promise<string | null> {
-    if (this.always.has(key)) return null;
-    const a = await approve(what, readonly);
+  /**
+   * The read-only list, then the bootstrap model's verdict. "complex" twice in a row
+   * for the same command is returned at most twice; after that the user decides.
+   */
+  private async check(cmd: string): Promise<{ verdict: Verdict | null; checked: boolean }> {
+    if (isReadonly(cmd)) return { verdict: "readonly", checked: false };
+    const verdict = await this.classifier.classify(cmd, this.here.info.osName);
+    if (verdict === "complex") {
+      const n = (this.complexTries.get(cmd) ?? 0) + 1;
+      this.complexTries.set(cmd, n);
+      if (n > 2) return { verdict: null, checked: true };
+    }
+    return { verdict, checked: true };
+  }
+
+  private static TOO_COMPLEX =
+    "Not run: the safety check could not analyze this command, it is too complex. Rewrite it as smaller steps: one simple command per call, without long pipelines or command lists, loops, inline scripts (python -c, bash -c), eval, here-documents or nested substitutions. To create or edit a file, use write_file.";
+
+  private static label(verdict: Verdict | null, checked: boolean): string {
+    if (!checked) return "";
+    switch (verdict) {
+      case "readonly":
+        return dim("  (checked: read-only)");
+      case "dangerous":
+        return red(bold("  (checked: DANGEROUS)"));
+      case "writes":
+        return yellow("  (checked: makes changes)");
+      default:
+        return dim("  (not checked)");
+    }
+  }
+
+  private async gate(
+    what: string,
+    key: string,
+    kind: ApprovalKind = "normal",
+  ): Promise<string | null> {
+    if (kind !== "dangerous" && this.always.has(key)) return null;
+    const a = await approve(what, kind);
     if (a.always) this.always.add(key);
     if (a.readonly) this.allowReadonly = true;
     if (a.ok) return null;
     return a.note ? `the user declined: ${a.note}` : "the user declined to run this";
   }
 
-  async exec(name: string, args: any): Promise<string> {
+  /** Runs a command op on the current host; `signal` cancels it there, across hops too. */
+  private async command(op: "exec" | "sudo", cmd: string, args: any, signal?: AbortSignal) {
+    const token = crypto.randomUUID();
+    const via = this.here.via;
+    const cancel = () => this.host.handle("cancel", { token }, via).catch(() => {});
+    signal?.addEventListener("abort", cancel);
+    try {
+      const timeoutMs = (Number(args.timeout_s) || DEFAULT_TIMEOUT_MS / 1000) * 1000;
+      return await this.host.handle(op, { cmd, token, timeoutMs }, via) as ExecResult;
+    } finally {
+      signal?.removeEventListener("abort", cancel);
+    }
+  }
+
+  async exec(name: string, args: any, signal?: AbortSignal): Promise<string> {
     switch (name) {
       case "run": {
         const cmd = String(args.command ?? "");
         const loc = this.where();
-        const readonly = isReadonly(cmd);
-        if (readonly && this.allowReadonly) console.log(dim(`  [${loc}] $ ${cmd}`));
-        else {
-          const no = await this.gate(`[${bold(loc)}] $ ${cmd}`, `${loc}\0${cmd}`, readonly);
+        const refused = refuseInRun(cmd);
+        if (refused) {
+          console.log(dim(`  [${loc}] $ ${cmd}`));
+          console.log(yellow(`    not run: ${refused.split(":")[0]}`));
+          return `Not run: ${refused}`;
+        }
+        const { verdict, checked } = await this.check(cmd);
+        if (verdict === "complex") {
+          console.log(dim(`  [${loc}] $ ${cmd}`));
+          console.log(yellow("    too complex to check; asking for smaller steps"));
+          return Session.TOO_COMPLEX;
+        }
+        const label = Session.label(verdict, checked);
+        if (verdict === "readonly" && this.allowReadonly) {
+          console.log(dim(`  [${loc}] $ ${cmd}`) + label);
+        } else {
+          const kind = verdict === "readonly"
+            ? "readonly"
+            : verdict === "dangerous"
+            ? "dangerous"
+            : "normal";
+          const no = await this.gate(`[${bold(loc)}] $ ${cmd}${label}`, `${loc}\0${cmd}`, kind);
           if (no) return no;
         }
-        return this.render(
-          await this.call("exec", { cmd, timeoutMs: (args.timeout_s ?? 600) * 1000 }),
-        );
+        const r = await this.command("exec", cmd, args, signal);
+        this.show(r);
+        return this.render(r);
       }
       case "sudo": {
         const cmd = String(args.command ?? "").replace(/^\s*sudo\s+/, "");
+        // Root always asks; the check still catches the complex and the dangerous.
+        const { verdict, checked } = await this.check(cmd);
+        if (verdict === "complex") {
+          console.log(dim(`  [${this.where()}] sudo ${cmd}`));
+          console.log(yellow("    too complex to check; asking for smaller steps"));
+          return Session.TOO_COMPLEX;
+        }
         const no = await this.gate(
-          `[${bold(this.where())}] ${red("sudo")} ${cmd}`,
+          `[${bold(this.where())}] ${red("sudo")} ${cmd}${Session.label(verdict, checked)}`,
           `${this.where()}\0sudo\0${cmd}`,
+          verdict === "dangerous" ? "dangerous" : "normal",
         );
         if (no) return no;
-        return this.render(
-          await this.call("sudo", { cmd, timeoutMs: (args.timeout_s ?? 600) * 1000 }),
-        );
+        const r = await this.command("sudo", cmd, args, signal);
+        this.show(r);
+        return this.render(r);
       }
       case "read_file": {
         console.log(dim(`  [${this.where()}] read ${args.path}`));
