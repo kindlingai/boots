@@ -2,14 +2,26 @@
 // by step with tools.
 
 import type { Message, Reply } from "./llm.ts";
-import { LLMError } from "./llm.ts";
-import { describe, renderPlan, type Session, TOOLS } from "./tools.ts";
-import { currentTier, loadTemplates, systemPrompt, type Templates } from "./prompts.ts";
+import { type ChatShape, type Endpoint, LLMError } from "./llm.ts";
+import { describe, renderPlan, REPLY_TOOL, type Session, TOOLS } from "./tools.ts";
+import { currentTier, loadTemplates, systemPrompt, type Templates, tierOf } from "./prompts.ts";
 import { secrets } from "./secrets.ts";
 import { installedServer } from "./llama.ts";
 import { ask, bold, cyan, dim, Interrupted, plain, red, warn, write } from "./ui.ts";
 
 const MAX_STEPS = 60;
+
+/**
+ * The small base model must answer every step with a tool call (llama.cpp
+ * enforces it), talking to the user through reply; others get the tools as is.
+ * AIBOOT_FORCE_TOOLS=0 turns that off.
+ */
+function shape(ep: Endpoint): ChatShape {
+  if (tierOf(ep) === "base" && Deno.env.get("AIBOOT_FORCE_TOOLS") !== "0") {
+    return { tools: [...TOOLS, REPLY_TOOL], toolChoice: "required" };
+  }
+  return { tools: TOOLS };
+}
 
 /** Fits the history into the current model's budget. */
 function fit(history: Message[], budget: number): Message[] {
@@ -113,7 +125,7 @@ export class Agent {
       let reply: Reply;
       let printed = false;
       try {
-        reply = await this.s.router.chat(await this.messages(), TOOLS, {
+        reply = await this.s.router.chat(await this.messages(), shape, {
           content: (t) => {
             if (!printed) write(cyan("● "));
             printed = true;
@@ -143,8 +155,21 @@ export class Agent {
         tool_calls: reply.toolCalls.length ? reply.toolCalls : undefined,
       });
       if (!reply.toolCalls.length) return;
+      let replied = false;
       for (const [n, tc] of reply.toolCalls.entries()) {
         let result: string;
+        if (tc.function.name === "reply") {
+          let msg = "";
+          try {
+            msg = String(JSON.parse(tc.function.arguments || "{}").message ?? "");
+          } catch {
+            msg = tc.function.arguments;
+          }
+          if (msg.trim()) console.log(`${cyan("●")} ${msg.trim()}`);
+          this.history.push({ role: "tool", tool_call_id: tc.id, content: "shown to the user" });
+          replied = true;
+          continue;
+        }
         // ^C during a tool stops it (and everything it started) and ends the turn.
         const ac = this.abort = new AbortController();
         try {
@@ -177,6 +202,8 @@ export class Agent {
         }
         this.history.push({ role: "tool", tool_call_id: tc.id, content: result });
       }
+      // reply hands the turn back to the user.
+      if (replied) return;
     }
     warn(`stopped after ${MAX_STEPS} steps; say "continue" to go on`);
   }

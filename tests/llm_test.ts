@@ -72,3 +72,41 @@ Deno.test("model sizes from names", () => {
   assertEquals(sizeFromName("smol-360m"), 0.36);
   assertEquals(sizeFromName("llama"), 0);
 });
+
+Deno.test("a server that rejects tool_choice is asked again without it", async () => {
+  const bodies: any[] = [];
+  const server = Deno.serve({ port: 0, onListen() {} }, async (req) => {
+    const b = await req.json();
+    bodies.push(b);
+    if (b.tool_choice) return new Response("tool_choice not supported", { status: 400 });
+    const sse = `data: ${
+      JSON.stringify({ choices: [{ delta: { content: "fine" } }] })
+    }\n\ndata: [DONE]\n\n`;
+    return new Response(sse, { headers: { "content-type": "text/event-stream" } });
+  });
+  try {
+    const ep = {
+      label: "x",
+      baseUrl: `http://127.0.0.1:${server.addr.port}/v1`,
+      model: "x",
+      contextChars: 1e4,
+    };
+    const tool = {
+      type: "function" as const,
+      function: { name: "t", description: "", parameters: { type: "object", properties: {} } },
+    };
+    const r = await chat(
+      ep,
+      [{ role: "user", content: "hi" }],
+      [tool],
+      {},
+      undefined,
+      0,
+      "required",
+    );
+    assertEquals(r.content, "fine");
+    assertEquals(bodies.map((b) => b.tool_choice), ["required", undefined]);
+  } finally {
+    await server.shutdown();
+  }
+});

@@ -102,6 +102,8 @@ export async function chat(
   sink: StreamSink = {},
   signal?: AbortSignal,
   temperature = 0.3,
+  /** "required": the server must answer with a tool call (llama.cpp enforces it with a grammar). */
+  toolChoice?: "required",
 ): Promise<Reply> {
   const headers: Record<string, string> = { "content-type": "application/json" };
   const key = apiKey(ep);
@@ -114,6 +116,7 @@ export async function chat(
     model: ep.model,
     messages,
     tools: tools.length ? tools : undefined,
+    tool_choice: tools.length && toolChoice ? toolChoice : undefined,
     stream: true,
     temperature,
   };
@@ -131,6 +134,10 @@ export async function chat(
   }
   if (!r.ok) {
     const text = (await r.text()).slice(0, 500);
+    // A server that does not support tool_choice: ask again without it.
+    if (r.status === 400 && body.tool_choice) {
+      return await chat(ep, messages, tools, sink, signal, temperature);
+    }
     throw new LLMError(
       `${ep.label}: HTTP ${r.status}: ${text}`,
       r.status >= 500 || r.status === 429 || r.status === 404,
@@ -245,16 +252,25 @@ export class Router {
     this.smartDownUntil = 0;
   }
 
+  /**
+   * `tools` may depend on the model that ends up answering (the smart one
+   * may fail over to the bootstrap mid-request).
+   */
   async chat(
     messages: () => Message[],
-    tools: ToolDef[],
+    tools: ToolDef[] | ((ep: Endpoint) => ChatShape),
     sink: StreamSink,
     signal?: AbortSignal,
   ): Promise<Reply> {
+    const shape = (e: Endpoint): ChatShape => typeof tools === "function" ? tools(e) : { tools };
+    const send = (e: Endpoint) => {
+      const s = shape(e);
+      return chat(e, messages(), s.tools, sink, signal, undefined, s.toolChoice);
+    };
     const ep = this.current();
     if (ep === this.smart) {
       try {
-        return await chat(ep, messages(), tools, sink, signal);
+        return await send(ep);
       } catch (e) {
         if (signal?.aborted || !(e instanceof LLMError) || !e.retryable) throw e;
         this.smartDownUntil = Date.now() + 120_000;
@@ -263,6 +279,11 @@ export class Router {
         );
       }
     }
-    return await chat(this.bootstrap, messages(), tools, sink, signal);
+    return await send(this.bootstrap);
   }
+}
+
+export interface ChatShape {
+  tools: ToolDef[];
+  toolChoice?: "required";
 }

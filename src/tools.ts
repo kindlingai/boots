@@ -255,6 +255,17 @@ export const TOOLS: ToolDef[] = [
   ),
 ];
 
+/**
+ * For the small base model, every reply must be a tool call (it otherwise
+ * announces a step and stops); this is how it talks to the user.
+ */
+export const REPLY_TOOL = fn(
+  "reply",
+  "Say something to the user: an answer, a question, or a report that you are done. It ends your turn, so the user can answer. Use the other tools to act; never announce a step here instead of doing it.",
+  { message: str("what to say, in plain text") },
+  ["message"],
+);
+
 export class Session {
   readonly host: Host;
   stack: Location[] = [];
