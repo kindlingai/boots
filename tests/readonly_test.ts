@@ -41,6 +41,9 @@ Deno.test("read-only commands pass", () => {
       "mount",
       "findmnt -T /data",
       "dig +short gx10.local",
+      `ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 admin@192.168.1.211 "cat /home/admin/models/x/config.json 2>/dev/null" 2>&1`,
+      "ssh -p 2222 gx10 nvidia-smi",
+      "ssh admin@gx10 'ls -la ~/models | grep gguf'",
     ]
   ) assert(isReadonly(c), c);
 });
@@ -58,6 +61,13 @@ Deno.test("curl beyond this machine and private networks, or sending, asks", () 
       "ping 192.168.1.1",
       "ifconfig eth0 down",
       "route add default gw 10.0.0.1",
+      "ssh gx10",
+      "ssh gx10 rm -rf /tmp/x",
+      "ssh admin@gx10 'ls; touch x'",
+      "ssh -L 8000:localhost:8000 gx10 ls",
+      "ssh -o ProxyCommand='nc %h %p' gx10 ls",
+      "ssh -o LocalCommand=id -o PermitLocalCommand=yes gx10 ls",
+      "ssh -A gx10 ls",
     ]
   ) assertFalse(isReadonly(c), c);
 });

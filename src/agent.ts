@@ -27,8 +27,14 @@ function shape(ep: Endpoint): ChatShape {
   return { tools: TOOLS };
 }
 
-/** Fits the history into the current model's budget. */
-function fit(history: Message[], budget: number): Message[] {
+/**
+ * Fits the history into the current model's budget: older tool output is
+ * shortened, then the oldest turns go, but the last turn (from the latest
+ * user message) always stays; if even that does not fit, its tool output is
+ * shortened until it does. A request must keep a user message: servers
+ * reject one without ("No user query found in messages").
+ */
+export function fit(history: Message[], budget: number): Message[] {
   const recent = 6;
   let msgs = history.map((m, i) =>
     m.role === "tool" && i < history.length - recent && m.content.length > 600
@@ -40,10 +46,40 @@ function fit(history: Message[], budget: number): Message[] {
   );
   const size = (ms: Message[]) =>
     ms.reduce((n, m) => n + m.content.length + JSON.stringify(m.tool_calls ?? "").length, 0);
-  while (size(msgs) > budget && msgs.length > 1) {
-    // Drop the oldest exchange, keeping the history starting at a user turn.
-    msgs = msgs.slice(1);
-    while (msgs.length > 1 && msgs[0].role !== "user") msgs = msgs.slice(1);
+  const lastUser = msgs.findLastIndex((m) => m.role === "user");
+  if (lastUser > 0) {
+    // Drop whole turns from the front, never the last one.
+    let from = 0;
+    while (size(msgs.slice(from)) > budget && from < lastUser) {
+      from++;
+      while (from < lastUser && msgs[from].role !== "user") from++;
+    }
+    msgs = msgs.slice(from);
+  }
+  // Still too long: shorten the biggest tool outputs, largest first.
+  for (let guard = 0; size(msgs) > budget && guard < 50; guard++) {
+    let big = -1;
+    for (let i = 0; i < msgs.length; i++) {
+      if (
+        msgs[i].role === "tool" && (big < 0 || msgs[i].content.length > msgs[big].content.length)
+      ) {
+        big = i;
+      }
+    }
+    if (big < 0 || msgs[big].content.length <= 400) break;
+    const c = msgs[big].content;
+    const keep = Math.max(
+      400,
+      Math.floor(c.length - (size(msgs) - budget)) - 100,
+      Math.floor(c.length / 2),
+    );
+    const head = Math.floor(keep * 0.6), tail = Math.floor(keep * 0.3);
+    msgs[big] = {
+      ...msgs[big],
+      content: `${c.slice(0, head)}\n...[${
+        c.length - head - tail
+      } chars cut to fit the context]...\n${c.slice(-tail)}`,
+    };
   }
   return msgs;
 }

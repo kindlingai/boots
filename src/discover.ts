@@ -42,6 +42,44 @@ export function sizeFromName(name: string): number {
   return best;
 }
 
+/** Characters per token, roughly, for turning a context length into a budget. */
+export const CHARS_PER_TOKEN = 3;
+
+/**
+ * The context length (tokens) a /models entry declares: vLLM's
+ * max_model_len, OpenRouter's context_length, llama.cpp's meta.n_ctx or
+ * n_ctx_train, or a "128k" in the id. 0 when none says.
+ */
+export function declaredContext(entry: any): number {
+  const n = Number(
+    entry?.max_model_len ?? entry?.context_length ?? entry?.context_window ??
+      entry?.meta?.n_ctx ?? entry?.meta?.n_ctx_train ?? 0,
+  );
+  if (n > 0) return n;
+  const m = String(entry?.id ?? "").toLowerCase().match(/(?<![a-z0-9])(\d+)k(?![a-z])/);
+  return m && Number(m[1]) >= 4 ? Number(m[1]) * 1024 : 0;
+}
+
+/** The context length the server declares for `model`, in tokens; 0 when unknown. */
+export async function serverContext(baseUrl: string, model: string, key?: string): Promise<number> {
+  try {
+    const r = await fetch(`${baseUrl.replace(/\/$/, "")}/models`, {
+      headers: key ? { authorization: `Bearer ${key}` } : {},
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!r.ok) {
+      await r.body?.cancel();
+      return declaredContext({ id: model });
+    }
+    const j = await r.json();
+    const list: any[] = j.data ?? j.models ?? [];
+    const entry = list.find((m) => (m.id ?? m.name) === model);
+    return declaredContext(entry ?? { id: model });
+  } catch {
+    return declaredContext({ id: model });
+  }
+}
+
 export function contextFor(sizeB: number, api: boolean): number {
   if (api || sizeB >= 30) return 400_000;
   if (sizeB >= 7) return 80_000;

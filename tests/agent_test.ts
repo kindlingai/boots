@@ -130,3 +130,24 @@ Deno.test("a restored session and its log", async () => {
     await Deno.remove(dir, { recursive: true });
   }
 });
+
+Deno.test("fit keeps the latest user message, shortening tool output instead", async () => {
+  const { fit } = await import("../src/agent.ts");
+  const call = { id: "c1", type: "function" as const, function: { name: "run", arguments: "{}" } };
+  const history = [
+    { role: "user" as const, content: "earlier question" },
+    { role: "assistant" as const, content: "earlier answer" },
+    { role: "user" as const, content: "read the config on the spark" },
+    { role: "assistant" as const, content: "", tool_calls: [call] },
+    { role: "tool" as const, tool_call_id: "c1", content: "x".repeat(16_000) },
+  ];
+  const out = fit(history, 6000);
+  assertEquals(out[0].content, "read the config on the spark", "the last turn stays");
+  const size = out.reduce(
+    (n, m) => n + m.content.length + JSON.stringify(m.tool_calls ?? "").length,
+    0,
+  );
+  assert(size <= 6000, `fits: ${size}`);
+  assert(out.at(-1)!.content.includes("cut to fit the context"));
+  assertEquals(fit(history, 1e6).length, 5, "nothing changes when it fits");
+});

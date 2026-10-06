@@ -189,3 +189,12 @@ Deno.test("sampling: none unless the endpoint asks; a server that rejects it is 
     await server.shutdown();
   }
 });
+
+Deno.test("the context a server declares, or a 128k in the name", async () => {
+  const { declaredContext } = await import("../src/discover.ts");
+  assertEquals(declaredContext({ id: "qwen36-a3b-128k", max_model_len: 131072 }), 131072);
+  assertEquals(declaredContext({ id: "x", context_length: 200000 }), 200000);
+  assertEquals(declaredContext({ id: "x", meta: { n_ctx_train: 32768 } }), 32768);
+  assertEquals(declaredContext({ id: "qwen36-a3b-128k" }), 131072);
+  assertEquals(declaredContext({ id: "qwen3-8b" }), 0);
+});

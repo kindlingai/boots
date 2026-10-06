@@ -144,6 +144,40 @@ function localUrl(u: string): boolean {
     (!host.includes(".") && !host.includes(":") && /^[a-z0-9-]+$/i.test(host));
 }
 
+/** ssh -o settings that only affect how the connection is made. */
+const SSH_SAFE_OPTIONS = new Set(
+  `stricthostkeychecking connecttimeout batchmode userknownhostsfile loglevel serveraliveinterval
+  serveralivecountmax port user identityfile identitiesonly passwordauthentication
+  pubkeyauthentication preferredauthentications connectionattempts addressfamily compression
+  hostkeyalgorithms checkhostip`.split(/\s+/),
+);
+
+/**
+ * ssh that runs a read-only command on the other machine, with only
+ * connection options (no tunnels, forwarding, proxy or local commands).
+ */
+function sshReadonly(toks: string[]): boolean {
+  let i = 1;
+  for (; i < toks.length; i++) {
+    const t = toks[i];
+    if (!t.startsWith("-")) break;
+    if (/^-[TqnxC46vt]+$/.test(t)) continue;
+    if (/^-[pil]$/.test(t)) {
+      i++;
+      continue;
+    }
+    if (/^-[pil]./.test(t)) continue;
+    if (t === "-o" || t.startsWith("-o")) {
+      const kv = t === "-o" ? toks[++i] ?? "" : t.slice(2);
+      if (!SSH_SAFE_OPTIONS.has(kv.split(/[= ]/)[0].toLowerCase())) return false;
+      continue;
+    }
+    return false;
+  }
+  const remote = toks.slice(i + 1).join(" ").trim();
+  return i < toks.length && remote !== "" && isReadonly(remote);
+}
+
 /** curl that only fetches from a local or private address and prints it. */
 function curlReadonly(toks: string[]): boolean {
   const safe =
@@ -377,6 +411,7 @@ function stageReadonly(toks: string[]): boolean {
     );
   }
   if (head === "curl") return curlReadonly(toks);
+  if (head === "ssh") return sshReadonly(toks);
   if (head === "ping") {
     return toks.some((t) => /^-c\d*$/.test(t)) && !toks.some((t) => /^-f/.test(t));
   }

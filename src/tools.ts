@@ -19,7 +19,13 @@ import {
   startFull,
 } from "./intelligence.ts";
 import { secrets } from "./secrets.ts";
-import { contextFor, sizeFromName } from "./discover.ts";
+import {
+  CHARS_PER_TOKEN,
+  contextFor,
+  declaredContext,
+  serverContext,
+  sizeFromName,
+} from "./discover.ts";
 import { dataDir, ensureDir } from "./platform.ts";
 import {
   type ApprovalKind,
@@ -867,7 +873,10 @@ export class Session {
         const r = await fetch(`${base}/models`, { signal: AbortSignal.timeout(8000) });
         if (!r.ok) return `HTTP ${r.status}`;
         const j = await r.json();
-        const ids = (j.data ?? j.models ?? []).map((m: any) => m.id ?? m.name).filter(Boolean);
+        const ids = (j.data ?? j.models ?? []).filter((m: any) => m.id ?? m.name).map((m: any) => {
+          const ctx = declaredContext(m);
+          return `${m.id ?? m.name}${ctx ? ` (context ${ctx} tokens)` : ""}`;
+        });
         return ids.length ? this.clip(ids.join("\n")) : "no models listed";
       }
       case "use_model":
@@ -1018,6 +1027,13 @@ export class Session {
       secrets.set([baseUrl], "apikey", k);
       ep.keyInMemory = true;
     }
+    // What the server declares beats a guess from the name.
+    const ctx = await serverContext(
+      baseUrl,
+      model,
+      ep.keyEnv ? Deno.env.get(ep.keyEnv) : secrets.get([baseUrl], "apikey"),
+    );
+    if (ctx) ep.contextChars = ctx * CHARS_PER_TOKEN;
     try {
       const r = await chat(
         ep,
@@ -1108,6 +1124,8 @@ export async function restoreSmart(router: Router): Promise<Endpoint | null> {
     if (ep.keyInMemory) continue;
     if (ep.keyEnv && !Deno.env.get(ep.keyEnv)) continue;
     if (await reachable(ep)) {
+      const ctx = await serverContext(ep.baseUrl, ep.model, ep.keyEnv && Deno.env.get(ep.keyEnv));
+      if (ctx) ep.contextChars = ctx * CHARS_PER_TOKEN;
       router.setSmart(ep);
       return ep;
     }
