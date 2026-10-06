@@ -66,7 +66,10 @@ export async function jsonEval(
   } catch (e) {
     return { logs: [], error: `could not start the sandbox: ${(e as Error).message}` };
   }
+  // Windows reports no signal for a killed process, so remember that we killed it.
+  let timedOut = false;
   const timer = setTimeout(() => {
+    timedOut = true;
     try {
       p.kill("SIGKILL");
     } catch {
@@ -82,7 +85,7 @@ export async function jsonEval(
     if (!o.success || !text) {
       return {
         logs: [],
-        error: o.signal === "SIGKILL"
+        error: timedOut
           ? `timed out after ${timeoutMs / 1000}s (an endless loop?)`
           : `the sandbox failed: ${new TextDecoder().decode(o.stderr).trim().slice(-500)}`,
       };
