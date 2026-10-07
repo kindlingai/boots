@@ -242,3 +242,36 @@ Deno.test("restored turns are shown, and an ssh hop left open is called interrup
     await Deno.remove(dir, { recursive: true });
   }
 });
+
+Deno.test("whitespace before a tool call opens no empty reply; quiet tools say what they do", async () => {
+  const { setFrontend } = await import("../src/frontend.ts");
+  const events: any[] = [];
+  setFrontend({
+    emit: (e: any) => events.push(e),
+    readLine: () => Promise.resolve(null),
+    close() {},
+  });
+  const { agent, done } = await session("gpt-oss-120b", [
+    { content: "\n\n", calls: [{ name: "memory_search", args: { query: "spark agent" } }] },
+    { content: "\n  Found it." },
+  ]);
+  try {
+    await agent.turn("continue working");
+    const starts = events.filter((e) => e.type === "assistant" && e.phase === "start");
+    assertEquals(starts.length, 1, "one reply, for the words");
+    const text = events.filter((e) => e.type === "assistant" && e.phase === "delta").map((e) =>
+      e.text
+    )
+      .join("");
+    assertEquals(text, "Found it.");
+    const lines = events.filter((e) => e.type === "line").map((e) =>
+      e.text.replace(new RegExp(String.fromCharCode(27) + "\\[[0-9;]*m", "g"), "")
+    );
+    assert(
+      lines.some((l) => l.includes('searching memory and docs for "spark agent"')),
+      lines.join("|"),
+    );
+  } finally {
+    await done();
+  }
+});

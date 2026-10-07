@@ -256,6 +256,7 @@ export class Agent {
       this.abort = new AbortController();
       let reply: Reply | undefined;
       let printed = false;
+      let lead = "";
       const current = this.s.router.current();
       emit({
         type: "status",
@@ -269,6 +270,10 @@ export class Agent {
         reply = await this.s.router.chat(await this.messages(), shape, {
           content: (t) => {
             if (!printed) {
+              // Whitespace before a tool call is not a reply: wait for words.
+              lead += t;
+              if (!lead.trim()) return;
+              t = lead.trimStart();
               spin.stop();
               emit({ type: "assistant", phase: "start" });
             }
@@ -319,7 +324,7 @@ export class Agent {
       }
       if (!reply) return;
       if (printed) emit({ type: "assistant", phase: "end" });
-      else if (reply.content) this.speak(reply.content);
+      else if (reply.content.trim()) this.speak(reply.content.trim());
       this.push({
         role: "assistant",
         content: reply.content,

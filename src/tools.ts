@@ -152,6 +152,16 @@ export function sshTargets(cmd: string): string[] {
 /** The host part of a user@host target. */
 const sshHost = (t: string) => t.slice(t.lastIndexOf("@") + 1);
 
+/** One line for each tool that does not announce itself. */
+const QUIET_TOOLS: Record<string, (a: any) => string> = {
+  memory_read: (a) => `reading ${a.name}`,
+  memory_search: (a) => `searching memory and docs for "${a.query}"`,
+  history_search: (a) => `searching history for "${a.query}"`,
+  mcp_list: (a) => a.server ? `listing MCP tools of ${a.server}` : "listing MCP servers",
+  fetch_url: (a) => `fetching ${a.url}`,
+  models_at: (a) => `listing models at ${a.base_url}`,
+};
+
 /** The same command again within this window is not run (the model is going in circles). */
 const REPEAT_WINDOW_MS = 60_000;
 
@@ -654,6 +664,9 @@ export class Session {
   }
 
   async exec(name: string, args: any, signal?: AbortSignal): Promise<string> {
+    // Tools that print nothing of their own still show up in the transcript.
+    const quiet = QUIET_TOOLS[name];
+    if (quiet) say(dim(`  ${quiet(args ?? {})}`));
     switch (name) {
       case "run": {
         const cmd = String(args.command ?? "");
