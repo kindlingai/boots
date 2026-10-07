@@ -1,5 +1,6 @@
 // The tools the model can call, and the session state they act on.
 
+import { tierOf } from "./prompts.ts";
 import type { Update } from "./update.ts";
 import type { Transcript } from "./transcript.ts";
 import { join } from "@std/path";
@@ -35,6 +36,7 @@ import {
   dim,
   green,
   info,
+  plain as plainText,
   red,
   say,
   spinner,
@@ -609,6 +611,18 @@ export class Session {
     this.router.bootstrapUp() ? this.router.bootstrap : this.router.current()
   );
   private complexTries = new Map<string, number>();
+  /**
+   * "auto" (/mode auto) runs read-only commands and non-sudo writes without
+   * asking; dangerous ones, sudo and everything else still ask. Never on the
+   * small base model.
+   */
+  mode: "ask" | "auto" = "ask";
+
+  /** Auto mode is on and the model answering may use it. */
+  autoActive(): boolean {
+    return this.mode === "auto" && tierOf(this.router.current()) !== "base";
+  }
+
   /** Machines already reached with ssh inside run, per location: the next one is refused. */
   private manualSsh = new Set<string>();
 
@@ -762,6 +776,9 @@ export class Session {
         const label = Session.label(verdict, checked);
         if (verdict === "readonly" && this.allowReadonly) {
           say(dim(`  [${loc}] $ ${cmd}`) + label);
+        } else if (this.autoActive() && (verdict === "readonly" || verdict === "writes")) {
+          // Auto mode: checked, and not dangerous. (Unchecked commands still ask.)
+          say(dim(`  [${loc}] $ ${cmd}`) + label + dim("  (auto)"));
         } else {
           const kind = verdict === "readonly"
             ? "readonly"
@@ -816,13 +833,18 @@ export class Session {
         const refused = refuseStartFull(String(args.path ?? ""), content);
         if (refused) return refused;
         const preview = content.split("\n").slice(0, 12).map((l) => dim(`    ${l}`)).join("\n");
-        const no = await this.gate(
-          `[${bold(this.where())}] write ${args.path} (${content.length} bytes${
-            args.mode ? `, mode ${args.mode}` : ""
-          })\n${preview}`,
-          `${this.where()}\0write\0${args.path}\0${content}`,
-        );
-        if (no) return no;
+        const what = `[${bold(this.where())}] write ${args.path} (${content.length} bytes${
+          args.mode ? `, mode ${args.mode}` : ""
+        })`;
+        if (this.autoActive()) {
+          say(dim(`  ${plainText(what)}  (auto)`));
+        } else {
+          const no = await this.gate(
+            `${what}\n${preview}`,
+            `${this.where()}\0write\0${args.path}\0${content}`,
+          );
+          if (no) return no;
+        }
         const r = await this.call("write", {
           path: String(args.path),
           b64: b64(content),

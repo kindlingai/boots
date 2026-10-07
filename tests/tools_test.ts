@@ -277,3 +277,79 @@ Deno.test("sudo: a listed read-only command runs unasked once read-only is allow
     await Deno.remove(dir, { recursive: true });
   }
 });
+
+Deno.test("/mode auto: safe commands and writes run unasked; dangerous, unjudged and sudo ask; never on the base model", async () => {
+  const { Router } = await import("../src/llm.ts");
+  const { Memory } = await import("../src/memory.ts");
+  const { McpManager } = await import("../src/mcp.ts");
+  const { Session } = await import("../src/tools.ts");
+  const { setFrontend } = await import("../src/frontend.ts");
+  const dir = await Deno.makeTempDir();
+  let prompts = 0;
+  setFrontend({
+    emit() {},
+    readLine: () => {
+      prompts++;
+      return Promise.resolve("y");
+    },
+    close() {},
+  });
+  try {
+    const make = async (model: string) => {
+      const s = new Session(
+        new Router({ label: model, baseUrl: "http://127.0.0.1:9/v1", model, contextChars: 1e4 }),
+        new Memory(`${dir}/mem-${model}`),
+        new McpManager(`${dir}/mcp.json`),
+        () => Promise.resolve(null),
+      );
+      await s.init();
+      const verdicts: Record<string, string | null> = {
+        "make install": "writes",
+        "rm -rf /data": "dangerous",
+        "mystery-tool": null,
+      };
+      (s as any).classifier = {
+        classify: (c: string) => Promise.resolve(c in verdicts ? verdicts[c] : "writes"),
+      };
+      (s as any).command = (_op: string, cmd: string) =>
+        Promise.resolve({ code: 0, stdout: "", stderr: "", cmd });
+      (s as any).call = () => Promise.resolve({ bytes: 1, path: "/tmp/x" });
+      s.mode = "auto";
+      return s;
+    };
+    const full = await make("gpt-oss-120b");
+    const asked = async (s: any, tool: string, args: any) => {
+      const before = prompts;
+      await s.exec(tool, args);
+      return prompts - before;
+    };
+    assertEquals(await asked(full, "run", { command: "make install" }), 0, "a write runs unasked");
+    assertEquals(await asked(full, "write_file", { path: "/tmp/x", content: "x" }), 0);
+    assertEquals(await asked(full, "run", { command: "rm -rf /data" }), 1, "dangerous asks");
+    assertEquals(await asked(full, "run", { command: "mystery-tool" }), 1, "unjudged asks");
+    assertEquals(await asked(full, "sudo", { command: "make install" }), 1, "sudo asks");
+    const base = await make("qwen3-4b");
+    assertEquals(await asked(base, "run", { command: "make install" }), 1, "not on the base model");
+    assertEquals(await asked(base, "write_file", { path: "/tmp/x", content: "x" }), 1);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("the approval menu keeps wide gaps between its choices", async () => {
+  const { approve } = await import("../src/ui.ts");
+  const { setFrontend } = await import("../src/frontend.ts");
+  const seen: string[] = [];
+  setFrontend({
+    emit() {},
+    readLine: (p: string) => {
+      seen.push(p.replace(new RegExp(String.fromCharCode(27) + "\\[[0-9;]*m", "g"), ""));
+      return Promise.resolve("n");
+    },
+    close() {},
+  });
+  await approve("x", "normal");
+  await approve("x", "readonly");
+  assertStringIncludes(seen[0], "[y]es   [n]o   [a]lways   [s]omething else");
+  assertStringIncludes(seen[1], "[n]o   always allow [r]ead-only   [s]omething");
+});

@@ -416,6 +416,8 @@ const HELP = `commands:
   /forget [k]   forget remembered secrets (all, or a location prefix)
   /sync         sync memory with its git repository
   /compact      summarise older turns to free context (keeps the last 2)
+  /mode [auto|ask]  auto: run read-only commands and non-sudo writes without
+                asking (never dangerous ones, never sudo, never on the base model)
   /exit         leave the current remote host
   /quit         quit`;
 
@@ -433,7 +435,7 @@ export async function repl(agent: Agent): Promise<void> {
   while (true) {
     let line: string | null;
     try {
-      line = await ask(`${bold(s.where())}> `);
+      line = await ask(`${bold(s.where())}${s.mode === "auto" ? dim(" [auto]") : ""}> `);
     } catch (e) {
       // Esc Esc at the main prompt does nothing; only ^C quits there.
       if (e instanceof EscInterrupted) continue;
@@ -472,6 +474,26 @@ export async function repl(agent: Agent): Promise<void> {
           );
           say(`in use:    ${s.router.current().label}`);
           break;
+        case "/mode": {
+          const want = rest[0];
+          if (want === "auto" || want === "ask") s.mode = want;
+          else if (want) {
+            say("usage: /mode [auto | ask]");
+            break;
+          }
+          say(
+            s.mode === "auto"
+              ? `mode: auto. Read-only commands and writes that are not sudo run without asking; anything dangerous, anything the check could not judge, sudo, and other actions still ask.${
+                currentTier(s.router) === "base"
+                  ? ` ${
+                    bold("Not while the small base model answers:")
+                  } it still asks for everything.`
+                  : ""
+              } /mode ask turns it off.`
+              : "mode: ask. Commands that change something ask first. /mode auto runs the safe ones without asking.",
+          );
+          break;
+        }
         case "/plan":
           say(renderPlan(s.plan));
           break;

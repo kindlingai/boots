@@ -96,11 +96,13 @@ export type ApprovalKind = "normal" | "readonly" | "dangerous" | "root";
  */
 export async function approve(what: string, kind: ApprovalKind = "normal"): Promise<Approval> {
   say(`${yellow("?")} ${what}`);
-  const choices = kind === "readonly"
-    ? "[y]es [n]o always allow [r]ead-only [s]omething else, I'll explain"
-    : kind === "dangerous" || kind === "root"
-    ? "[y]es [n]o [s]omething else, I'll explain"
-    : "[y]es [n]o [a]lways [s]omething else, I'll explain";
+  // Wide gaps between the choices, so they read as separate items.
+  const choices =
+    (kind === "readonly"
+      ? ["[y]es", "[n]o", "always allow [r]ead-only", "[s]omething else, I'll explain"]
+      : kind === "dangerous" || kind === "root"
+      ? ["[y]es", "[n]o", "[s]omething else, I'll explain"]
+      : ["[y]es", "[n]o", "[a]lways", "[s]omething else, I'll explain"]).join("   ");
   while (true) {
     const a = await frontend().readLine(dim(`  run it? ${choices}: `));
     if (a === null) return { ok: false, note: "no input available" };
