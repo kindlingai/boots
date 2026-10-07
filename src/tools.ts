@@ -5,7 +5,7 @@ import type { Update } from "./update.ts";
 import type { Transcript } from "./transcript.ts";
 import { join } from "@std/path";
 import { b64, DEFAULT_TIMEOUT_MS, type ExecResult, Host, type HostInfo } from "./host.ts";
-import { chat, type Endpoint, reachable, type Router, type ToolDef } from "./llm.ts";
+import { apiKey, chat, type Endpoint, reachable, type Router, type ToolDef } from "./llm.ts";
 import { type Goal, JSON_MEMORIES, jsonMemory, type Memory } from "./memory.ts";
 import type { McpManager } from "./mcp.ts";
 import { isReadonly, stages, unrollLoops, unwrapShell } from "./readonly.ts";
@@ -46,6 +46,15 @@ import {
 } from "./ui.ts";
 import { Classifier, type Verdict } from "./classify.ts";
 import { jsonEval } from "./jsoneval.ts";
+import {
+  applyProfile,
+  describeProfile,
+  loadProfile,
+  type ModelProfile,
+  probe,
+  profilePath,
+  saveProfile,
+} from "./probe.ts";
 import {
   CATALOG,
   describePlan,
@@ -386,6 +395,11 @@ export const TOOLS: ToolDef[] = [
   ),
   fn("ssh_exit", "Leave the current remote host and return to the previous one.", {}),
   fn(
+    "probe_model",
+    "Probe the model you are running on (at most 30 seconds): whether it thinks, how to turn thinking off, which reasoning levels it takes and how long each takes, then pick the settings ai-bootstrap uses for thinking and for not thinking. Cached per endpoint; pass again: true to probe anew (after the server or its flags change).",
+    { again: { type: "boolean", description: "probe even if a cached result exists" } },
+  ),
+  fn(
     "update_status",
     "Say in a few words what you are doing now and what is next, e.g. 'TP4 up on 3 of 4 sparks; checking rank 2'. Shown to the user while you work, and kept in your context even when older steps are dropped, so it anchors where you are. Call it often: every few tool calls, and whenever the picture changes.",
     { status: str("one short line, under 100 characters") },
@@ -607,6 +621,35 @@ export class Session {
       memory.cachePath("classify-cache.json"),
     );
     this.host.onLine = (token, line) => this.lineListeners.get(token)?.(line);
+    // Every full model gets its probed settings for thinking and not thinking.
+    router.onSmart = (ep) => void this.attachProfile(ep).catch(() => {});
+  }
+
+  /** Probes in flight, by endpoint and model. */
+  private probing = new Map<string, Promise<ModelProfile | null>>();
+
+  /**
+   * The cached probe of `ep` (or a new probe, at most 30 seconds, when there
+   * is none or `force`), applied to it. The small base model is left as it is.
+   */
+  async attachProfile(ep: Endpoint, force = false): Promise<ModelProfile | null> {
+    if (tierOf(ep) === "base" || Deno.env.get("AIBOOT_PROBE") === "0") return null;
+    if (!force) {
+      const cached = await loadProfile(ep);
+      if (cached) return applyProfile(ep, cached);
+    }
+    const key = `${ep.baseUrl}\0${ep.model}`;
+    const running = this.probing.get(key);
+    if (running) return await running;
+    const job = (async () => {
+      info(dim(`probing ${ep.label} for how it thinks (30s at most)...`));
+      const p = await probe(ep, apiKey, (l) => info(dim(`  probe ${l}`)));
+      const path = await saveProfile(p);
+      info(dim(`  ${describeProfile(p)}\n  saved to ${path} (edit it, or /probe to probe again)`));
+      return applyProfile(ep, p);
+    })().finally(() => this.probing.delete(key));
+    this.probing.set(key, job);
+    return await job;
   }
 
   /** Running commands' latest output, by token (see command()). */
@@ -614,6 +657,8 @@ export class Session {
 
   async init(): Promise<void> {
     this.stack = [{ label: "local", via: [], info: await this.host.info() }];
+    // A full model set before the session was: its probed settings too.
+    if (this.router.smart) void this.attachProfile(this.router.smart).catch(() => {});
   }
 
   get here(): Location {
@@ -1040,6 +1085,12 @@ export class Session {
         } catch (e) {
           return `plan not recorded: ${(e as Error).message}`;
         }
+      }
+      case "probe_model": {
+        const ep = this.router.current();
+        const p = await this.attachProfile(ep, !!args.again);
+        if (!p) return "not probed: this is the small base model (its settings are fixed)";
+        return `${describeProfile(p)}. Saved to ${await profilePath(ep)}; the user can edit it.`;
       }
       case "memory_read":
         return this.clip(await this.memory.read(String(args.name)));

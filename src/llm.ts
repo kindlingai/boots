@@ -50,6 +50,15 @@ export interface Endpoint {
   toolArgsAsObjects?: boolean;
   /** The server refused chat_template_kwargs (learnt from a 400): /thinking off cannot reach it. */
   noTemplateKwargs?: boolean;
+  /**
+   * From a probe (probe.ts): the request parameters for thinking (normal
+   * requests) and for not thinking (where thinking is turned off).
+   */
+  profile?: {
+    thinking: Record<string, unknown>;
+    nonThinking: Record<string, unknown>;
+    timeouts?: { thinkingMs: number; nonThinkingMs: number };
+  };
 }
 
 /**
@@ -88,7 +97,7 @@ export class LLMError extends Error {
   }
 }
 
-function apiKey(ep: Endpoint): string | undefined {
+export function apiKey(ep: Endpoint): string | undefined {
   if (ep.keyInMemory) return secrets.get([ep.baseUrl], "apikey");
   if (ep.keyEnv) return Deno.env.get(ep.keyEnv);
   return undefined;
@@ -270,13 +279,21 @@ export async function chat(
   // context has left, so it is never refused as too long.
   const room = outputRoom(ep, messages, tools);
   if (!plain && !noRoom && room && !("max_tokens" in sampling)) sampling.max_tokens = room;
-  const body = {
+  // A probed endpoint's own settings for thinking and not thinking; otherwise
+  // the usual chat-template switch when thinking is turned off.
+  const mode: Record<string, unknown> = ep.profile
+    ? { ...(thinkingOff ? ep.profile.nonThinking : ep.profile.thinking) }
+    : thinkingOff
+    ? { chat_template_kwargs: THINKING_OFF }
+    : {};
+  if (ep.noTemplateKwargs) delete mode.chat_template_kwargs;
+  const body: Record<string, unknown> = {
     ...sampling,
+    ...mode,
     model: ep.model,
     messages: ep.toolArgsAsObjects ? withObjectArgs(messages) : messages,
     tools: tools.length ? tools : undefined,
     tool_choice: tools.length && toolChoice ? toolChoice : undefined,
-    chat_template_kwargs: thinkingOff && !ep.noTemplateKwargs ? THINKING_OFF : undefined,
     stream: true,
   };
   let r: Response;
@@ -331,6 +348,21 @@ export async function chat(
         toolChoice,
         plain,
         thinkingOff,
+      );
+    }
+    // A probed setting the server no longer takes: without it.
+    if (r.status === 400 && ep.profile && Object.keys(mode).length) {
+      return await chat(
+        { ...ep, profile: undefined },
+        messages,
+        tools,
+        sink,
+        signal,
+        temperature,
+        toolChoice,
+        plain,
+        thinkingOff,
+        noRoom,
       );
     }
     if (r.status === 400 && body.chat_template_kwargs) {
@@ -515,7 +547,11 @@ export class Router {
   setSmart(ep: Endpoint | null): void {
     this.smart = ep;
     this.smartDownUntil = 0;
+    if (ep) this.onSmart(ep);
   }
+
+  /** A full model was set: the session attaches its probed profile (or probes it). */
+  onSmart: (ep: Endpoint) => void = () => {};
 
   /**
    * `tools` may depend on the model that ends up answering (the smart one

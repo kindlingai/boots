@@ -306,7 +306,7 @@ export class Agent {
         ],
         [],
         {},
-        AbortSignal.timeout(45_000),
+        AbortSignal.timeout(this.s.router.current().profile?.timeouts?.nonThinkingMs ?? 45_000),
       );
       const text = tidy(r.content.replace(/<think>[\s\S]*?<\/think>/g, ""));
       if (!text) return;
@@ -750,6 +750,8 @@ const HELP = `commands:
   /compact      summarise older turns to free context (keeps the last 2)
   /mode [auto|ask]  auto: run read-only commands and non-sudo writes without
                 asking (never dangerous ones, never sudo, never on the base model)
+  /probe        probe the model in use (30s at most): how it thinks, and the
+                settings used for thinking and not thinking (cached; editable)
   /thinking [on|off]  off: ask models to answer without thinking first
                 (faster, shallower); on: each model's default
   /exit         leave the current remote host
@@ -853,6 +855,12 @@ export async function repl(agent: Agent): Promise<void> {
             ];
             say(goals.length ? goals.flatMap((g) => line(g, 0)).join("\n") : "(no goals)");
           }
+          break;
+        }
+        case "/probe": {
+          // Probe the model in use again (its settings for thinking and not thinking).
+          const p = await s.attachProfile(s.router.current(), true);
+          if (!p) say("the small base model is not probed: its settings are fixed");
           break;
         }
         case "/thinking": {
