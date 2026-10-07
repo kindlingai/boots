@@ -546,6 +546,10 @@ export class Session {
     asker: (req: any) => Promise<string | null>,
   ) {
     this.host = new Host(asker, (s) => info(s));
+    this.classifier = new Classifier(
+      () => this.router.bootstrapUp() ? this.router.bootstrap : this.router.current(),
+      memory.cachePath("classify-cache.json"),
+    );
     this.host.onLine = (token, line) => this.lineListeners.get(token)?.(line);
   }
 
@@ -642,9 +646,7 @@ export class Session {
   /** The user allowed every read-only command for this session. */
   allowReadonly = false;
   // The small model checks commands; while it is handed over, the full model does.
-  readonly classifier = new Classifier(() =>
-    this.router.bootstrapUp() ? this.router.bootstrap : this.router.current()
-  );
+  readonly classifier: Classifier;
   private complexTries = new Map<string, number>();
   /**
    * "auto" (/mode auto) runs read-only commands and non-sudo writes without

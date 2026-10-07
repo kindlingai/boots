@@ -318,3 +318,61 @@ Deno.test("a line checked stage by stage names the stage that made it more than 
     await m.close();
   }
 });
+
+Deno.test("verdicts are cached on disk per model and prompt, and stages are asked together, once each", async () => {
+  const asked: string[] = [];
+  let inFlight = 0, most = 0;
+  const m = serveMock([], 0, (cmd) => {
+    asked.push(cmd);
+    return cmd.startsWith("ollama") ? "writes" : "readonly";
+  });
+  const dir = await Deno.makeTempDir();
+  const store = join(dir, "classify-cache.json");
+  const ep = (model: string) => () => ({
+    label: model,
+    baseUrl: m.url,
+    model,
+    contextChars: 1e4,
+  });
+  // Count overlapping questions by wrapping fetch.
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (...a: Parameters<typeof fetch>) => {
+    inFlight++;
+    most = Math.max(most, inFlight);
+    try {
+      await new Promise((r) => setTimeout(r, 30));
+      return await realFetch(...a);
+    } finally {
+      inFlight--;
+    }
+  };
+  try {
+    const line = "mystery-a --x && ollama rm q && mystery-a --x && mystery-b";
+    const c = new Classifier(ep("b"), store);
+    assertEquals(await c.classify(line, "Linux"), "writes");
+    assertEquals(
+      asked.sort(),
+      ["mystery-a --x", "mystery-b", "ollama rm q"],
+      "a repeated stage once",
+    );
+    assert(most >= 2, `stages are asked together (at most ${most} at once)`);
+    await c.flush();
+    // A new session with the same model: nothing asked.
+    asked.length = 0;
+    const again = new Classifier(ep("b"), store);
+    assertEquals(await again.classify(line, "Linux"), "writes");
+    assertEquals(asked, []);
+    // Another checking model asks afresh.
+    const other = new Classifier(ep("other"), store);
+    assertEquals(await other.classify("mystery-b", "Linux"), "readonly");
+    assertEquals(asked, ["mystery-b"]);
+    // Root is judged separately.
+    assertEquals(await again.classify("mystery-b", "Linux", true), "readonly");
+    assertEquals(asked.length, 2);
+    await Promise.all([c.flush(), again.flush(), other.flush()]);
+  } finally {
+    globalThis.fetch = realFetch;
+    await m.close();
+    await Deno.remove(dir, { recursive: true });
+  }
+});

@@ -53,6 +53,9 @@ const SHELL_KEYWORDS = new Set(
   ),
 );
 
+/** Verdicts kept on disk. */
+const CACHE_KEPT = 5000;
+
 /** More stages than this in one line: ask for smaller steps. */
 const MAX_STAGES = 8;
 
@@ -167,14 +170,60 @@ export function pipesDownloadIntoShell(st: string[][]): boolean {
 export class Classifier {
   private cache = new Map<string, Verdict>();
   private culprits = new Map<string, string>();
+  /** Questions in flight, so identical stages are asked once. */
+  private asking = new Map<string, Promise<Verdict | null>>();
+  private loaded: Promise<void> | null = null;
+  private saving: Promise<void> = Promise.resolve();
 
-  constructor(private model: () => Endpoint) {}
+  /**
+   * `store`: a file that keeps verdicts across sessions. Each is keyed by the
+   * checking model, the checker's prompt, the OS, root or not, and the exact
+   * command, so a different model or a changed prompt asks afresh.
+   */
+  constructor(private model: () => Endpoint, private store?: string) {}
+
+  private load(): Promise<void> {
+    this.loaded ??= (async () => {
+      if (!this.store) return;
+      try {
+        const d = JSON.parse(await Deno.readTextFile(this.store));
+        for (const [k, v] of Object.entries(d.entries ?? {})) {
+          if (typeof v === "string" && v in RANK) this.cache.set(k, v as Verdict);
+        }
+      } catch {
+        // none yet, or unreadable: start empty
+      }
+    })();
+    return this.loaded;
+  }
+
+  /** Writes the cache out (the newest CACHE_KEPT entries), one write at a time. */
+  private save(): void {
+    if (!this.store) return;
+    while (this.cache.size > CACHE_KEPT) this.cache.delete(this.cache.keys().next().value!);
+    const text = JSON.stringify({ entries: Object.fromEntries(this.cache) });
+    const path = this.store;
+    this.saving = this.saving.then(async () => {
+      try {
+        const tmp = `${path}.tmp`;
+        await Deno.writeTextFile(tmp, text);
+        await Deno.rename(tmp, path);
+      } catch {
+        // a cache: losing it only costs time
+      }
+    });
+  }
+
+  /** Waits for pending writes (tests, and before exit). */
+  flush(): Promise<void> {
+    return this.saving;
+  }
 
   /**
    * null when the checker is off or did not answer: treat the command as one
    * that writes. A command line of several stages (pipes, ;, &&, ||) is split
    * and judged stage by stage: stages on the read-only list need no model,
-   * the rest are asked about one at a time, and the line is as bad as its
+   * the rest are asked about together, and the line is as bad as its
    * worst stage. A line that cannot be split safely (substitution, a
    * here-document, a redirect into a file) is asked about whole.
    */
@@ -190,20 +239,24 @@ export class Classifier {
     }
     if (pipesDownloadIntoShell(st)) return "dangerous";
     if (st.length > MAX_STAGES || cmd.length > MAX_LEN * 3) return "complex";
+    // Stages that need the model are asked at once; the line is as bad as
+    // its worst stage, named by the first stage that bad.
+    const judged = await Promise.all(st.map(async (toks): Promise<
+      { v: Verdict | null; seg: string } | "complex" | null
+    > => {
+      if (stageReadonly([...toks])) return null;
+      const seg = toks.map(shellQuote).join(" ");
+      if (runsScript(toks)) return { v: "unknown", seg };
+      if (seg.length > MAX_LEN) return "complex";
+      return { v: await this.ask(seg, os, cmd, root), seg };
+    }));
+    if (judged.includes("complex")) return "complex";
     let worst: Verdict = "readonly";
     let culprit = "";
-    for (const toks of st) {
-      if (stageReadonly([...toks])) continue;
-      const seg = toks.map(shellQuote).join(" ");
-      if (runsScript(toks)) {
-        if (RANK.unknown > RANK[worst]) [worst, culprit] = ["unknown", seg];
-        continue;
-      }
-      if (seg.length > MAX_LEN) return "complex";
-      const v = await this.ask(seg, os, cmd, root);
-      if (v === null) return null;
-      if (RANK[v] > RANK[worst]) [worst, culprit] = [v, seg];
-      if (worst === "dangerous") break;
+    for (const j of judged) {
+      if (j === null || j === "complex") continue;
+      if (j.v === null) return null;
+      if (RANK[j.v] > RANK[worst]) [worst, culprit] = [j.v, j.seg];
     }
     if (culprit) this.culprits.set(cmd, culprit);
     return worst;
@@ -225,15 +278,41 @@ export class Classifier {
     whole: string | null,
     root = false,
   ): Promise<Verdict | null> {
-    const key = `${os}\0${root ? "root\0" : ""}${cmd}`;
+    await this.load();
+    const ep = this.model();
+    const key = `${ep.model}\0${PROMPT_ID}\0${os}\0${root ? "root\0" : ""}${cmd}`;
     const hit = this.cache.get(key);
-    if (hit) return hit;
+    if (hit) {
+      // Recently used: keep it among the newest.
+      this.cache.delete(key);
+      this.cache.set(key, hit);
+      return hit;
+    }
+    const pending = this.asking.get(key);
+    if (pending) return await pending;
+    const p = this.question(ep, key, cmd, os, whole, root);
+    this.asking.set(key, p);
+    try {
+      return await p;
+    } finally {
+      this.asking.delete(key);
+    }
+  }
+
+  private async question(
+    ep: Endpoint,
+    key: string,
+    cmd: string,
+    os: string,
+    whole: string | null,
+    root: boolean,
+  ): Promise<Verdict | null> {
     const context = whole
       ? `\nIt is one stage of this command line (judge only the stage; the other stages are checked separately):\n\`\`\`\n${whole}\n\`\`\``
       : "";
     try {
       const r = await chat(
-        this.model(),
+        ep,
         [
           { role: "system", content: CLASSIFY_PROMPT },
           {
@@ -254,9 +333,19 @@ export class Classifier {
       if (!v) return null;
       const g = guard(cmd, v);
       this.cache.set(key, g);
+      this.save();
       return g;
     } catch {
       return null;
     }
   }
 }
+
+/** Identifies the checker's prompt in cache keys: a new prompt asks afresh. */
+const PROMPT_ID = (() => {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < CLASSIFY_PROMPT.length; i++) {
+    h = Math.imul(h ^ CLASSIFY_PROMPT.charCodeAt(i), 0x01000193) >>> 0;
+  }
+  return h.toString(16);
+})();

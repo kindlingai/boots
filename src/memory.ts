@@ -4,7 +4,7 @@
 // memory/INDEX.md is always in the model's context, so it is capped at 4 kB
 // and should hold one-line pointers to the other files.
 
-import { basename, join } from "@std/path";
+import { basename, dirname, join } from "@std/path";
 import { dataDir, docsDir, ensureDir, exists } from "./platform.ts";
 
 export const INDEX_LIMIT = 4096;
@@ -407,6 +407,11 @@ export class Memory {
     if (before && before !== text) await this.backup(m.file, before);
     await Deno.writeTextFile(join(this.dir, m.file), text);
     return `wrote ${m.file} (${bytes} bytes)${removed}`;
+  }
+
+  /** A cache file beside the memory folder (not synced, safe to delete). */
+  cachePath(name: string): string {
+    return join(dirname(this.dir), name);
   }
 
   /** Where earlier versions of the JSON memories are kept (outside the synced folder). */
