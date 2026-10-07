@@ -76,7 +76,13 @@ export interface Frontend {
    * `choices`, when given, are the answers the prompt offers (the GUI shows
    * them as buttons in place of the input box); the answer is a choice's key.
    */
-  readLine(prompt: string, hidden?: boolean, choices?: Choice[]): Promise<string | null>;
+  readLine(
+    prompt: string,
+    hidden?: boolean,
+    choices?: Choice[],
+    /** Closes the prompt unanswered (null) when it aborts: a prompt with a deadline. */
+    signal?: AbortSignal,
+  ): Promise<string | null>;
   /** Called before the process exits (restore the terminal). */
   close(): void;
 }

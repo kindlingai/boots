@@ -205,3 +205,48 @@ Deno.test("approval passes its answers as choices; the busy line carries a token
   );
   assertEquals(tokenCount(312), "312 tokens");
 });
+
+Deno.test("a prompt with a deadline: no answer in time is a no; the TUI and GUI close it", async () => {
+  const { setFrontend } = await import("../src/frontend.ts");
+  const { yesInTime } = await import("../src/ui.ts");
+  // A user who never answers: the prompt closes when the time is up.
+  let seen = "";
+  setFrontend({
+    emit() {},
+    readLine: (p: string, _h?: boolean, _c?: any, signal?: AbortSignal) => {
+      seen = p;
+      return new Promise((ok) => signal!.addEventListener("abort", () => ok(null)));
+    },
+    close() {},
+  });
+  const t0 = Date.now();
+  assertEquals(await yesInTime("run it anyway?", 80), false);
+  assert(Date.now() - t0 < 1000);
+  assertEquals(seen, "run it anyway? [y]es [n]o (0s): ");
+  setFrontend({ emit() {}, readLine: () => Promise.resolve("y"), close() {} });
+  assertEquals(await yesInTime("run it anyway?", 5000), true);
+
+  const { TuiFrontend } = await import("../src/frontends/tui.ts");
+  const tui = new TuiFrontend({ title: "t", onInterrupt() {} });
+  (tui as any).out = () => {};
+  const stop = new AbortController();
+  const first = tui.readLine("first? ");
+  const timed = tui.readLine("timed? ", false, undefined, stop.signal);
+  stop.abort();
+  assertEquals(await timed, null, "closed while still waiting its turn");
+  const stop2 = new AbortController();
+  (tui as any).finish("ok");
+  assertEquals(await first, "ok");
+  const open = tui.readLine("open? ", false, undefined, stop2.signal);
+  stop2.abort();
+  assertEquals(await open, null, "closed while open");
+
+  const { GuiFrontend } = await import("../src/frontends/gui.ts");
+  const gui = new GuiFrontend({ title: "t" });
+  const stop3 = new AbortController();
+  const g = gui.readLine("run it anyway? ", false, [{ key: "y", label: "Yes" }], stop3.signal);
+  assertEquals(gui.state().prompt?.choices?.[0].label, "Yes");
+  stop3.abort();
+  assertEquals(await g, null);
+  assertEquals(gui.state().prompt, null);
+});

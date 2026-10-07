@@ -497,3 +497,92 @@ Deno.test("sudo inside run: refused, with the exact split into the sudo tool and
   assertStringIncludes(r, "then run with `ls ~/glm/compose/ 2>/dev/null; ls ~/glm/ | head`");
   assert(!refuseInRun("sudo -u bob ls; ls")!.includes("Split"), "sudo with options: no guess");
 });
+
+Deno.test("too complex to check: the user can take it within the grace time; else smaller steps", async () => {
+  const { Router } = await import("../src/llm.ts");
+  const { Memory } = await import("../src/memory.ts");
+  const { McpManager } = await import("../src/mcp.ts");
+  const { Session } = await import("../src/tools.ts");
+  const { setFrontend } = await import("../src/frontend.ts");
+  const dir = await Deno.makeTempDir();
+  let answer: string | null = "y";
+  const prompts: string[] = [];
+  setFrontend({
+    emit() {},
+    readLine: (p: string) => {
+      prompts.push(p);
+      return Promise.resolve(answer);
+    },
+    close() {},
+  });
+  try {
+    const s = new Session(
+      new Router({ label: "m", baseUrl: "http://127.0.0.1:9/v1", model: "m", contextChars: 1e4 }),
+      new Memory(`${dir}/mem`),
+      new McpManager(`${dir}/mcp.json`),
+      () => Promise.resolve(null),
+    );
+    await s.init();
+    (s as any).classifier = {
+      classify: () => Promise.resolve("complex"),
+      culprit: () => undefined,
+    };
+    const ran: string[] = [];
+    (s as any).command = (_op: string, cmd: string) => {
+      ran.push(cmd);
+      return Promise.resolve({ code: 0, stdout: "out", stderr: "", cmd });
+    };
+    // Taken: it runs, with no second question.
+    await s.exec("run", { command: 'eval "$(something)"' });
+    assertEquals(ran.length, 1);
+    assertEquals(prompts.length, 1);
+    assertStringIncludes(prompts[0], "run it anyway? [y]es [n]o (5s)");
+    // No answer (the time ran out): back to the model for smaller steps.
+    answer = null;
+    const r = await s.exec("run", { command: 'eval "$(other)"' });
+    assertStringIncludes(r, "too complex");
+    assertEquals(ran.length, 1);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("a repeated command is refused only for reads, and only until something changes", async () => {
+  const { Router } = await import("../src/llm.ts");
+  const { Memory } = await import("../src/memory.ts");
+  const { McpManager } = await import("../src/mcp.ts");
+  const { Session } = await import("../src/tools.ts");
+  const { setFrontend } = await import("../src/frontend.ts");
+  const dir = await Deno.makeTempDir();
+  setFrontend({ emit() {}, readLine: () => Promise.resolve("y"), close() {} });
+  try {
+    const s = new Session(
+      new Router({ label: "m", baseUrl: "http://127.0.0.1:9/v1", model: "m", contextChars: 1e4 }),
+      new Memory(`${dir}/mem`),
+      new McpManager(`${dir}/mcp.json`),
+      () => Promise.resolve(null),
+    );
+    await s.init();
+    s.allowReadonly = true;
+    const ran: string[] = [];
+    (s as any).command = (_op: string, cmd: string) => {
+      ran.push(cmd);
+      return Promise.resolve({ code: 0, stdout: "x", stderr: "", cmd });
+    };
+    (s as any).call = () => Promise.resolve({ path: "/tmp/x.sh" });
+    // A script, run, rewritten and run again: both run.
+    await s.exec("run", { command: "bash /tmp/drive-chk.sh" });
+    await s.exec("write_file", { path: "/tmp/drive-chk.sh", content: "echo hi" });
+    await s.exec("run", { command: "bash /tmp/drive-chk.sh" });
+    assertEquals(ran.filter((c) => c === "bash /tmp/drive-chk.sh").length, 2);
+    // A read, twice in a row: the second is the pointless one.
+    await s.exec("run", { command: "ls /srv" });
+    assertStringIncludes(await s.exec("run", { command: "ls /srv" }), "you ran exactly this");
+    // ...unless something changed in between.
+    await s.exec("write_file", { path: "/srv/x", content: "" });
+    await s.exec("run", { command: "ls /srv" });
+    assertEquals(ran.filter((c) => c === "ls /srv").length, 2);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});

@@ -270,8 +270,13 @@ export class GuiFrontend implements Frontend {
     this.stateSoon();
   }
 
-  readLine(prompt: string, hidden = false, choices?: Choice[]): Promise<string | null> {
-    if (this.closed) return Promise.resolve(null);
+  readLine(
+    prompt: string,
+    hidden = false,
+    choices?: Choice[],
+    signal?: AbortSignal,
+  ): Promise<string | null> {
+    if (this.closed || signal?.aborted) return Promise.resolve(null);
     return new Promise((resolve, reject) => {
       const p: Pending = {
         id: this.nextId++,
@@ -281,6 +286,19 @@ export class GuiFrontend implements Frontend {
         resolve,
         reject,
       };
+      // Out of time: closed unanswered, whether open or still waiting its turn.
+      signal?.addEventListener("abort", () => {
+        if (this.pending === p) {
+          this.push("dim", `${p.prompt.trim()} (no answer)`);
+          this.finish(null);
+        } else {
+          const i = this.queue.indexOf(p);
+          if (i >= 0) {
+            this.queue.splice(i, 1);
+            resolve(null);
+          }
+        }
+      }, { once: true });
       if (this.pending) this.queue.push(p);
       else this.begin(p);
     });

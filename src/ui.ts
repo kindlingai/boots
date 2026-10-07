@@ -115,6 +115,27 @@ export async function choose(prompt: string, options: string[], def = 0): Promis
   }
 }
 
+/**
+ * A yes/no that answers itself "no" after `ms`: true only for a yes in
+ * time. The prompt shows the deadline; the GUI shows Yes/No buttons.
+ */
+export async function yesInTime(prompt: string, ms: number): Promise<boolean> {
+  const stop = new AbortController();
+  const timer = setTimeout(() => stop.abort(), ms);
+  try {
+    const a = await frontend().readLine(
+      `${prompt} [y]es [n]o (${Math.round(ms / 1000)}s): `,
+      false,
+      [{ key: "y", label: "Yes" }, { key: "n", label: "No" }],
+      stop.signal,
+    );
+    const t = (a ?? "").trim().toLowerCase();
+    return !stop.signal.aborted && (t === "y" || t === "yes");
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export type Approval = { ok: boolean; always?: boolean; readonly?: boolean; note?: string };
 
 /**

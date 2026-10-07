@@ -4,6 +4,7 @@
 
 import {
   busyText,
+  type Choice,
   doubleEsc,
   type EngineEvent,
   EscInterrupted,
@@ -108,12 +109,17 @@ export class LineFrontend implements Frontend {
     }
   }
 
-  async readLine(prompt: string, hidden = false): Promise<string | null> {
+  async readLine(
+    prompt: string,
+    hidden = false,
+    _choices?: Choice[],
+    signal?: AbortSignal,
+  ): Promise<string | null> {
     this.clearLive();
     this.input.unwatch();
     this.reading = true;
     try {
-      return await this.input.readLine(prompt, hidden);
+      return await this.input.readLine(prompt, hidden, signal);
     } finally {
       this.reading = false;
       this.tick();
@@ -202,6 +208,9 @@ function truncate(s: string, n: number): string {
 }
 
 /** One reader owns stdin for the whole process. */
+/** A prompt closed by its deadline. */
+const ABORTED = Symbol("aborted");
+
 class Input {
   private reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
   private buf: number[] = [];
@@ -272,13 +281,36 @@ class Input {
     return this.buf.length ? this.buf.shift()! : null;
   }
 
-  /** Reads one line. Returns null at EOF. Ctrl-C throws Interrupted. */
-  readLine(prompt: string, hidden = false): Promise<string | null> {
+  /**
+   * The next byte, or ABORTED when `signal` fires first. It waits on the
+   * shared read, not on taking a byte, so a byte arriving after the abort
+   * stays in the buffer for the next prompt.
+   */
+  private async nextByte(signal?: AbortSignal): Promise<number | null | typeof ABORTED> {
+    if (!signal) return await this.byte();
+    const stop = new Promise<void>((ok) =>
+      signal.addEventListener("abort", () => ok(), { once: true })
+    );
+    while (!this.buf.length && !this.eof) {
+      if (signal.aborted) return ABORTED;
+      await Promise.race([this.fill(), stop]);
+    }
+    if (signal.aborted && !this.buf.length) return ABORTED;
+    return this.buf.length ? this.buf.shift()! : null;
+  }
+
+  /** Reads one line. Returns null at EOF or when `signal` aborts. Ctrl-C throws Interrupted. */
+  readLine(prompt: string, hidden = false, signal?: AbortSignal): Promise<string | null> {
     const run = async () => {
+      if (signal?.aborted) return null;
       const tty = Deno.stdin.isTerminal();
       write(prompt);
       if (!tty) {
-        const l = await this.cookedLine();
+        const l = await this.cookedLine(signal);
+        if (l === ABORTED) {
+          write("(no answer)\n");
+          return null;
+        }
         // Piped input is not echoed; end the prompt line ourselves.
         if (!Deno.stdout.isTerminal()) write(hidden ? "***\n" : `${l ?? ""}\n`);
         return l;
@@ -286,7 +318,12 @@ class Input {
       Deno.stdin.setRaw(true);
       this.prompting = true;
       try {
-        return await this.rawLine(hidden);
+        const l = await this.rawLine(hidden, signal);
+        if (l === ABORTED) {
+          write(" (no answer)\r\n");
+          return null;
+        }
+        return l;
       } finally {
         this.prompting = false;
         Deno.stdin.setRaw(false);
@@ -298,10 +335,11 @@ class Input {
     return p;
   }
 
-  private async cookedLine(): Promise<string | null> {
+  private async cookedLine(signal?: AbortSignal): Promise<string | null | typeof ABORTED> {
     const out: number[] = [];
     while (true) {
-      const b = await this.byte();
+      const b = await this.nextByte(signal);
+      if (b === ABORTED) return ABORTED;
       if (b === null) return out.length ? dec.decode(new Uint8Array(out)) : null;
       if (b === 10) break;
       if (b !== 13) out.push(b);
@@ -309,11 +347,15 @@ class Input {
     return dec.decode(new Uint8Array(out));
   }
 
-  private async rawLine(hidden: boolean): Promise<string | null> {
+  private async rawLine(
+    hidden: boolean,
+    signal?: AbortSignal,
+  ): Promise<string | null | typeof ABORTED> {
     let s = "";
     let pending: number[] = [];
     while (true) {
-      const b = await this.byte();
+      const b = await this.nextByte(signal);
+      if (b === ABORTED) return ABORTED;
       if (b === null) return s || null;
       if (b === 3) {
         write("^C\r\n");

@@ -12,6 +12,7 @@
 import {
   botName,
   busyText,
+  type Choice,
   doubleEsc,
   type EngineEvent,
   EscInterrupted,
@@ -252,9 +253,28 @@ export class TuiFrontend implements Frontend {
 
   // ---- input ----
 
-  readLine(prompt: string, hidden = false): Promise<string | null> {
+  readLine(
+    prompt: string,
+    hidden = false,
+    _choices?: Choice[],
+    signal?: AbortSignal,
+  ): Promise<string | null> {
+    if (signal?.aborted) return Promise.resolve(null);
     return new Promise((resolve, reject) => {
       const p: Pending = { prompt: plain(prompt), hidden, resolve, reject };
+      // Out of time: closed unanswered, whether open or still waiting its turn.
+      signal?.addEventListener("abort", () => {
+        if (this.pending === p) {
+          this.push("dim", `${p.prompt.trim()} (no answer)`);
+          this.finish(null);
+        } else {
+          const i = this.queue.indexOf(p);
+          if (i >= 0) {
+            this.queue.splice(i, 1);
+            resolve(null);
+          }
+        }
+      }, { once: true });
       if (this.pending) this.queue.push(p);
       else this.begin(p);
     });

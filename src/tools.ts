@@ -43,6 +43,7 @@ import {
   say,
   spinner,
   yellow,
+  yesInTime,
 } from "./ui.ts";
 import { Classifier, type Verdict } from "./classify.ts";
 import { jsonEval } from "./jsoneval.ts";
@@ -318,6 +319,22 @@ const QUIET_TOOLS: Record<string, (a: any) => string> = {
 };
 
 /** The same command again within this window is not run (the model is going in circles). */
+/** Tools after which a repeated read is not pointless. */
+const CHANGES = new Set([
+  "write_file",
+  "ssh",
+  "ssh_exit",
+  "git_clone",
+  "set_up_model",
+  "start_full_model",
+  "use_model",
+  "remove_downloads",
+  "mcp_call",
+]);
+
+/** How long the user has to take a command too complex to check as it is. */
+const COMPLEX_GRACE_MS = 5_000;
+
 const REPEAT_WINDOW_MS = 60_000;
 
 /** After ^C, how long to wait for a command to stop before giving control back. */
@@ -891,6 +908,9 @@ export class Session {
     // Tools that print nothing of their own still show up in the transcript.
     const quiet = QUIET_TOOLS[name];
     if (quiet) say(dim(`  ${quiet(args ?? {})}`));
+    // Tools that change things (or where things are): a read repeated after
+    // one of these may see something new, so it is no longer a repeat.
+    if (CHANGES.has(name)) this.recent.clear();
     switch (name) {
       case "run": {
         const cmd = String(args.command ?? "");
@@ -918,13 +938,21 @@ export class Session {
           } with ssh inside run. To work on that machine, call the ssh tool with destination ${again2} instead: ai-bootstrap connects once, installs itself there, and run, read_file, write_file and sudo then work on that machine directly (no ssh in the command) until ssh_exit. Passwords are handled for you.`;
         }
         const { verdict, checked, culprit } = await this.check(cmd);
+        let accepted = false;
         if (verdict === "complex") {
-          say(commandLine(loc, "$", cmd));
-          say(yellow("    too complex to check; asking for smaller steps"));
-          return Session.TOO_COMPLEX;
+          // The user may take it as it is, within a few seconds; otherwise
+          // it goes back to the model as smaller steps.
+          say(commandLine(loc, "$", cmd) + yellow("  (too complex to check)"));
+          accepted = await yesInTime(`    run it anyway?`, COMPLEX_GRACE_MS);
+          if (!accepted) {
+            say(yellow("    too complex to check; asking for smaller steps"));
+            return Session.TOO_COMPLEX;
+          }
         }
         const label = Session.label(verdict, checked, culprit);
-        if (verdict === "readonly" && this.allowReadonly) {
+        if (accepted) {
+          // Taken as it is by the user, just now.
+        } else if (verdict === "readonly" && this.allowReadonly) {
           say(commandLine(loc, "$", cmd) + label);
         } else if (this.autoActive() && (verdict === "readonly" || verdict === "writes")) {
           // Auto mode: checked, and not dangerous. (Unchecked commands still ask.)
@@ -945,7 +973,14 @@ export class Session {
         for (const t of targets) this.manualSsh.add(`${loc}\0${sshHost(t)}`);
         const r = await this.command("exec", cmd, args, signal);
         this.show(r);
-        return r.cancelled ? this.render(r) : this.remember(`${loc}\0${cmd}`, this.render(r));
+        // Only a read is pointless to repeat; anything else may have changed
+        // what the next command sees.
+        if (r.cancelled) return this.render(r);
+        if (verdict !== "readonly" || accepted) {
+          this.recent.clear();
+          return this.render(r);
+        }
+        return this.remember(`${loc}\0${cmd}`, this.render(r));
       }
       case "sudo": {
         const cmd = String(args.command ?? "").replace(/^\s*sudo\s+/, "");
@@ -963,16 +998,22 @@ export class Session {
         // Root always asks; the check (told it runs as root) still catches the
         // complex and the dangerous.
         const { verdict, checked, culprit } = await this.check(cmd, true);
+        let accepted = false;
         if (verdict === "complex") {
-          say(commandLine(this.where(), "#", cmd));
-          say(yellow("    too complex to check; asking for smaller steps"));
-          return Session.TOO_COMPLEX;
+          say(commandLine(this.where(), "#", cmd) + yellow("  (too complex to check)"));
+          accepted = await yesInTime(`    run it anyway, as root?`, COMPLEX_GRACE_MS);
+          if (!accepted) {
+            say(yellow("    too complex to check; asking for smaller steps"));
+            return Session.TOO_COMPLEX;
+          }
         }
         // Definitely read-only (on the fixed list, not the model's guess) and
         // not reading secrets: runs unasked once the user allows read-only
         // commands; otherwise the prompt offers that.
         const safeRead = !checked && verdict === "readonly" && !readsSecrets(cmd);
-        if (safeRead && this.allowReadonly) {
+        if (accepted) {
+          // Taken as it is by the user, just now.
+        } else if (safeRead && this.allowReadonly) {
           say(commandLine(this.where(), "#", cmd) + dim("  (read-only)"));
         } else {
           const no = await this.gate(
@@ -984,6 +1025,7 @@ export class Session {
         }
         const r = await this.command("sudo", cmd, args, signal);
         this.show(r);
+        if (!safeRead) this.recent.clear();
         return this.render(r);
       }
       case "read_file": {
