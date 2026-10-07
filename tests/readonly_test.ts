@@ -1,5 +1,5 @@
 import { assert, assertEquals, assertFalse } from "@std/assert";
-import { isReadonly, unrollLoops } from "../src/readonly.ts";
+import { isReadonly, unrollLoops, unwrapShell } from "../src/readonly.ts";
 
 Deno.test("read-only commands pass", () => {
   for (
@@ -153,4 +153,26 @@ Deno.test("for loops over literal words are checked as the commands they run", (
   ) assertEquals(unrollLoops(c), c, c);
   // $fx is another variable, not $f followed by x.
   assertEquals(unrollLoops("for f in a; do echo $fx $f; done"), "echo $fx a");
+});
+
+Deno.test("bash -c / sh -c / zsh -c are checked as the script they run", () => {
+  assertEquals(unwrapShell("bash -c 'ls -la /srv; df -h'"), "ls -la /srv; df -h");
+  assertEquals(unwrapShell('sh -c "nvidia-smi -L"'), "nvidia-smi -L");
+  assertEquals(unwrapShell("zsh -ec 'ls'"), "ls");
+  assertEquals(unwrapShell("/bin/bash -e -o pipefail -c 'ls | wc -l'"), "ls | wc -l");
+  assertEquals(unwrapShell(`bash -c "sh -c 'uptime'"`), "uptime", "nested");
+  assert(isReadonly(unwrapShell("bash -c 'ls -la /srv/models/; readlink -f /srv/x'")));
+  assert(!isReadonly(unwrapShell("bash -c 'rm -rf /srv/models'")));
+  // Left as they were: arguments after the script, expansions the outer
+  // shell would do, a login shell, and a script that is only part of a line.
+  for (
+    const c of [
+      "bash -c 'ls $1' _ /etc",
+      'bash -c "ls $HOME"',
+      'sh -c "echo `id`"',
+      "bash -lc 'ls'",
+      "bash -c 'ls' && rm -rf /x",
+      "bash -c 'it'\\''s'",
+    ]
+  ) assertEquals(unwrapShell(c), c, c);
 });

@@ -8,7 +8,7 @@ import { b64, DEFAULT_TIMEOUT_MS, type ExecResult, Host, type HostInfo } from ".
 import { chat, type Endpoint, reachable, type Router, type ToolDef } from "./llm.ts";
 import { type Goal, JSON_MEMORIES, jsonMemory, type Memory } from "./memory.ts";
 import type { McpManager } from "./mcp.ts";
-import { isReadonly, stages, unrollLoops } from "./readonly.ts";
+import { isReadonly, stages, unrollLoops, unwrapShell } from "./readonly.ts";
 import {
   describeFailure,
   type FullFailure,
@@ -673,8 +673,9 @@ export class Session {
     cmd: string,
     root = false,
   ): Promise<{ verdict: Verdict | null; checked: boolean; culprit?: string }> {
-    // A loop over literal words is checked as the commands it runs.
-    const unrolled = unrollLoops(cmd);
+    // bash -c '...' is checked as its script, and a loop over literal words
+    // as the commands it runs.
+    const unrolled = unrollLoops(unwrapShell(cmd));
     if (isReadonly(unrolled)) return { verdict: "readonly", checked: false };
     const spin = spinner("checking the command");
     const verdict = await this.classifier.classify(unrolled, this.here.info.osName, root).finally(
@@ -693,7 +694,7 @@ export class Session {
   }
 
   private static TOO_COMPLEX =
-    "Not run: the safety check could not analyze this command, it is too complex. Rewrite it as smaller steps: one simple command per call, without long pipelines or command lists, loops (a for loop over a fixed list of words is fine), inline scripts (python -c, bash -c), eval, here-documents or nested substitutions. To create or edit a file, use write_file.";
+    "Not run: the safety check could not analyze this command, it is too complex. Rewrite it as smaller steps: one simple command per call, without long pipelines or command lists, loops (a for loop over a fixed list of words is fine), inline programs (python -c, perl -e; bash -c with a plain quoted script is fine, it is checked as that script), eval, here-documents or nested substitutions. To create or edit a file, use write_file.";
 
   private static label(verdict: Verdict | null, checked: boolean, culprit?: string): string {
     if (!checked) return "";

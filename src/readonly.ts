@@ -674,3 +674,25 @@ export function unrollLoops(cmd: string): string {
   }
   return out;
 }
+
+/**
+ * `bash -c '<script>'` (or sh, zsh, dash, ksh) checked as the script it runs.
+ * Only a whole command that is just that: options limited to -e, -u, -x and
+ * -o pipefail, the script single-quoted (passed through as written) or
+ * double-quoted with nothing the outer shell would expand, and no arguments
+ * after it (they would become $0, $1, ... inside). Anything else stays as
+ * it was. Nested ones are unwrapped too.
+ */
+export function unwrapShell(cmd: string): string {
+  const SHELL_C =
+    /^\s*(?:(?:\/usr)?\/bin\/)?(?:bash|sh|zsh|dash|ksh)((?:\s+(?:-[eux]+|-o\s+pipefail))*)\s+-[eux]*c\s+(?:'([^']*)'|"([^"$`\\]*)")\s*$/;
+  let out = cmd;
+  for (let n = 0; n < 3; n++) {
+    const m = out.match(SHELL_C);
+    if (!m) break;
+    const script = (m[2] ?? m[3]).trim();
+    if (!script) break;
+    out = script;
+  }
+  return out;
+}

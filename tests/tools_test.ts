@@ -429,3 +429,53 @@ Deno.test("run: a loop over literal words is checked as the commands it runs", a
     await Deno.remove(dir, { recursive: true });
   }
 });
+
+Deno.test("sudo bash -c '<reads>' runs under always-allow read-only, like the reads themselves", async () => {
+  const { Router } = await import("../src/llm.ts");
+  const { Memory } = await import("../src/memory.ts");
+  const { McpManager } = await import("../src/mcp.ts");
+  const { Session } = await import("../src/tools.ts");
+  const { setFrontend } = await import("../src/frontend.ts");
+  const dir = await Deno.makeTempDir();
+  const prompts: string[] = [];
+  setFrontend({
+    emit() {},
+    readLine: (p: string) => {
+      prompts.push(p);
+      return Promise.resolve("n");
+    },
+    close() {},
+  });
+  try {
+    const s = new Session(
+      new Router({ label: "m", baseUrl: "http://127.0.0.1:9/v1", model: "m", contextChars: 1e4 }),
+      new Memory(`${dir}/mem`),
+      new McpManager(`${dir}/mcp.json`),
+      () => Promise.resolve(null),
+    );
+    await s.init();
+    s.allowReadonly = true;
+    const judged: string[] = [];
+    (s as any).classifier = {
+      classify: (c: string) => (judged.push(c), Promise.resolve("writes")),
+      culprit: () => undefined,
+    };
+    const ran: string[] = [];
+    (s as any).command = (_op: string, cmd: string) => {
+      ran.push(cmd);
+      return Promise.resolve({ code: 0, stdout: "", stderr: "", cmd });
+    };
+    await s.exec("sudo", {
+      command: "bash -c 'ls -la /srv/models/; echo ---; readlink -f /srv/models/x'",
+    });
+    assertEquals(prompts.length, 0, "read-only once unwrapped");
+    assertEquals(judged, []);
+    assertEquals(ran.length, 1, "and it runs as written");
+    // Not read-only inside: the checker sees the script, and the user is asked.
+    await s.exec("run", { command: "sh -c 'ollama rm a && ollama rm b'" });
+    assertEquals(judged, ["ollama rm a && ollama rm b"]);
+    assertEquals(prompts.length, 1);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
