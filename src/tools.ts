@@ -838,6 +838,19 @@ export class Session {
 
   /** Machines already reached with ssh inside run, per location: the next one is refused. */
   private manualSsh = new Set<string>();
+  /** The root half of a split sudo-inside-run, until the sudo tool runs. */
+  private pendingRoot: { loc: string; root: string } | null = null;
+
+  /**
+   * After a split, a model often runs only the run half: the next run there
+   * says once that the sudo half is still to do.
+   */
+  private rootOwed(loc: string): string {
+    const p = this.pendingRoot;
+    if (!p || p.loc !== loc) return "";
+    this.pendingRoot = null;
+    return `\n\nStill to do from the split: the root part has not run. Call the sudo tool with command \`${p.root}\` now.`;
+  }
 
   /**
    * The read-only list, then the bootstrap model's verdict. "complex" twice in a row
@@ -1017,14 +1030,21 @@ export class Session {
             yellow(`    not run: ${split ? "sudo inside run; split it:" : refused.split(":")[0]}`),
           );
           if (split) {
+            this.pendingRoot = { loc, root: split.root };
             say(dim("      ") + commandLine(loc, "#", split.root));
             if (split.rest) say(dim("      ") + commandLine(loc, "$", split.rest));
           }
           return `Not run: ${refused}`;
         }
         // One ssh by hand to a machine is fine; a second means it should be a hop.
-        const targets = sshTargets(cmd);
-        const again2 = targets.find((t) => this.manualSsh.has(`${loc}\0${sshHost(t)}`));
+        // A loop over hosts is checked host by host; a sweep over several
+        // machines is a survey, not work that belongs in a hop.
+        const targets = [
+          ...new Set(sshTargets(unrollLoops(unwrapShell(cmd))).filter((t) => !/[$`]/.test(t))),
+        ];
+        const single = new Set(targets.map(sshHost)).size === 1;
+        const again2 = single &&
+          targets.find((t) => this.manualSsh.has(`${loc}\0${sshHost(t)}`));
         if (again2) {
           say(commandLine(loc, "$", cmd));
           say(yellow(`    not run: ssh to ${sshHost(again2)} again; use the ssh tool`));
@@ -1066,7 +1086,7 @@ export class Session {
           );
           if (no) return no;
         }
-        for (const t of targets) this.manualSsh.add(`${loc}\0${sshHost(t)}`);
+        if (single) this.manualSsh.add(`${loc}\0${sshHost(targets[0])}`);
         const r = await this.command("exec", cmd, args, signal);
         this.show(r);
         // Only a read is pointless to repeat; anything else may have changed
@@ -1074,11 +1094,12 @@ export class Session {
         if (r.cancelled) return this.render(r);
         if (verdict !== "readonly" || accepted) {
           this.recent.clear();
-          return this.render(r);
+          return this.render(r) + this.rootOwed(loc);
         }
-        return this.remember(`${loc}\0${cmd}`, this.render(r));
+        return this.remember(`${loc}\0${cmd}`, this.render(r)) + this.rootOwed(loc);
       }
       case "sudo": {
+        this.pendingRoot = null;
         // sudo resets the environment: $BOOTS_SCRATCH would be empty there
         // (and "> $BOOTS_SCRATCH/x" a write to /x as root). Spelled out, it is
         // judged as the path it is.

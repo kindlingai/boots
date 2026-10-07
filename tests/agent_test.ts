@@ -632,6 +632,31 @@ Deno.test("after a quiet stretch, the model sums up its recent steps (thinking o
   }
 });
 
+Deno.test("at the step limit, the latest steps are summed up for the user and kept for continue", async () => {
+  const { STOPPED_PROMPT } = await import("../src/agent.ts");
+  Deno.env.set("AIBOOT_MAX_STEPS", "2");
+  Deno.env.set("AIBOOT_UPDATES", "0");
+  Deno.env.set("AIBOOT_BACKOFF", "0");
+  const step = { calls: [{ name: "update_status", args: { status: "checking rank 2" } }] };
+  const { m, agent, done } = await session("gpt-oss-120b", [step, step]);
+  try {
+    await agent.turn("bring up TP4");
+    const asks = m.seen.filter((b) => b.messages?.[0]?.content?.startsWith(STOPPED_PROMPT));
+    assertEquals(asks.length, 1);
+    assertEquals(asks[0].tools, undefined, "no tools");
+    assertStringIncludes(asks[0].messages[1].content, "The user asked: bring up TP4");
+    assertStringIncludes(asks[0].messages[1].content, "checking rank 2");
+    const last = agent.history.at(-1)!;
+    assertEquals(last.role, "assistant");
+    assertStringIncludes(String(last.content), "Stopped at the step limit");
+  } finally {
+    Deno.env.delete("AIBOOT_MAX_STEPS");
+    Deno.env.delete("AIBOOT_UPDATES");
+    Deno.env.delete("AIBOOT_BACKOFF");
+    await done();
+  }
+});
+
 Deno.test("a message typed while the model works is read after the latest tool results", async () => {
   const { steer } = await import("../src/frontend.ts");
   Deno.env.set("AIBOOT_BACKOFF", "0");

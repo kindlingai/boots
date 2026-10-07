@@ -137,10 +137,15 @@ Deno.test("a second ssh by hand to the same machine is refused, pointing at the 
     };
     assertStringIncludes(await s.exec("run", { command: "ssh admin@gx10 nvidia-smi" }), "exit 0");
     assertStringIncludes(await s.exec("run", { command: "ssh other@box uptime" }), "exit 0");
+    // Sweeps over several machines are surveys: never refused, and not counted.
+    const sweep = (c: string) =>
+      `for h in 10.0.0.1 10.0.0.2 gx10; do ssh -o BatchMode=yes admin@$h '${c}' 2>&1 | tail -3; done`;
+    assertStringIncludes(await s.exec("run", { command: sweep("pgrep -af sglang") }), "exit 0");
+    assertStringIncludes(await s.exec("run", { command: sweep("uptime") }), "exit 0");
     const second = await s.exec("run", { command: "ssh -p 22 root@GX10 df -h" });
     assertStringIncludes(second, "second command that connects to gx10");
     assertStringIncludes(second, "ssh tool with destination root@gx10");
-    assertEquals(ran, ["ssh admin@gx10 nvidia-smi", "ssh other@box uptime"]);
+    assertEquals(ran.length, 4);
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
@@ -737,6 +742,36 @@ Deno.test("permission flags: read-only from the start, nothing asks when skipped
     assertEquals(prompts.length, 0, "an allowed host connects without asking");
     await hosts.exec("ssh", { destination: "admin@192.168.1.77" }).catch(() => {});
     assertEquals(prompts.length, 1, "another host still asks");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("sudo inside run: running only the run half reminds once that the sudo half is owed", async () => {
+  const { Router } = await import("../src/llm.ts");
+  const { Memory } = await import("../src/memory.ts");
+  const { McpManager } = await import("../src/mcp.ts");
+  const { Session } = await import("../src/tools.ts");
+  const dir = await Deno.makeTempDir();
+  try {
+    const s = new Session(
+      new Router({ label: "m", baseUrl: "http://127.0.0.1:9/v1", model: "m", contextChars: 1e4 }),
+      new Memory(`${dir}/mem`),
+      new McpManager(`${dir}/mcp.json`),
+      () => Promise.resolve(null),
+    );
+    await s.init();
+    (s as any).always = { has: () => true, add() {} };
+    (s as any).check = () => Promise.resolve({ verdict: "writes", checked: true });
+    (s as any).command = (_op: string, cmd: string) =>
+      Promise.resolve({ code: 0, stdout: "ok\n", stderr: "", cmd });
+    const no = await s.exec("run", { command: "id; sudo docker ps | head -5" });
+    assertStringIncludes(no, "Do this now");
+    const half = await s.exec("run", { command: "id" });
+    assertStringIncludes(half, "the root part has not run");
+    assertStringIncludes(half, "`docker ps | head -5`");
+    const again = await s.exec("run", { command: "uptime" });
+    assert(!again.includes("root part"), "once");
   } finally {
     await Deno.remove(dir, { recursive: true });
   }

@@ -181,6 +181,9 @@ Deno.test("reads reported as asking: systemctl verbs, timeout, awk, python arith
   const ok = [
     "systemctl get-default",
     "systemctl list-timers",
+    "systemctl --user is-active mentatd 2>/dev/null",
+    "systemctl --no-pager --user status mentatd",
+    "ls ~; ls ~/compose-tf-batch 2>/dev/null | head; ls ~/*.sh 2>/dev/null; systemctl is-active mentatd 2>/dev/null; systemctl --user is-active mentatd 2>/dev/null",
     `timeout 25 ssh -o BatchMode=yes -o ConnectTimeout=6 admin@192.168.1.36 'hostname; ls -d /srv/models/glm-*; pgrep -c mentatd; docker ps --format "{{.Names}} {{.Status}}" 2>/dev/null | head -6'; echo ===93`,
     `free -g | awk "NR==2{print \\$2\\" GB RAM\\"}"`,
     `awk '$3>5 {print $1}' /proc/meminfo`,
@@ -201,6 +204,8 @@ Deno.test("reads reported as asking: systemctl verbs, timeout, awk, python arith
     `python3 -c "open('x','w')"`,
     `python3 -c "__import__('os')"`,
     "systemctl set-default graphical.target",
+    "systemctl --user restart mentatd",
+    "systemctl --user --now enable x",
     `docker ps -a 2>err1.txt; cat err1.txt; rm -f err1.txt`,
   ];
   for (const c of no) assertFalse(isReadonly(c), c);

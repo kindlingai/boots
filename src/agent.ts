@@ -19,6 +19,9 @@ const RESTORE_SHARE = 0.3;
 /** Progress updates: after this long without a word, over at most this many steps. */
 const UPDATE_AFTER_MS = 60_000;
 const UPDATE_STEPS = 8;
+/** At the step limit: a summary of where things stand, for the user and for "continue". */
+export const STOPPED_PROMPT =
+  `You are watching an AI agent work on a user's machines (it sets up AI models and infrastructure). It has just hit its step limit and stopped mid-task. From its latest thinking, tool calls and their results, write a short summary for the user, in the first person as the agent: what you were doing, what you found or finished, what is still left (and the next step you would take), and anything that went wrong or worries you. 3 to 6 plain sentences: no preamble, no lists, no markdown.`;
 export const UPDATE_PROMPT =
   `You are watching an AI agent work on a user's machines (it sets up AI models and infrastructure). From its latest thinking, tool calls and their results, write 2 to 4 short sentences for the user, in the first person as the agent: what you are doing, what you have found, anything you are worried about (only if there is something), and where you are going next. Plain sentences: no preamble, no lists, no markdown.`;
 
@@ -298,6 +301,16 @@ export class Agent {
     const after = Number(Deno.env.get("AIBOOT_UPDATE_AFTER_MS") ?? UPDATE_AFTER_MS);
     if (Date.now() - this.quietSince < after || this.stepsSinceUpdate < 2) return;
     this.stepsSinceUpdate = 0;
+    await this.summarize(UPDATE_PROMPT, "writing an update", "progress update");
+  }
+
+  /**
+   * The model, in a fresh request with thinking off and no tools, sums up
+   * the turn's latest steps (thinking, calls, results); the summary is shown
+   * and kept as a status line (it survives trimming of the history).
+   */
+  private async summarize(prompt: string, label: string, kind: string): Promise<string | null> {
+    if (!this.recent.length) return null;
     const clip = (t: string, n: number) => t.length > n ? `…${t.slice(-n)}` : t;
     const log = this.recent.map((r, i) =>
       [
@@ -309,12 +322,12 @@ export class Agent {
         ),
       ].filter(Boolean).join("\n")
     ).join("\n\n");
-    const spin = spinner("writing an update");
+    const spin = spinner(label);
     try {
       this.s.router.thinkingOffOnce = true;
       const r = await this.s.router.chat(
         () => [
-          { role: "system", content: `${UPDATE_PROMPT}\n\n${languageRule()}` },
+          { role: "system", content: `${prompt}\n\n${languageRule()}` },
           {
             role: "user",
             content: `The user asked: ${
@@ -327,15 +340,17 @@ export class Agent {
         AbortSignal.timeout(this.s.router.current().profile?.timeouts?.nonThinkingMs ?? 45_000),
       );
       const text = tidy(r.content.replace(/<think>[\s\S]*?<\/think>/g, ""));
-      if (!text) return;
+      if (!text) return null;
       this.speak(`◇ ${text}`);
-      this.s.transcript?.append({ role: "system", content: `(progress update) ${text}` });
+      this.s.transcript?.append({ role: "system", content: `(${kind}) ${text}` });
       // Kept with the status lines: an anchor that survives trimming.
       this.statuses.push({ text: clip(text, 300), step: this.stepCount });
       if (this.statuses.length > STATUS_KEEP) this.statuses.shift();
       this.quietSince = Date.now();
+      return text;
     } catch {
-      // An update is a nicety: never in the way of the work.
+      // A summary is a nicety: never in the way of the work.
+      return null;
     } finally {
       this.s.router.thinkingOffOnce = false;
       spin.stop();
@@ -512,7 +527,8 @@ export class Agent {
     this.recent = [];
     this.stepsSinceUpdate = 0;
     this.asked = userText;
-    for (let step = 0; step < MAX_STEPS; step++) {
+    const maxSteps = Number(Deno.env.get("AIBOOT_MAX_STEPS") ?? MAX_STEPS);
+    for (let step = 0; step < maxSteps; step++) {
       this.stepCount++;
       this.expireStatus();
       await this.maybeUpdate();
@@ -763,7 +779,17 @@ export class Agent {
       // reply hands the turn back to the user.
       if (replied) return;
     }
-    warn(`stopped after ${MAX_STEPS} steps; say "continue" to go on`);
+    warn(`stopped after ${maxSteps} steps; say "continue" to go on`);
+    if (tierOf(this.s.router.current()) !== "base") {
+      const text = await this.summarize(STOPPED_PROMPT, "summing up", "stopped at the step limit");
+      // In the history too, so "continue" picks up from it.
+      if (text) {
+        this.push({
+          role: "assistant",
+          content: `(Stopped at the step limit. Where things stand:) ${text}`,
+        });
+      }
+    }
   }
 }
 

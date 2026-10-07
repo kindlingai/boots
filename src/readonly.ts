@@ -473,6 +473,14 @@ export function stageReadonly(toks: string[]): boolean {
       /^(set|add|del|delete|flush|change|replace|append|exec|save|restore)$/.test(t)
     );
   }
+  // systemctl --user is-active x: harmless options before the verb.
+  if (head === "systemctl") {
+    const opts =
+      /^(--user|--system|--no-pager|--no-legend|--plain|--full|-l|--all|-a|-q|--quiet|--failed|--lines=\d+|-n\d*|--output=\w+|-o\w*|--property=[\w,]+|-p[\w,]*|--value|--type=[\w,]+|-t\w*|--state=[\w,]+)$/;
+    let i = 1;
+    while (i < toks.length && opts.test(toks[i])) i++;
+    return SUBCOMMANDS.systemctl.has(toks[i] ?? "");
+  }
   const subs = SUBCOMMANDS[head] ?? SUBCOMMANDS[head.replace(/-/g, "_")];
   if (subs) {
     if (subs.has("*")) return !toks.some((t) => /^--(rotate|vacuum|flush|sync|relinquish)/.test(t));
