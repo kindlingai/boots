@@ -162,3 +162,14 @@ Deno.test("Esc twice within 2 s counts, once or slower does not", async () => {
   t = 4100;
   assertEquals(esc(), true);
 });
+
+Deno.test("the GUI is opt-in: --gui or AIBOOT_UI=gui, never chosen on its own", async () => {
+  const { uiMode } = await import("../src/main.ts");
+  const env = (vars: Record<string, string>) => (k: string) => vars[k];
+  assertEquals(uiMode("--gui", env({}), false), "gui");
+  assertEquals(uiMode(undefined, env({ AIBOOT_UI: "gui" }), true), "gui");
+  assertEquals(uiMode(undefined, env({ TERM: "xterm-256color" }), true), "tui");
+  assertEquals(uiMode(undefined, env({ TERM: "xterm-256color" }), false), "repl");
+  assertEquals(uiMode("--repl", env({ AIBOOT_UI: "gui" }), true), "repl");
+  assertEquals(uiMode(undefined, env({ AIBOOT_UI: "repl", TERM: "xterm" }), true), "repl");
+});

@@ -14,7 +14,8 @@
     "jsr:@std/path@^1.1.5": "1.1.6",
     "jsr:@std/path@^1.1.6": "1.1.6",
     "jsr:@std/streams@^1.2.0": "1.2.0",
-    "jsr:@webview/webview@*": "0.9.0"
+    "jsr:@webview/webview@*": "0.9.0",
+    "jsr:@webview/webview@0.9": "0.9.0"
   },
   "jsr": {
     "@denosaurs/plug@1.1.0": {
@@ -75,7 +76,8 @@
       "jsr:@std/assert@^1.0.19",
       "jsr:@std/encoding@^1.0.11",
       "jsr:@std/path@^1.1.6",
-      "jsr:@std/streams@^1.2.0"
+      "jsr:@std/streams@^1.2.0",
+      "jsr:@webview/webview@0.9"
     ]
   }
 }

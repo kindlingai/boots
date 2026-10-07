@@ -21,6 +21,9 @@ import {
   type Style,
 } from "../frontend.ts";
 
+import { bot, type Mood, moodOf, wrap } from "./bot.ts";
+export { bot, wrap };
+
 const enc = new TextEncoder();
 const dec = new TextDecoder();
 const ESC = "\x1b[";
@@ -77,7 +80,6 @@ interface Entry {
   text: string;
 }
 type ProgressEv = Extract<EngineEvent, { type: "progress" }>;
-type Mood = "idle" | "thinking" | "talking" | "working" | "happy" | "sad" | "asking";
 
 interface Pending {
   prompt: string;
@@ -88,91 +90,12 @@ interface Pending {
 
 const plain = (s: string) => s.replace(ANSI, "");
 
-/** Splits text into lines of at most `w` columns, at spaces where it can. */
-export function wrap(text: string, w: number): string[] {
-  const out: string[] = [];
-  for (const raw of text.split("\n")) {
-    let line = raw.replace(/\t/g, "  ");
-    if (!line) {
-      out.push("");
-      continue;
-    }
-    while ([...line].length > w) {
-      const chars = [...line];
-      let cut = chars.slice(0, w + 1).lastIndexOf(" ");
-      if (cut <= w / 3) cut = w;
-      out.push(chars.slice(0, cut).join("").trimEnd());
-      line = chars.slice(cut).join("").replace(/^ /, "");
-    }
-    out.push(line);
-  }
-  return out;
-}
-
 const fit = (s: string, w: number) => {
   const chars = [...s];
   return chars.length > w
     ? chars.slice(0, Math.max(0, w - 1)).join("") + "…"
     : s + " ".repeat(w - chars.length);
 };
-
-/** The bot, 6 rows by 9 columns, for a mood and an animation frame. */
-export function bot(mood: Mood, frame: number, blink: boolean): string[] {
-  const eyes = (() => {
-    switch (mood) {
-      case "thinking":
-        return ["o o  ", " o o ", "  o o", " o o "][frame % 4];
-      case "talking":
-        return frame % 2 ? " o o " : " ^ ^ ";
-      case "working":
-        return frame % 2 ? " * * " : " + + ";
-      case "happy":
-        return " ^ ^ ";
-      case "sad":
-        return " x x ";
-      case "asking":
-        return " o O ";
-      default:
-        return blink ? " - - " : " o o ";
-    }
-  })();
-  const antenna = mood === "asking"
-    ? "    ?    "
-    : mood === "thinking" || mood === "working"
-    ? (frame % 2 ? "    *    " : "    .    ")
-    : "    |    ";
-  const mouth = mood === "talking" && frame % 2 ? " +--o--+ " : " +-----+ ";
-  const feet = mood === "working" ? (frame % 2 ? "  b   d  " : "   b d   ") : "  b   d  ";
-  const art = [antenna, " +-----+ ", ` |${eyes}| `, mouth, "   | |   ", feet];
-  return mood === "working" ? sweat(art, frame) : art;
-}
-
-/**
- * Anime sweat while it works: a drop runs down each side of the head,
- * half a cycle apart, so something moves every frame or two.
- */
-const DROP: (null | [number, string])[] = [
-  [1, "'"],
-  [1, "'"],
-  [2, "'"],
-  [2, "'"],
-  [3, ","],
-  [3, "."],
-  null,
-  null,
-];
-
-function sweat(art: string[], frame: number): string[] {
-  const out = [...art];
-  const put = (row: number, col: number, ch: string) => {
-    out[row] = out[row].slice(0, col) + ch + out[row].slice(col + 1);
-  };
-  const right = DROP[frame % DROP.length];
-  const left = DROP[(frame + DROP.length / 2) % DROP.length];
-  if (right) put(right[0], 8, right[1]);
-  if (left) put(left[0], 0, left[1]);
-  return out;
-}
 
 export class TuiFrontend implements Frontend {
   private entries: Entry[] = [];
@@ -299,18 +222,14 @@ export class TuiFrontend implements Frontend {
   }
 
   private currentMood(): Mood {
-    if (this.flash && Date.now() < this.flash.until) return this.flash.mood;
-    if (this.streaming || Date.now() - this.talkedAt < 1200) return "talking";
-    if (this.progress.size) return "working";
-    // Running a command, connecting, compacting: hard at work.
-    if (this.busy && /^(running|connecting|compacting|checking)/.test(this.busy.label)) {
-      return "working";
-    }
-    if (this.busy) return "thinking";
-    if (this.pending && /run it\?|\[y\/n\]|\[Y\/n\]|password|choice/i.test(this.pending.prompt)) {
-      return "asking";
-    }
-    return "idle";
+    return moodOf({
+      flash: this.flash,
+      streaming: !!this.streaming,
+      talkedAt: this.talkedAt,
+      progress: this.progress.size > 0,
+      busy: this.busy?.label ?? null,
+      prompt: this.pending?.prompt ?? null,
+    });
   }
 
   // ---- input ----

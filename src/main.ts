@@ -1,6 +1,7 @@
 // ai-bootstrap: a minimal agent harness that bootstraps AI infrastructure.
 //
-//   ai-bootstrap              interactive session
+//   ai-bootstrap              interactive session (TUI on a modern terminal, else REPL)
+//   ai-bootstrap --gui        the same in a window (opt-in; AIBOOT_UI=gui)
 //   ai-bootstrap --far        far agent (started by ai-bootstrap over ssh)
 //   ai-bootstrap --version
 
@@ -31,11 +32,28 @@ import {
 import { bold, dim, info, red, say, warn } from "./ui.ts";
 import { emit, frontend, setFrontend, setInterruptHandler } from "./frontend.ts";
 import { TuiFrontend } from "./frontends/tui.ts";
+import { GuiFrontend } from "./frontends/gui.ts";
+import { windowMain } from "./frontends/window.ts";
 
-async function interactive(tui: boolean): Promise<number> {
+async function interactive(mode: UiMode): Promise<number> {
   // ^C at the TUI's input arrives as a key, not a signal: it goes through here too.
   let onInterrupt = () => {};
-  if (tui) {
+  // Closing the GUI window or its Quit button: stop what runs, then end.
+  let onQuit = () => {};
+  if (mode === "gui") {
+    const g = new GuiFrontend({ title: `ai-bootstrap ${VERSION}`, onQuit: () => onQuit() });
+    const url = g.serve();
+    setFrontend(g);
+    const how = await g.open((s) => console.error(s));
+    console.error(
+      how === "window"
+        ? `ai-bootstrap is running in its window (${url})`
+        : how === "browser"
+        ? `ai-bootstrap is running in your browser: ${url}`
+        : `open this in a browser to use ai-bootstrap: ${url}`,
+    );
+  }
+  if (mode === "tui") {
     if (Deno.stdin.isTerminal() && Deno.stdout.isTerminal()) {
       const f = new TuiFrontend({
         title: `ai-bootstrap ${VERSION}`,
@@ -163,6 +181,7 @@ async function interactive(tui: boolean): Promise<number> {
     }
   };
   onInterrupt = onSigint;
+  onQuit = () => void agent.interrupt();
   setInterruptHandler((kind) => kind === "esc" ? void agent.interrupt() : onSigint());
   emit({
     type: "status",
@@ -196,14 +215,25 @@ export function modernTerminal(
     .test(term);
 }
 
-/** --tui or --repl decide; then AIBOOT_UI; otherwise the TUI on a capable terminal. */
-function wantTui(flag?: string): boolean {
-  if (flag === "--tui") return true;
-  if (flag === "--repl") return false;
-  const ui = Deno.env.get("AIBOOT_UI");
-  if (ui === "tui") return true;
-  if (ui === "repl" || ui === "line") return false;
-  return Deno.stdin.isTerminal() && Deno.stdout.isTerminal() && modernTerminal();
+export type UiMode = "gui" | "tui" | "repl";
+
+/**
+ * --gui, --tui or --repl decide; then AIBOOT_UI; otherwise the TUI on a
+ * capable terminal. The GUI is only ever chosen on request.
+ */
+export function uiMode(
+  flag?: string,
+  env: (k: string) => string | undefined = (k) => Deno.env.get(k),
+  terminal: boolean = Deno.stdin.isTerminal() && Deno.stdout.isTerminal(),
+): UiMode {
+  if (flag === "--gui") return "gui";
+  if (flag === "--tui") return "tui";
+  if (flag === "--repl") return "repl";
+  const ui = env("AIBOOT_UI");
+  if (ui === "gui") return "gui";
+  if (ui === "tui") return "tui";
+  if (ui === "repl" || ui === "line") return "repl";
+  return terminal && modernTerminal(env) ? "tui" : "repl";
 }
 
 async function main(args: string[]): Promise<number> {
@@ -236,13 +266,16 @@ async function main(args: string[]): Promise<number> {
         `data:    ${dataDir()}\nmodels:  ${modelsDir()}\nscripts: ${scriptsDir()}\ncache:   ${cacheDir()}`,
       );
       return 0;
+    case "--gui-window":
+      return await windowMain(args[1] ?? "", args[2] ?? "ai-bootstrap");
     case undefined:
+    case "--gui":
     case "--tui":
     case "--repl":
-      return await interactive(wantTui(args[0]));
+      return await interactive(uiMode(args[0]));
     default:
       console.log(
-        "usage: ai-bootstrap [--tui | --repl | --version | --paths | --docs | --search WORDS]",
+        "usage: ai-bootstrap [--gui | --tui | --repl | --version | --paths | --docs | --search WORDS]",
       );
       return 2;
   }
