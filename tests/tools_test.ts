@@ -646,3 +646,98 @@ Deno.test("sudo inside run: the refusal leads with the split to make", async () 
     "then call run with `ls /srv/models 2>/dev/null | head; ls ~/models | head`",
   );
 });
+
+Deno.test("permission flags: parsed anywhere on the command line", async () => {
+  const { parsePermissionFlags } = await import("../src/tools.ts");
+  const r = parsePermissionFlags([
+    "--tui",
+    "--allow-read-only",
+    "--allow-host",
+    "admin@gx10",
+    "--allow-host=192.168.1.70,192.168.1.77",
+    "--dangerously-skip-permissions",
+  ]);
+  assertEquals(r.rest, ["--tui"]);
+  assertEquals(r.perms, {
+    readonly: true,
+    hosts: ["admin@gx10", "192.168.1.70", "192.168.1.77"],
+    allHosts: false,
+    skip: true,
+  });
+  assertEquals(parsePermissionFlags(["--allow-all-hosts"]).perms.allHosts, true);
+  let err = "";
+  try {
+    parsePermissionFlags(["--allow-host"]);
+  } catch (e) {
+    err = (e as Error).message;
+  }
+  assertStringIncludes(err, "--allow-host needs a host");
+});
+
+Deno.test("permission flags: read-only from the start, nothing asks when skipped, allowed hosts connect", async () => {
+  const { Router } = await import("../src/llm.ts");
+  const { Memory } = await import("../src/memory.ts");
+  const { McpManager } = await import("../src/mcp.ts");
+  const { Session } = await import("../src/tools.ts");
+  const { setFrontend } = await import("../src/frontend.ts");
+  const dir = await Deno.makeTempDir();
+  const prompts: string[] = [];
+  setFrontend({
+    emit() {},
+    readLine: (p: string) => {
+      prompts.push(p);
+      return Promise.resolve("n");
+    },
+    close() {},
+  });
+  const make = async () => {
+    const s = new Session(
+      new Router({ label: "m", baseUrl: "http://127.0.0.1:9/v1", model: "m", contextChars: 1e4 }),
+      new Memory(`${dir}/mem`),
+      new McpManager(`${dir}/mcp.json`),
+      () => Promise.resolve(null),
+    );
+    await s.init();
+    (s as any).command = (_op: string, cmd: string) =>
+      Promise.resolve({ code: 0, stdout: "", stderr: "", cmd });
+    (s as any).classifier = {
+      classify: () => Promise.resolve("dangerous"),
+      culprit: () => undefined,
+    };
+    return s;
+  };
+  try {
+    const ro = await make();
+    ro.applyPermissions({ readonly: true, hosts: [], allHosts: false, skip: false });
+    await ro.exec("run", { command: "ls /srv" });
+    assertEquals(prompts.length, 0, "--allow-read-only: reads run unasked");
+    await ro.exec("run", { command: "rm -rf /srv/x" });
+    assertEquals(prompts.length, 1, "...and writes still ask");
+
+    const skip = await make();
+    skip.applyPermissions({ readonly: false, hosts: [], allHosts: false, skip: true });
+    prompts.length = 0;
+    await skip.exec("run", { command: "rm -rf /srv/x" });
+    await skip.exec("sudo", { command: "systemctl restart docker" });
+    assertEquals(prompts.length, 0, "--dangerously-skip-permissions: nothing asks");
+
+    const hosts = await make();
+    hosts.applyPermissions({
+      readonly: false,
+      hosts: ["192.168.1.70"],
+      allHosts: false,
+      skip: false,
+    });
+    (hosts as any).host = {
+      handle: () => Promise.reject(new Error("no ssh in tests")),
+      info: () => Promise.resolve({}),
+    };
+    prompts.length = 0;
+    await hosts.exec("ssh", { destination: "admin@192.168.1.70" }).catch(() => {});
+    assertEquals(prompts.length, 0, "an allowed host connects without asking");
+    await hosts.exec("ssh", { destination: "admin@192.168.1.77" }).catch(() => {});
+    assertEquals(prompts.length, 1, "another host still asks");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});

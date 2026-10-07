@@ -5,6 +5,7 @@
 //   ai-bootstrap --far        far agent (started by ai-bootstrap over ssh)
 //   ai-bootstrap --version
 
+import { NO_PERMISSIONS, parsePermissionFlags, type Permissions } from "./tools.ts";
 import { cleanUpgradeLeftovers, upgradeMain } from "./upgrade.ts";
 import { Transcript } from "./transcript.ts";
 import { checkForUpdate } from "./update.ts";
@@ -36,7 +37,7 @@ import { TuiFrontend } from "./frontends/tui.ts";
 import { GuiFrontend } from "./frontends/gui.ts";
 import { windowMain } from "./frontends/window.ts";
 
-async function interactive(mode: UiMode): Promise<number> {
+async function interactive(mode: UiMode, perms: Permissions = NO_PERMISSIONS): Promise<number> {
   // Binaries an upgrade on Windows renamed aside.
   void cleanUpgradeLeftovers();
   // ^C at the TUI's input arrives as a key, not a signal: it goes through here too.
@@ -134,6 +135,12 @@ async function interactive(mode: UiMode): Promise<number> {
   }
 
   const session = new Session(router, memory, new McpManager(), makeNearAsker());
+  session.applyPermissions(perms);
+  if (perms.skip) {
+    warn(
+      "--dangerously-skip-permissions: nothing will ask before it runs, sudo and dangerous commands included.",
+    );
+  }
   session.fullFailure = failure;
   if (Deno.env.get("AIBOOT_HISTORY") !== "0") {
     session.transcript = new Transcript();
@@ -241,7 +248,11 @@ export function uiMode(
   return terminal && modernTerminal(env) ? "tui" : "repl";
 }
 
-async function main(args: string[]): Promise<number> {
+async function main(argv: string[]): Promise<number> {
+  // Permission flags may come anywhere; the rest picks what to do.
+  const { perms, rest: args } = argv.some((a) => /^--(allow-|dangerously-)/.test(a))
+    ? parsePermissionFlags(argv)
+    : { perms: NO_PERMISSIONS, rest: argv };
   // ssh runs us as SSH_ASKPASS with the prompt as the only argument.
   if (args[0] === "--askpass") return await askpassMain(args.slice(1).join(" "));
   if (Deno.env.get("AIBOOT_ASKPASS_TOKEN") && !args[0]?.startsWith("--")) {
@@ -280,10 +291,10 @@ async function main(args: string[]): Promise<number> {
     case "--gui":
     case "--tui":
     case "--repl":
-      return await interactive(uiMode(args[0]));
+      return await interactive(uiMode(args[0]), perms);
     default:
       console.log(
-        "usage: ai-bootstrap [--gui | --tui | --repl | upgrade [VERSION] [--force] | --version | --paths | --docs | --search WORDS]",
+        "usage: ai-bootstrap [--gui | --tui | --repl] [--allow-read-only] [--allow-host HOST]... [--allow-all-hosts] [--dangerously-skip-permissions]\n       ai-bootstrap upgrade [VERSION] [--force] | --version | --paths | --docs | --search WORDS",
       );
       return 2;
   }

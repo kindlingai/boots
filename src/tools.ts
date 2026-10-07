@@ -332,6 +332,50 @@ export function inScratch(path: string, scratch?: string): boolean {
     path.length > scratch.length + 1;
 }
 
+/** No permission flags: everything asks as usual. */
+export const NO_PERMISSIONS: Permissions = Object.freeze({
+  readonly: false,
+  hosts: [],
+  allHosts: false,
+  skip: false,
+}) as Permissions;
+
+/** Permission flags given on the command line. */
+export interface Permissions {
+  /** --allow-read-only: read-only commands run unasked from the start. */
+  readonly: boolean;
+  /** --allow-host HOST (repeatable): ssh to it without asking. */
+  hosts: string[];
+  /** --allow-all-hosts: ssh anywhere without asking. */
+  allHosts: boolean;
+  /** --dangerously-skip-permissions: nothing asks. */
+  skip: boolean;
+}
+
+/**
+ * Takes the permission flags out of the command line, wherever they are;
+ * returns them and the arguments left. An --allow-host without a host is
+ * an error.
+ */
+export function parsePermissionFlags(args: string[]): { perms: Permissions; rest: string[] } {
+  const perms: Permissions = { readonly: false, hosts: [], allHosts: false, skip: false };
+  const rest: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === "--allow-read-only") perms.readonly = true;
+    else if (a === "--allow-all-hosts") perms.allHosts = true;
+    else if (a === "--dangerously-skip-permissions") perms.skip = true;
+    else if (a === "--allow-host" || a.startsWith("--allow-host=")) {
+      const v = a.includes("=") ? a.slice(a.indexOf("=") + 1) : args[++i];
+      if (!v || v.startsWith("--")) {
+        throw new Error("--allow-host needs a host: --allow-host admin@gx10");
+      }
+      perms.hosts.push(...v.split(",").map((h) => h.trim()).filter(Boolean));
+    } else rest.push(a);
+  }
+  return { perms, rest };
+}
+
 /** Tools after which a repeated read is not pointless. */
 const CHANGES = new Set([
   "write_file",
@@ -849,11 +893,37 @@ export class Session {
     }
   }
 
+  /** --dangerously-skip-permissions: nothing asks. */
+  skipPermissions = false;
+  /** --allow-host: ssh to these (user@host or host) connects without asking. */
+  allowedHosts = new Set<string>();
+  /** --allow-all-hosts: every ssh hop connects without asking. */
+  allowAllHosts = false;
+
+  /** The command-line permission flags, applied to this session. */
+  applyPermissions(p: Permissions): void {
+    if (p.readonly) this.allowReadonly = true;
+    for (const h of p.hosts) this.allowedHosts.add(h);
+    if (p.allHosts) this.allowAllHosts = true;
+    if (p.skip) this.skipPermissions = true;
+  }
+
+  /** ssh to `dest` (user@host) was allowed on the command line. */
+  private hostAllowed(dest: string): boolean {
+    if (this.allowAllHosts) return true;
+    const host = dest.replace(/^.*@/, "");
+    return this.allowedHosts.has(dest) || this.allowedHosts.has(host);
+  }
+
   private async gate(
     what: string,
     key: string,
     kind: ApprovalKind = "normal",
   ): Promise<string | null> {
+    if (this.skipPermissions) {
+      say(`${what}  ${red("(permissions skipped)")}`);
+      return null;
+    }
     // Never remembered for root or anything dangerous: those ask every time.
     if (kind !== "dangerous" && kind !== "root" && this.always.has(key)) return null;
     const a = await approve(what, kind);
@@ -968,7 +1038,8 @@ export class Session {
           // The user may take it as it is, within a few seconds; otherwise
           // it goes back to the model as smaller steps.
           say(commandLine(loc, "$", cmd) + yellow("  (too complex to check)"));
-          accepted = await yesInTime(`    run it anyway?`, COMPLEX_GRACE_MS);
+          accepted = this.skipPermissions ||
+            await yesInTime(`    run it anyway?`, COMPLEX_GRACE_MS);
           if (!accepted) {
             say(yellow("    too complex to check; asking for smaller steps"));
             return Session.TOO_COMPLEX;
@@ -1030,7 +1101,8 @@ export class Session {
         let accepted = false;
         if (verdict === "complex") {
           say(commandLine(this.where(), "#", cmd) + yellow("  (too complex to check)"));
-          accepted = await yesInTime(`    run it anyway, as root?`, COMPLEX_GRACE_MS);
+          accepted = this.skipPermissions ||
+            await yesInTime(`    run it anyway, as root?`, COMPLEX_GRACE_MS);
           if (!accepted) {
             say(yellow("    too complex to check; asking for smaller steps"));
             return Session.TOO_COMPLEX;
@@ -1106,13 +1178,16 @@ export class Session {
           return `already on ${dest}. Location: ${this.where()}`;
         }
         const from = hop ? this.where() : this.stack[0].label;
-        const no = await this.gate(
-          `${commandLine(from, ">>", bold(dest))}${
-            hop ? ` ${yellow("(multi-hop, through " + this.here.label + ")")}` : ""
-          } (ai-bootstrap installs itself there)`,
-          `ssh\0${from}\0${dest}`,
-        );
-        if (no) return no;
+        const sshWhat = `${commandLine(from, ">>", bold(dest))}${
+          hop ? ` ${yellow("(multi-hop, through " + this.here.label + ")")}` : ""
+        } (ai-bootstrap installs itself there)`;
+        if (this.hostAllowed(dest) && !this.skipPermissions) {
+          // Allowed on the command line (--allow-host, --allow-all-hosts).
+          say(`${sshWhat}  ${dim("(allowed host)")}`);
+        } else {
+          const no = await this.gate(sshWhat, `ssh\0${from}\0${dest}`);
+          if (no) return no;
+        }
         // Not a hop: go back to the local machine first and connect from there.
         const left: string[] = [];
         while (!hop && this.stack.length > 1) {
