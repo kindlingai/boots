@@ -12,7 +12,10 @@ import {
   Interrupted,
   interruptNow,
   progressText,
+  setPrefill,
+  steer,
   type Style,
+  takePrefill,
 } from "../frontend.ts";
 
 const enc = new TextEncoder();
@@ -50,6 +53,19 @@ export class LineFrontend implements Frontend {
   private reading = false;
   private frame = 0;
   private timer: ReturnType<typeof setInterval> | undefined;
+
+  constructor() {
+    this.input.onDraft = (d) => {
+      this.draft = d;
+      this.drawLive();
+    };
+    this.input.onSend = (text) => {
+      this.print(
+        `${STYLE.bold("›")} ${text}  ${dim("(queued: the model reads it after its current step)")}`,
+      );
+      steer(text);
+    };
+  }
 
   emit(e: EngineEvent): void {
     switch (e.type) {
@@ -112,14 +128,17 @@ export class LineFrontend implements Frontend {
   async readLine(
     prompt: string,
     hidden = false,
-    _choices?: Choice[],
+    choices?: Choice[],
     signal?: AbortSignal,
   ): Promise<string | null> {
     this.clearLive();
     this.input.unwatch();
     this.reading = true;
+    const free = !choices && !hidden;
+    const handed = takePrefill();
+    if (handed && !free) setPrefill(handed);
     try {
-      return await this.input.readLine(prompt, hidden, signal);
+      return await this.input.readLine(prompt, hidden, signal, free, free ? handed : "");
     } finally {
       this.reading = false;
       this.tick();
@@ -138,12 +157,16 @@ export class LineFrontend implements Frontend {
     this.drawLive();
   }
 
+  /** What was typed while the model works (sent with Enter). */
+  private draft = "";
+
   private liveText(): string | null {
     const f = cyan(FRAMES[this.frame % FRAMES.length]);
     const p = [...this.progress.values()].at(-1);
-    if (p) return `${f} ${p.label}  ${dim(progressText(p))}`;
+    const typed = this.draft ? `  › ${this.draft}` : "";
+    if (p) return `${f} ${p.label}  ${dim(progressText(p))}${typed}`;
     if (this.busy) {
-      return `${f} ${dim(busyText(this.busy))}`;
+      return `${f} ${dim(busyText(this.busy))}${typed}`;
     }
     return null;
   }
@@ -238,13 +261,35 @@ class Input {
         await this.fill();
         // A prompt opened while we waited: what arrived is the prompt's.
         if (!this.watching) break;
-        // ^C and a lone Esc are ours; anything else typed waits for the prompt.
+        // ^C and a lone Esc are ours; text typed is a steering draft (Enter
+        // sends it to the model); other keys wait for the prompt.
         const got = this.buf.splice(0);
         const kept: number[] = [];
-        for (const b of got) {
+        for (let k = 0; k < got.length; k++) {
+          const b = got[k];
           if (b === 3) interruptNow("ctrl-c");
           else if (b === 27 && got.length === 1) {
             if (this.esc()) interruptNow("esc");
+          } else if (b === 27) {
+            // An escape sequence (arrows...): not text.
+            k++;
+            if (got[k] === 91 || got[k] === 79) {
+              while (k + 1 < got.length && got[k + 1] < 64) k++;
+            }
+            k++;
+          } else if (b === 13 || b === 10) {
+            const text = dec.decode(new Uint8Array(this.draft)).trim();
+            this.draft = [];
+            this.onDraft("");
+            if (text) this.onSend(text);
+          } else if (b === 127 || b === 8) {
+            const chars = [...dec.decode(new Uint8Array(this.draft))];
+            chars.pop();
+            this.draft = [...new TextEncoder().encode(chars.join(""))];
+            this.onDraft(chars.join(""));
+          } else if (b >= 32) {
+            this.draft.push(b);
+            this.onDraft(dec.decode(new Uint8Array(this.draft)));
           } else kept.push(b);
         }
         this.buf.unshift(...kept);
@@ -252,9 +297,17 @@ class Input {
     })().catch(() => {});
   }
 
+  /** Text typed while something ran, not yet sent. */
+  private draft: number[] = [];
+  /** The draft changed (for the live line). */
+  onDraft: (text: string) => void = () => {};
+  /** Enter on a draft: a message for the model. */
+  onSend: (text: string) => void = () => {};
+
   unwatch(): void {
     if (!this.watching) return;
     this.watching = false;
+
     if (!this.prompting) {
       try {
         Deno.stdin.setRaw(false);
@@ -299,10 +352,29 @@ class Input {
     return this.buf.length ? this.buf.shift()! : null;
   }
 
-  /** Reads one line. Returns null at EOF or when `signal` aborts. Ctrl-C throws Interrupted. */
-  readLine(prompt: string, hidden = false, signal?: AbortSignal): Promise<string | null> {
+  /**
+   * Reads one line. Returns null at EOF or when `signal` aborts. Ctrl-C
+   * throws Interrupted. A free-text prompt starts with `prefill` and any
+   * unsent draft typed in; a question (y/n...) leaves the draft for later.
+   */
+  readLine(
+    prompt: string,
+    hidden = false,
+    signal?: AbortSignal,
+    free = false,
+    prefill = "",
+  ): Promise<string | null> {
     const run = async () => {
       if (signal?.aborted) return null;
+      if (free) {
+        const typed = [
+          ...new TextEncoder().encode(prefill ? `${prefill}${this.draft.length ? " " : ""}` : ""),
+          ...this.draft,
+        ];
+        this.buf.unshift(...typed);
+        this.draft = [];
+        this.onDraft("");
+      }
       const tty = Deno.stdin.isTerminal();
       write(prompt);
       if (!tty) {

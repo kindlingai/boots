@@ -203,8 +203,14 @@ export function refuseInRun(cmd: string): string | null {
   if (advice) return `ssh with root: ${advice}`;
   const cmds = commands(cmd);
   if (cmds.some((w) => w[0] === "sudo") || escalates(cmd)) {
-    return "running as root inside run (sudo, doas, su or pkexec, also inside xargs, find -exec, sh -c or ssh host '...'): use the sudo tool, with the command without the word sudo, so the user approves it; for another machine, connect with the ssh tool first. (Inspection rarely needs root: try it without first.)" +
-      splitAdvice(cmd);
+    // Lead with what to do: a model told only "no" tends to drop the root part.
+    const split = sudoSplit(cmd);
+    if (split) {
+      return `running as root inside run. Do this now: call the sudo tool with command \`${split.root}\`${
+        split.rest ? `, then call run with \`${split.rest}\`` : ""
+      }. (Root goes through the sudo tool, so the user sees and approves it.)`;
+    }
+    return "running as root inside run (sudo, doas, su or pkexec, also inside xargs, find -exec, sh -c or ssh host '...'): use the sudo tool, with the command without the word sudo, so the user approves it; for another machine, connect with the ssh tool first. (Inspection rarely needs root: try it without first.)";
   }
   if (cmds.some(startsServer)) {
     return "this starts a model server, which would block until it times out. Write the command into a start script instead: for the model ai-bootstrap should use, start-full.sh in the startup scripts folder, started with start_full_model. For another server, start-<name>.sh in that machine's startup scripts folder, run in the background with its output to a log: nohup sh <script> > <name>.log 2>&1 &";
@@ -250,19 +256,15 @@ export function listItems(cmd: string): string[] {
 }
 
 /**
- * For a line that mixes `sudo …` items with others: the split to make, the
- * root part for the sudo tool and the rest for run. "" when it does not
- * split that simply.
+ * For a line of `sudo …` items and others: the root part for the sudo tool
+ * and the rest for run. null when it does not split that simply.
  */
-function splitAdvice(cmd: string): string {
+export function sudoSplit(cmd: string): { root: string; rest: string } | null {
   const items = listItems(cmd);
   const root = items.filter((t) => /^sudo\s/.test(t));
   const rest = items.filter((t) => !/^sudo\s/.test(t));
-  if (!root.length || root.some((t) => /^sudo\s+-/.test(t)) || items.length < 2) return "";
-  const asRoot = root.map((t) => t.replace(/^sudo\s+/, "")).join("; ");
-  return ` Split this one: the sudo tool with \`${asRoot}\`${
-    rest.length ? `, then run with \`${rest.join("; ")}\`` : ""
-  }.`;
+  if (!root.length || root.some((t) => /^sudo\s+-/.test(t))) return null;
+  return { root: root.map((t) => t.replace(/^sudo\s+/, "")).join("; "), rest: rest.join("; ") };
 }
 
 /** ssh options that take a value (the next word, or the rest of the same word). */
@@ -935,7 +937,14 @@ export class Session {
         const refused = refuseInRun(cmd);
         if (refused) {
           say(commandLine(loc, "$", cmd));
-          say(yellow(`    not run: ${refused.split(":")[0]}`));
+          const split = sudoSplit(cmd);
+          say(
+            yellow(`    not run: ${split ? "sudo inside run; split it:" : refused.split(":")[0]}`),
+          );
+          if (split) {
+            say(dim("      ") + commandLine(loc, "#", split.root));
+            if (split.rest) say(dim("      ") + commandLine(loc, "$", split.rest));
+          }
           return `Not run: ${refused}`;
         }
         // One ssh by hand to a machine is fine; a second means it should be a hop.

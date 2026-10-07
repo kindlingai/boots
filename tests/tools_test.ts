@@ -492,10 +492,13 @@ Deno.test("sudo inside run: refused, with the exact split into the sudo tool and
   const r = refuseInRun(cmd)!;
   assertStringIncludes(
     r,
-    "the sudo tool with `docker ps --format '{{.Names}} {{.Status}}' | head`",
+    "the sudo tool with command `docker ps --format '{{.Names}} {{.Status}}' | head`",
   );
-  assertStringIncludes(r, "then run with `ls ~/glm/compose/ 2>/dev/null; ls ~/glm/ | head`");
-  assert(!refuseInRun("sudo -u bob ls; ls")!.includes("Split"), "sudo with options: no guess");
+  assertStringIncludes(r, "then call run with `ls ~/glm/compose/ 2>/dev/null; ls ~/glm/ | head`");
+  assert(
+    !refuseInRun("sudo -u bob ls; ls")!.includes("Do this now"),
+    "sudo with options: no guess",
+  );
 });
 
 Deno.test("too complex to check: the user can take it within the grace time; else smaller steps", async () => {
@@ -629,4 +632,17 @@ Deno.test("write_file into $BOOTS_SCRATCH asks nothing; sudo sees the scratch pa
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
+});
+
+Deno.test("sudo inside run: the refusal leads with the split to make", async () => {
+  const { refuseInRun } = await import("../src/tools.ts");
+  const r = refuseInRun(
+    `sudo docker images | grep -iE 'spark-glm53|IMAGE' ; ls /srv/models 2>/dev/null | head; ls ~/models | head`,
+  )!;
+  assert(r.startsWith("running as root inside run. Do this now: call the sudo tool with command"));
+  assertStringIncludes(r, "`docker images | grep -iE 'spark-glm53|IMAGE'`");
+  assertStringIncludes(
+    r,
+    "then call run with `ls /srv/models 2>/dev/null | head; ls ~/models | head`",
+  );
 });

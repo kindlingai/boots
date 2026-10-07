@@ -16,7 +16,9 @@ import {
   type Frontend,
   interruptNow,
   progressText,
+  steer,
   type Style,
+  takePrefill,
 } from "../frontend.ts";
 import type { Mood } from "./bot.ts";
 import { page } from "./gui_page.ts";
@@ -30,6 +32,8 @@ interface Pending {
   prompt: string;
   hidden: boolean;
   choices?: Choice[];
+  /** Handed back by a stop: shown in the input box. */
+  prefill?: string;
   resolve: (s: string | null) => void;
   reject: (e: Error) => void;
 }
@@ -41,7 +45,9 @@ export interface GuiState {
   name: string;
   busy: { label: string; t0: number; note?: string } | null;
   progress: { label: string; text: string }[];
-  prompt: { id: number; prompt: string; hidden: boolean; choices?: Choice[] } | null;
+  prompt:
+    | { id: number; prompt: string; hidden: boolean; choices?: Choice[]; prefill?: string }
+    | null;
   flash: { mood: Mood; until: number } | null;
   talkedAt: number;
   streaming: boolean;
@@ -62,6 +68,7 @@ export type ToPage =
 /** Messages from the page. */
 export type FromPage =
   | { t: "answer"; id: number; text: string }
+  | { t: "steer"; text: string }
   | { t: "stop" }
   | { t: "quit" };
 
@@ -191,6 +198,13 @@ export class GuiFrontend implements Frontend {
           : `${p.prompt.trim()} ${p.hidden ? "*".repeat(Math.min(m.text.length, 8)) : m.text}`,
       );
       this.finish(m.text);
+    } else if (m.t === "steer" && !this.pending) {
+      const v = String(m.text ?? "").trim();
+      if (v) {
+        this.push("user", v);
+        this.push("dim", "(queued: the model reads it after its current step)");
+        steer(v);
+      }
     } else if (m.t === "stop") {
       // The Stop button, Esc Esc or ^C in the page: stops like Esc Esc in the
       // TUI (cancels a tool's question or what runs; never quits).
@@ -286,6 +300,7 @@ export class GuiFrontend implements Frontend {
         resolve,
         reject,
       };
+      if (!choices && !hidden) p.prefill = takePrefill() || undefined;
       // Out of time: closed unanswered, whether open or still waiting its turn.
       signal?.addEventListener("abort", () => {
         if (this.pending === p) {
@@ -368,6 +383,7 @@ export class GuiFrontend implements Frontend {
           prompt: this.pending.prompt,
           hidden: this.pending.hidden,
           choices: this.pending.choices,
+          prefill: this.pending.prefill,
         }
         : null,
       flash: this.flash,

@@ -224,10 +224,25 @@ function applyState(s) {
   $("form").classList.toggle("asking", asking);
   // With choices, the question alone ("run it?"); the buttons say the rest.
   $("prompt").textContent = !pr ? "" : asking ? pr.prompt.replace(/\\[.*$/, "").trim() : pr.prompt.trim();
-  input.disabled = !pr;
+  // Always open: without a question, what is typed steers the model while it works.
+  input.disabled = false;
+  input.placeholder = pr ? "" : (s.busy || s.streaming ? "type to steer the model; Enter sends it" : "");
   input.type = pr && pr.hidden ? "password" : "text";
   if ((pr ? pr.id : null) !== before) {
-    input.value = "";
+    // A question (y/n, a password) sets a steering draft aside and gives it
+    // back when it closes; a free-text prompt keeps it, after what a stop
+    // handed back.
+    const question = pr && (pr.hidden || (pr.choices && pr.choices.length));
+    if (question) {
+      if (input.value) draft = input.value;
+      input.value = "";
+    } else if (pr) {
+      input.value = [pr.prefill || "", input.value || draft].filter(Boolean).join(" ");
+      draft = "";
+    } else {
+      input.value = draft;
+      draft = "";
+    }
     hpos = -1;
     // [y]es [n]o ...: one button per choice.
     const box = $("choices");
@@ -277,8 +292,18 @@ function flush() {
   while (ws && ws.readyState === WebSocket.OPEN && outbox.length) ws.send(outbox.shift());
 }
 
+let draft = "";
+
 function answer(text) {
-  if (!state || !state.prompt) return;
+  if (!state) return;
+  if (!state.prompt) {
+    // Nothing asked: a message for the model, read after its current step.
+    if (!text.trim()) return;
+    if (history[history.length - 1] !== text) history.push(text);
+    send({ t: "steer", text });
+    $("input").value = "";
+    return;
+  }
   if (!state.prompt.hidden && text.trim() && history[history.length - 1] !== text) history.push(text);
   send({ t: "answer", id: state.prompt.id, text });
 }

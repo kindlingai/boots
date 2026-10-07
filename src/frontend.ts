@@ -299,3 +299,31 @@ export function wrapAnsi(text: string, w: number): string[] {
   }
   return out;
 }
+
+/** Messages the user sent while the model was working, oldest first. */
+const steering: string[] = [];
+
+/** Queues a message typed while the model works: it reads it after its current step. */
+export function steer(text: string): void {
+  const t = text.trim();
+  if (t) steering.push(t);
+}
+
+/** Takes the queued messages (and empties the queue). */
+export function takeSteering(): string[] {
+  return steering.splice(0);
+}
+
+/** Text for the next free-text prompt's input box (what a stop handed back). */
+let prefill = "";
+
+export function setPrefill(text: string): void {
+  prefill = text;
+}
+
+/** The prefill, once: a free-text prompt takes it as it opens. */
+export function takePrefill(): string {
+  const t = prefill;
+  prefill = "";
+  return t;
+}

@@ -66,3 +66,36 @@ Deno.test('update_status replaces "thinking..." in the bubble while working', ()
   t.emit({ type: "activity", text: null });
   assert(frame(t).slice(0, 8).join("\n").includes("thinking..."));
 });
+
+Deno.test("typing while the model works: Enter queues it; drafts survive questions; a stop hands text back", async () => {
+  const { takeSteering, setPrefill } = await import("../src/frontend.ts");
+  const t = new TuiFrontend({ title: "test", onInterrupt() {} });
+  (t as any).out = () => {};
+  const type = (s: string) => {
+    for (const ch of s) {
+      (t as any).edit(() => {
+        const chars = [...(t as any).buf];
+        chars.splice((t as any).cursor, 0, ch);
+        (t as any).buf = chars.join("");
+        (t as any).cursor++;
+      });
+    }
+  };
+  // No prompt open: typed text is a message for the model.
+  type("check rank 2 first");
+  (t as any).enter();
+  assertEquals(takeSteering(), ["check rank 2 first"]);
+  // A draft, then an approval opens: set aside, then back.
+  type("also look at");
+  const q = t.readLine("run it? ", false, [{ key: "y", label: "Yes" }]);
+  assertEquals((t as any).buf, "", "the question starts empty");
+  (t as any).finish("y");
+  await q;
+  assertEquals((t as any).buf, "also look at", "the draft is back");
+  // The main prompt after a stop: what was handed back, then the draft.
+  setPrefill("use port 9000");
+  const main = t.readLine("local> ");
+  assertEquals((t as any).buf, "use port 9000 also look at");
+  (t as any).finish("x");
+  await main;
+});

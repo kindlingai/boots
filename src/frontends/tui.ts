@@ -20,7 +20,10 @@ import {
   Interrupted,
   interruptNow,
   progressText,
+  setPrefill,
+  steer,
   type Style,
+  takePrefill,
   tidy,
   wrapAnsi,
 } from "../frontend.ts";
@@ -89,6 +92,8 @@ type ProgressEv = Extract<EngineEvent, { type: "progress" }>;
 interface Pending {
   prompt: string;
   hidden: boolean;
+  /** The answers it offers: a question, not free text. */
+  choices?: Choice[];
   resolve: (s: string | null) => void;
   reject: (e: Error) => void;
 }
@@ -256,12 +261,12 @@ export class TuiFrontend implements Frontend {
   readLine(
     prompt: string,
     hidden = false,
-    _choices?: Choice[],
+    choices?: Choice[],
     signal?: AbortSignal,
   ): Promise<string | null> {
     if (signal?.aborted) return Promise.resolve(null);
     return new Promise((resolve, reject) => {
-      const p: Pending = { prompt: plain(prompt), hidden, resolve, reject };
+      const p: Pending = { prompt: plain(prompt), hidden, choices, resolve, reject };
       // Out of time: closed unanswered, whether open or still waiting its turn.
       signal?.addEventListener("abort", () => {
         if (this.pending === p) {
@@ -280,8 +285,24 @@ export class TuiFrontend implements Frontend {
     });
   }
 
+  /** A steering draft set aside while a prompt is open. */
+  private draft: { buf: string; cursor: number } | null = null;
+
   private begin(p: Pending): void {
     this.pending = p;
+    const handed = takePrefill();
+    if (!p.choices && !p.hidden) {
+      // A free-text prompt (the main one): the draft carries over, after what
+      // a stop handed back.
+      this.buf = [handed, this.buf, this.draft?.buf ?? ""].filter(Boolean).join(" ");
+      this.draft = null;
+      this.cursor = [...this.buf].length;
+      this.historyAt = -1;
+      this.schedule();
+      return;
+    }
+    if (handed) setPrefill(handed);
+    if (this.buf && !this.draft) this.draft = { buf: this.buf, cursor: this.cursor };
     this.buf = "";
     this.cursor = 0;
     this.historyAt = -1;
@@ -296,6 +317,14 @@ export class TuiFrontend implements Frontend {
     else p.resolve(value);
     const next = this.queue.shift();
     if (next) this.begin(next);
+    else if (this.draft) {
+      // Back to the draft the prompt interrupted.
+      ({ buf: this.buf, cursor: this.cursor } = this.draft);
+      this.draft = null;
+    } else {
+      this.buf = "";
+      this.cursor = 0;
+    }
     this.schedule();
   }
 
@@ -371,8 +400,9 @@ export class TuiFrontend implements Frontend {
     }
   }
 
+  /** Typing works whether or not a prompt is open: without one, it is a steering draft. */
   private edit(f: () => void): void {
-    if (this.pending) f();
+    f();
   }
 
   private escape(seq: string): void {
@@ -399,14 +429,14 @@ export class TuiFrontend implements Frontend {
         this.scroll = Math.max(0, this.scroll - (this.bodyHeight() - 1));
         break;
       case "A":
-        if (this.pending && !this.pending.hidden && this.history.length) {
+        if (!this.pending?.hidden && this.history.length) {
           this.historyAt = Math.min(this.history.length - 1, this.historyAt + 1);
           this.buf = this.history[this.history.length - 1 - this.historyAt];
           this.cursor = [...this.buf].length;
         }
         break;
       case "B":
-        if (this.pending && this.historyAt >= 0) {
+        if (this.historyAt >= 0) {
           this.historyAt--;
           this.buf = this.historyAt < 0
             ? ""
@@ -419,7 +449,19 @@ export class TuiFrontend implements Frontend {
 
   private enter(): void {
     const p = this.pending;
-    if (!p) return;
+    if (!p) {
+      // While the model works: a message it reads after its current step.
+      const v = this.buf.trim();
+      if (!v) return;
+      this.push("user", v);
+      this.push("dim", "  (queued: the model reads it after its current step)");
+      if (v !== this.history.at(-1)) this.history.push(v);
+      this.buf = "";
+      this.cursor = 0;
+      this.scroll = 0;
+      steer(v);
+      return;
+    }
     const v = this.buf;
     this.push("user", `${p.prompt.trim()} ${p.hidden ? "*".repeat(Math.min(v.length, 8)) : v}`);
     if (!p.hidden && v.trim() && v !== this.history.at(-1)) this.history.push(v);
@@ -589,14 +631,25 @@ export class TuiFrontend implements Frontend {
       const visible = chars.slice(startAt, startAt + room).join("");
       rows.push(` ${COLOR.bold(prompt)}${visible}`);
       cursorCol = 2 + [...prompt].length + (this.cursor - startAt);
-    } else rows.push("");
+    } else {
+      // While the model works: a message for it, sent with Enter.
+      const prompt = "› ";
+      const room = w - 4;
+      const chars = [...this.buf];
+      const startAt = Math.max(0, this.cursor - room + 1);
+      const visible = chars.slice(startAt, startAt + room).join("");
+      rows.push(
+        ` ${COLOR.dim(prompt)}${visible || COLOR.dim("type to steer the model; Enter sends it")}`,
+      );
+      cursorCol = 2 + [...prompt].length + (this.cursor - startAt);
+    }
 
     // One write per frame: home, each row cleared and drawn, cursor to the input.
     let frame = `${ESC}H`;
     rows.slice(0, h).forEach((r, i) => {
       frame += `${ESC}${i + 1};1H${ESC}2K${r}`;
     });
-    frame += this.pending ? `${ESC}${h};${cursorCol}H${ESC}?25h` : `${ESC}?25l`;
+    frame += `${ESC}${h};${cursorCol}H${ESC}?25h`;
     this.out(frame);
   }
 }

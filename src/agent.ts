@@ -8,7 +8,7 @@ import { BASE_TOOLS, describe, renderGoal, type Session, TOOLS } from "./tools.t
 import { currentTier, loadTemplates, systemPrompt, type Templates, tierOf } from "./prompts.ts";
 import { secrets } from "./secrets.ts";
 import { ask, bold, dim, Interrupted, plain, red, say, spinner, warn } from "./ui.ts";
-import { emit, EscInterrupted, tidy } from "./frontend.ts";
+import { emit, EscInterrupted, setPrefill, takeSteering, tidy } from "./frontend.ts";
 import { clipTools, compact, isContextError, SUMMARY_PROMPT } from "./compact.ts";
 import { Backoff } from "./backoff.ts";
 import { activeGoals, type Goal, normalizeGoals, parseGoals } from "./memory.ts";
@@ -260,6 +260,23 @@ export class Agent {
     })`;
   }
 
+  /**
+   * Messages the user sent while the model worked, added to the conversation
+   * (after the latest tool results). True when there were any.
+   */
+  absorbSteering(): boolean {
+    const notes = takeSteering();
+    if (!notes.length) return false;
+    this.push({
+      role: "user",
+      content: `(While you were working, the user wrote:)\n${
+        notes.join("\n")
+      }\n(Take it into account from here on.)`,
+    });
+    this.quietSince = Date.now();
+    return true;
+  }
+
   /** When the model last said something the user could read (or the turn began). */
   private quietSince = 0;
   /** The current turn's latest steps, for the progress updates. */
@@ -376,7 +393,11 @@ export class Agent {
   }
 
   /** ^C during tools: this call's result, "not run" for the rest, and the turn ends. */
+  /** The last turn ended because the user stopped it. */
+  interrupted = false;
+
   private stopTurn(calls: { id: string }[], result: string): void {
+    this.interrupted = true;
     const [first, ...rest] = calls;
     this.push({ role: "tool", tool_call_id: first.id, content: result });
     for (const r of rest) {
@@ -462,6 +483,7 @@ export class Agent {
 
   async turn(userText: string): Promise<void> {
     this.busy = true;
+    this.interrupted = false;
     try {
       await this.steps(userText);
     } finally {
@@ -494,6 +516,8 @@ export class Agent {
       this.stepCount++;
       this.expireStatus();
       await this.maybeUpdate();
+      // What the user typed while the model worked: after the last tool results.
+      if (step > 0) this.absorbSteering();
       this.abort = new AbortController();
       let reply: Reply | undefined;
       let printed = false;
@@ -542,6 +566,7 @@ export class Agent {
       } catch (e) {
         if (this.abort.signal.aborted) {
           if (printed) emit({ type: "assistant", phase: "end" });
+          this.interrupted = true;
           say("[interrupted]", "dim");
           this.push({ role: "user", content: "(the user interrupted your last reply)" });
           return;
@@ -775,6 +800,14 @@ export async function repl(agent: Agent): Promise<void> {
   }
   while (true) {
     let line: string | null;
+    // Sent while the last turn was ending: that is the next turn. After a
+    // stop, it goes back into the input box instead, to edit or send.
+    const queued = takeSteering();
+    if (queued.length && !agent.interrupted) {
+      await agent.turn(queued.join("\n"));
+      continue;
+    }
+    if (queued.length) setPrefill(queued.join(" "));
     try {
       line = await ask(`${bold(s.where())}${s.mode === "auto" ? dim(" [auto]") : ""}> `);
     } catch (e) {

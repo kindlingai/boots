@@ -631,3 +631,29 @@ Deno.test("after a quiet stretch, the model sums up its recent steps (thinking o
     await done();
   }
 });
+
+Deno.test("a message typed while the model works is read after the latest tool results", async () => {
+  const { steer } = await import("../src/frontend.ts");
+  Deno.env.set("AIBOOT_BACKOFF", "0");
+  const { m, agent, done } = await session("gpt-oss-120b", [
+    { calls: [{ name: "update_status", args: { status: "starting rank 0" } }] },
+    { content: "Using port 9000." },
+  ]);
+  try {
+    steer("use port 9000, not 8000");
+    await agent.turn("bring up the server");
+    const asks = m.seen.filter((b) => b.tools);
+    // Not in the first request (it was queued before any step ran)...
+    assert(!JSON.stringify(asks[0].messages).includes("port 9000"));
+    // ...but right after the tool result in the next.
+    const msgs = asks[1].messages;
+    const at = msgs.findIndex((x: any) => x.role === "user" && x.content.includes("use port 9000"));
+    assert(at > 0, "steering message present");
+    assertEquals(msgs[at - 1].role, "tool");
+    assertStringIncludes(msgs[at].content, "While you were working, the user wrote");
+    assertEquals(agent.interrupted, false);
+  } finally {
+    Deno.env.delete("AIBOOT_BACKOFF");
+    await done();
+  }
+});
