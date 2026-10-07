@@ -1,6 +1,7 @@
 // The conversation loop: ask what the user wants, plan, then execute step
 // by step with tools.
 
+import { languageRule } from "./platform.ts";
 import type { Message, Reply } from "./llm.ts";
 import { type ChatShape, type Endpoint, LLMError } from "./llm.ts";
 import { BASE_TOOLS, describe, renderGoal, type Session, TOOLS } from "./tools.ts";
@@ -296,7 +297,7 @@ export class Agent {
       this.s.router.thinkingOffOnce = true;
       const r = await this.s.router.chat(
         () => [
-          { role: "system", content: UPDATE_PROMPT },
+          { role: "system", content: `${UPDATE_PROMPT}\n\n${languageRule()}` },
           {
             role: "user",
             content: `The user asked: ${
@@ -352,7 +353,10 @@ export class Agent {
       this.history,
       async (text) =>
         (await this.s.router.chat(
-          () => [{ role: "system", content: SUMMARY_PROMPT }, { role: "user", content: text }],
+          () => [
+            { role: "system", content: `${SUMMARY_PROMPT}\n\n${languageRule()}` },
+            { role: "user", content: text },
+          ],
           [],
           {},
           signal,
@@ -415,6 +419,7 @@ export class Agent {
         models: this.s.here.info.models,
         scripts: this.s.here.info.scripts,
         free_port: this.s.here.info.freePort,
+        scratch: this.s.here.info.scratch,
         hardware: this.s.here.info.hardware,
         docs,
         memories,

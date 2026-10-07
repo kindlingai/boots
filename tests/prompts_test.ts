@@ -263,3 +263,12 @@ Deno.test("the restored note fades: its 'you are local now' only while that is s
   (a as any).turnsSinceRestore = 2;
   assert(!(await a.system())().includes("Restored conversation"), "gone after two turns");
 });
+
+Deno.test("the language rule leads the full and the base prompt", async () => {
+  const { languageRule } = await import("../src/platform.ts");
+  const t = await loadTemplates();
+  for (const model of ["gpt-oss-120b", "qwen3-4b"]) {
+    const p = systemPrompt(t, new Router(ep(model)), vars);
+    assert(p.startsWith(languageRule()), model);
+  }
+});

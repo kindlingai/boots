@@ -319,6 +319,17 @@ const QUIET_TOOLS: Record<string, (a: any) => string> = {
 };
 
 /** The same command again within this window is not run (the model is going in circles). */
+/**
+ * A path in the scratch directory: $BOOTS_SCRATCH/..., or under its real
+ * path, and without "..". (The host checks again, symlinks resolved.)
+ */
+export function inScratch(path: string, scratch?: string): boolean {
+  if (/(^|[\\/])\.\.([\\/]|$)/.test(path)) return false;
+  if (/^\$\{?BOOTS_SCRATCH\}?\/[^/]/.test(path)) return true;
+  return !!scratch && path.startsWith(scratch.replace(/[\\/]$/, "") + "/") &&
+    path.length > scratch.length + 1;
+}
+
 /** Tools after which a repeated read is not pointless. */
 const CHANGES = new Set([
   "write_file",
@@ -983,7 +994,11 @@ export class Session {
         return this.remember(`${loc}\0${cmd}`, this.render(r));
       }
       case "sudo": {
-        const cmd = String(args.command ?? "").replace(/^\s*sudo\s+/, "");
+        // sudo resets the environment: $BOOTS_SCRATCH would be empty there
+        // (and "> $BOOTS_SCRATCH/x" a write to /x as root). Spelled out, it is
+        // judged as the path it is.
+        const cmd = String(args.command ?? "").replace(/^\s*sudo\s+/, "")
+          .replace(/\$\{?BOOTS_SCRATCH\}?/g, this.here.info.scratch ?? "$BOOTS_SCRATCH");
         // ssh from the sudo tool: root's identity, or root on the far side by
         // a route the user cannot see. Point at ssh first, then sudo there.
         if (commands(cmd).some((w) => w[0] === "ssh")) {
@@ -1043,7 +1058,12 @@ export class Session {
         const what = `${cyan(this.where())} write ${
           bold(String(args.path))
         } (${content.length} bytes${args.mode ? `, mode ${args.mode}` : ""})`;
-        if (this.autoActive()) {
+        // The scratch directory is the model's to write: no question (the
+        // host makes sure the file really lands inside it).
+        const scratch = inScratch(String(args.path ?? ""), this.here.info.scratch);
+        if (scratch) {
+          say(dim(`  ${plainText(what)}  (scratch)`));
+        } else if (this.autoActive()) {
           say(dim(`  ${plainText(what)}  (auto)`));
         } else {
           const no = await this.gate(
@@ -1056,6 +1076,7 @@ export class Session {
           path: String(args.path),
           b64: b64(content),
           mode: args.mode,
+          scratch,
         });
         return `wrote ${r.bytes} bytes to ${r.path}`;
       }

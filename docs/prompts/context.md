@@ -8,6 +8,9 @@
 - Models folder here (keep model weights in it): {{models}}
 - Startup scripts folder here: {{scripts}}
 - A random free port here, for the next server you set up: {{free_port}}
+- Scratch directory here, $BOOTS_SCRATCH: {{scratch}}. Yours to write without asking: notes,
+  scripts, captured output (write_file to $BOOTS_SCRATCH/name, or `cmd > $BOOTS_SCRATCH/out 2>&1`).
+  It is private and removed when ai-bootstrap exits; keep nothing there that must last.
 {{shell_note}}
 ## Knowledge and memory
 

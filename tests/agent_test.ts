@@ -615,7 +615,7 @@ Deno.test("after a quiet stretch, the model sums up its recent steps (thinking o
   }]);
   try {
     await agent.turn("bring up TP4");
-    const asks = m.seen.filter((b) => b.messages?.[0]?.content === UPDATE_PROMPT);
+    const asks = m.seen.filter((b) => b.messages?.[0]?.content?.startsWith(UPDATE_PROMPT));
     assertEquals(asks.length, 1, "one update after two quiet steps");
     assertEquals(asks[0].tools, undefined, "no tools");
     assertEquals(asks[0].chat_template_kwargs, { enable_thinking: false, thinking: false });

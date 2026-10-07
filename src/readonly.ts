@@ -535,8 +535,12 @@ export function stages(cmd: string): string[][] | null {
     }
     if (cmd[i] === "(") return false;
     skipSpaces();
-    const m = cmd.slice(i).match(/^[^\s;|&<>()]+/);
-    if (!m || m[0] !== "/dev/null") return false;
+    // /dev/null, or a file in the scratch directory ($BOOTS_SCRATCH/..., no "..").
+    const m = cmd.slice(i).match(/^"?(\$\{?BOOTS_SCRATCH\}?\/[A-Za-z0-9._\/-]+)"?|^[^\s;|&<>()]+/);
+    if (!m) return false;
+    if (m[1]) {
+      if (/(^|\/)\.\.(\/|$)/.test(m[1])) return false;
+    } else if (m[0] !== "/dev/null") return false;
     i += m[0].length;
     return true;
   };

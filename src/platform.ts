@@ -139,3 +139,39 @@ export function randomFreePort(): number {
   l.close();
   return port;
 }
+
+let language: { code: string; name: string } | null = null;
+
+/**
+ * The user's language, from the locale (LC_ALL, LC_MESSAGES, LANG, else the
+ * system's): its code and English name, e.g. { code: "en_US", name: "English" }.
+ * A bare C/POSIX locale counts as English.
+ */
+export function userLanguage(): { code: string; name: string } {
+  if (language) return language;
+  const env = ["LC_ALL", "LC_MESSAGES", "LANG"].map((k) => Deno.env.get(k) ?? "")
+    .find((v) => v && !/^(C|POSIX)(\.|$)/i.test(v));
+  let code = (env ?? "").replace(/[.@].*$/, "");
+  if (!code) {
+    try {
+      code = Intl.DateTimeFormat().resolvedOptions().locale;
+    } catch {
+      code = "en";
+    }
+  }
+  let name = "English";
+  try {
+    const base = code.split(/[-_]/)[0].toLowerCase();
+    name = new Intl.DisplayNames(["en"], { type: "language" }).of(base) ?? "English";
+  } catch {
+    // unknown code: English
+  }
+  language = { code: code || "en", name };
+  return language;
+}
+
+/** The line every prompt carries about the user's language. */
+export function languageRule(): string {
+  const l = userLanguage();
+  return `The user's language is ${l.name} (system locale ${l.code}). Write everything meant for the user in ${l.name}: replies, status lines, goal titles and plans. Do not switch to Chinese or any other language because a tool's output, a document or a model card is in it; change language only if the user writes to you in another one.`;
+}

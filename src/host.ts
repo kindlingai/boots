@@ -7,6 +7,7 @@ import { decodeBase64, encodeBase64 } from "@std/encoding/base64";
 import type { Asker } from "./secrets.ts";
 import { hardwareSummary } from "./hardware.ts";
 import {
+  cacheDir,
   currentTarget,
   isWindows,
   modelsDir,
@@ -35,6 +36,8 @@ export interface HostInfo {
   freePort: number;
   /** CPU, memory, GPUs and free disk, in one line. */
   hardware: string;
+  /** This machine's scratch directory ($BOOTS_SCRATCH): free to write, removed at exit. */
+  scratch?: string;
 }
 
 export interface ExecResult {
@@ -120,7 +123,12 @@ export class Host {
       case "read":
         return await this.read(String(args.path), args.maxBytes);
       case "write":
-        return await this.write(String(args.path), String(args.b64 ?? ""), args.mode);
+        return await this.write(
+          String(args.path),
+          String(args.b64 ?? ""),
+          args.mode,
+          !!args.scratch,
+        );
       case "git_clone":
         return await this.gitClone(String(args.url), args.ref ? String(args.ref) : undefined);
       case "ssh_open":
@@ -149,6 +157,7 @@ export class Host {
       scripts: scriptsDir(),
       freePort: randomFreePort(),
       hardware: await hardwareSummary(),
+      scratch: this.scratch(),
     };
   }
 
@@ -292,6 +301,8 @@ export class Host {
         stdout: "piped",
         stderr: "piped",
         detached: !isWindows,
+        // Free for the model to write: the variable points at this host's scratch.
+        env: { BOOTS_SCRATCH: this.scratch() },
       }).spawn();
       if (opts.signal?.aborted) onCancel();
       opts.signal?.addEventListener("abort", onCancel);
@@ -435,13 +446,97 @@ export class Host {
     };
   }
 
-  async write(path: string, b64: string, mode?: string) {
-    const full = this.resolve(path);
+  /**
+   * Writes a file as a new one: whatever is at the path (a file, a symlink,
+   * a pipe) is unlinked first and the file created exclusively, so a write
+   * never follows a symlink or feeds a pipe. A directory is refused. An
+   * existing file's permissions are kept unless `mode` is given. With
+   * `scratch`, the file must land inside this host's scratch directory (its
+   * folder resolved, symlinks and all).
+   */
+  async write(path: string, b64: string, mode?: string, scratch = false) {
+    const full = this.resolve(path.replace(/^\$\{?BOOTS_SCRATCH\}?(?=\/|$)/, this.scratch()));
     await Deno.mkdir(dirname(full), { recursive: true });
+    if (scratch) {
+      const inside = await Deno.realPath(this.scratch());
+      const dir = await Deno.realPath(dirname(full));
+      if (dir !== inside && !dir.startsWith(inside + (isWindows ? "\\" : "/"))) {
+        throw new Error(`${full} is not inside the scratch directory ${this.scratch()}`);
+      }
+    }
+    let keep: number | undefined;
+    try {
+      const st = await Deno.lstat(full);
+      if (st.isDirectory) throw new Error(`${full} is a directory`);
+      if (st.isFile && st.mode !== null) keep = st.mode & 0o7777;
+      await Deno.remove(full);
+    } catch (e) {
+      if (!(e instanceof Deno.errors.NotFound)) throw e;
+    }
     const bytes = decodeBase64(b64);
-    await Deno.writeFile(full, bytes);
-    if (mode && !isWindows) await Deno.chmod(full, parseInt(mode, 8));
+    const want = mode ? parseInt(mode, 8) : keep ?? 0o644;
+    const f = await Deno.open(full, { write: true, createNew: true, mode: want });
+    try {
+      for (let at = 0; at < bytes.length;) at += await f.write(bytes.subarray(at));
+    } finally {
+      f.close();
+    }
+    if (!isWindows && (mode || keep !== undefined)) await Deno.chmod(full, want);
     return { path: full, bytes: bytes.length };
+  }
+
+  private scratchDir: string | null = null;
+
+  /**
+   * This host's scratch directory, made on first use: private (0700) under
+   * the system temp folder, linked from <cache>/scratch, removed when
+   * ai-bootstrap exits. Leftovers of crashed sessions older than a day go.
+   */
+  scratch(): string {
+    if (this.scratchDir) return this.scratchDir;
+    const tmp = isWindows ? undefined : "/tmp";
+    for (
+      const e of (() => {
+        try {
+          return [...Deno.readDirSync(tmp ?? Deno.env.get("TEMP") ?? ".")];
+        } catch {
+          return [];
+        }
+      })()
+    ) {
+      if (!e.isDirectory || !e.name.startsWith("boots-scratch-")) continue;
+      const p = join(tmp ?? Deno.env.get("TEMP") ?? ".", e.name);
+      try {
+        const st = Deno.statSync(p);
+        if (st.mtime && Date.now() - st.mtime.getTime() > 86_400_000) {
+          Deno.removeSync(p, { recursive: true });
+        }
+      } catch {
+        // someone else's, or gone
+      }
+    }
+    const dir = Deno.makeTempDirSync({ dir: tmp, prefix: "boots-scratch-" });
+    this.scratchDir = dir;
+    try {
+      const link = join(cacheDir(), "scratch");
+      Deno.mkdirSync(cacheDir(), { recursive: true });
+      try {
+        if (Deno.lstatSync(link).isSymlink) Deno.removeSync(link);
+      } catch {
+        // none yet
+      }
+      Deno.symlinkSync(dir, link);
+    } catch {
+      // a convenience: the variable is what counts
+    }
+    globalThis.addEventListener("unload", () => {
+      try {
+        Deno.removeSync(dir, { recursive: true });
+      } catch {
+        // already gone
+      }
+    });
+    return dir;
   }
 
   /**

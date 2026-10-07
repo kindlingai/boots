@@ -5,7 +5,7 @@ import { type Update, updateNote } from "./update.ts";
 import { join } from "@std/path";
 import type { Endpoint, Router } from "./llm.ts";
 import { sizeFromName } from "./discover.ts";
-import { docsDir } from "./platform.ts";
+import { docsDir, languageRule } from "./platform.ts";
 import { CAUSE_HINT, type FullFailure } from "./intelligence.ts";
 
 export type Tier = "base" | "full";
@@ -63,6 +63,8 @@ export interface PromptVars {
   models: string;
   scripts: string;
   free_port: number;
+  /** This machine's scratch directory ($BOOTS_SCRATCH). */
+  scratch?: string;
   hardware: string;
   docs: string[];
   memories: string[];
@@ -84,7 +86,8 @@ export interface PromptVars {
 }
 
 export function systemPrompt(t: Templates, router: Router, v: PromptVars): string {
-  let prompt = basePrompt(t, router, v);
+  // The user's language comes first: small models drift into Chinese otherwise.
+  let prompt = `${languageRule()}\n\n${basePrompt(t, router, v)}`;
   if (!fleetRecorded(v.fleet) && tierOf(router.current()) !== "base") {
     prompt += `\n\n${NOTHING_SET_UP}`;
   }
@@ -140,6 +143,7 @@ function basePrompt(t: Templates, router: Router, v: PromptVars): string {
     models: v.models,
     scripts: v.scripts,
     free_port: String(v.free_port),
+    scratch: v.scratch ?? "(none)",
     hardware: v.hardware,
     shell_note: v.shell === "powershell" ? "Commands here run in PowerShell.\n" : "",
     docs: v.docs.join(", ") || "none",

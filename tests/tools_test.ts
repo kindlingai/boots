@@ -586,3 +586,47 @@ Deno.test("a repeated command is refused only for reads, and only until somethin
     await Deno.remove(dir, { recursive: true });
   }
 });
+
+Deno.test("write_file into $BOOTS_SCRATCH asks nothing; sudo sees the scratch path spelled out", async () => {
+  const { Router } = await import("../src/llm.ts");
+  const { Memory } = await import("../src/memory.ts");
+  const { McpManager } = await import("../src/mcp.ts");
+  const { Session } = await import("../src/tools.ts");
+  const { setFrontend } = await import("../src/frontend.ts");
+  const dir = await Deno.makeTempDir();
+  const prompts: string[] = [];
+  setFrontend({
+    emit() {},
+    readLine: (p: string) => {
+      prompts.push(p);
+      return Promise.resolve("n");
+    },
+    close() {},
+  });
+  try {
+    const s = new Session(
+      new Router({ label: "m", baseUrl: "http://127.0.0.1:9/v1", model: "m", contextChars: 1e4 }),
+      new Memory(`${dir}/mem`),
+      new McpManager(`${dir}/mcp.json`),
+      () => Promise.resolve(null),
+    );
+    await s.init();
+    const scratch = s.here.info.scratch!;
+    assertStringIncludes(
+      await s.exec("write_file", { path: "$BOOTS_SCRATCH/n.txt", content: "x" }),
+      scratch,
+    );
+    assertEquals(prompts.length, 0, "no question for the scratch directory");
+    await s.exec("write_file", { path: `${dir}/elsewhere.txt`, content: "x" });
+    assertEquals(prompts.length, 1, "elsewhere still asks");
+    const judged: string[] = [];
+    (s as any).classifier = {
+      classify: (c: string) => (judged.push(c), Promise.resolve("writes")),
+      culprit: () => undefined,
+    };
+    await s.exec("sudo", { command: "dmesg > $BOOTS_SCRATCH/dmesg.txt" });
+    assertEquals(judged, [`dmesg > ${scratch}/dmesg.txt`], "judged as the path it is, as root");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});

@@ -40,6 +40,7 @@ would you like to do?" prompt, so the model can ask its opening question.
 | `models`            | the models folder on the current machine                                                              |
 | `scripts`           | the startup scripts folder on the current machine                                                     |
 | `free_port`         | a random free port (20000-59999) on the current machine, for the next server                          |
+| `scratch`           | the current machine's scratch directory ($BOOTS_SCRATCH), free for the model to write                 |
 | `hardware`          | CPU, memory, GPUs and free disk on the current machine, gathered once                                 |
 | `script`, `log`, `reason`| diagnose.md: the failed start script, its log, and what went wrong                                    |
 | `tail`, `errors`         | diagnose.md: the last 5 log lines, and the last 5 lines mentioning "error" (any case)                 |
