@@ -327,3 +327,10 @@ export function takePrefill(): string {
   prefill = "";
   return t;
 }
+
+/**
+ * A question that interrupts (one with choices) ignores keys for this long
+ * as it opens: keys meant for something else, typed a moment before it
+ * appeared, must not answer it.
+ */
+export const QUESTION_GUARD_MS = 500;

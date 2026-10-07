@@ -8,7 +8,7 @@ import { b64, DEFAULT_TIMEOUT_MS, type ExecResult, Host, type HostInfo } from ".
 import { apiKey, chat, type Endpoint, reachable, type Router, type ToolDef } from "./llm.ts";
 import { type Goal, JSON_MEMORIES, jsonMemory, type Memory } from "./memory.ts";
 import type { McpManager } from "./mcp.ts";
-import { isReadonly, stages, unrollLoops, unwrapShell } from "./readonly.ts";
+import { addScratchDir, isReadonly, stages, unrollLoops, unwrapShell } from "./readonly.ts";
 import {
   describeFailure,
   type FullFailure,
@@ -346,7 +346,7 @@ const CHANGES = new Set([
 ]);
 
 /** How long the user has to take a command too complex to check as it is. */
-const COMPLEX_GRACE_MS = 5_000;
+const COMPLEX_GRACE_MS = 10_000;
 
 const REPEAT_WINDOW_MS = 60_000;
 
@@ -687,6 +687,7 @@ export class Session {
 
   async init(): Promise<void> {
     this.stack = [{ label: "local", via: [], info: await this.host.info() }];
+    addScratchDir(this.stack[0].info.scratch);
     // A full model set before the session was: its probed settings too.
     if (this.router.smart) void this.attachProfile(this.router.smart).catch(() => {});
   }
@@ -805,7 +806,11 @@ export class Session {
     // bash -c '...' is checked as its script, and a loop over literal words
     // as the commands it runs.
     const unrolled = unrollLoops(unwrapShell(cmd));
-    if (isReadonly(unrolled)) return { verdict: "readonly", checked: false };
+    // As root, writing into the scratch directory is a write (root's file in
+    // the user's folder): the checker judges it, told it runs as root.
+    const scratch = this.here.info.scratch;
+    const rootWrite = root && !!scratch && unrolled.includes(scratch);
+    if (!rootWrite && isReadonly(unrolled)) return { verdict: "readonly", checked: false };
     const spin = spinner("checking the command");
     const verdict = await this.classifier.classify(unrolled, this.here.info.osName, root).finally(
       () => spin.stop(),
@@ -1034,7 +1039,12 @@ export class Session {
         // Definitely read-only (on the fixed list, not the model's guess) and
         // not reading secrets: runs unasked once the user allows read-only
         // commands; otherwise the prompt offers that.
-        const safeRead = !checked && verdict === "readonly" && !readsSecrets(cmd);
+        // Root reads unasked only when what they read is in plain sight: no
+        // substitution (it could hide a secret path) and nothing written to
+        // the scratch directory (a write, as root).
+        const scratch = this.here.info.scratch;
+        const safeRead = !checked && verdict === "readonly" && !readsSecrets(cmd) &&
+          !/\$\(|`/.test(cmd) && !(scratch && cmd.includes(scratch));
         if (accepted) {
           // Taken as it is by the user, just now.
         } else if (safeRead && this.allowReadonly) {
@@ -1123,6 +1133,7 @@ export class Session {
         }).finally(() => connecting.stop());
         const top = this.here;
         this.stack.push({ label: dest, via: [...top.via, r.id], info: r.info });
+        addScratchDir(r.info?.scratch);
         say(
           green(
             `  now on ${this.where()} (${r.info.os}/${r.info.arch}, ${r.info.user}@${r.info.hostname})`,

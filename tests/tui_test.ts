@@ -99,3 +99,51 @@ Deno.test("typing while the model works: Enter queues it; drafts survive questio
   (t as any).finish("x");
   await main;
 });
+
+Deno.test("the input wraps to at most four rows; the screen still fits exactly", async () => {
+  const t = new TuiFrontend({ title: "test", onInterrupt() {} });
+  let out = "";
+  (t as any).out = (s: string) => (out = s);
+  const p = t.readLine("local> ");
+  (t as any).buf = "x".repeat(200);
+  (t as any).cursor = 200;
+  const rows = frame(t); // an 80 x 24 screen
+  assertEquals(rows.length, 24, "fills the screen");
+  // "local> " + 200 characters over 78 columns: 3 rows, at the bottom.
+  assertEquals(rows.slice(-3).map((r) => r.trim().length), [78, 78, 51]);
+  // The cursor sits after the last character typed: row 24, column 2 + 51.
+  (t as any).out = (s: string) => (out = s);
+  t.render();
+  assert(out.includes("\x1b[24;53H"), "cursor after the text");
+  (t as any).buf = "y".repeat(900);
+  (t as any).cursor = 900;
+  assertEquals(frame(t).length, 24);
+  assertEquals((t as any).inputLayout(80).rows.length, 4, "never more than four rows");
+  (t as any).finish("x");
+  await p;
+});
+
+Deno.test("a question that just opened eats keys for a moment; after that they answer it", async () => {
+  const { QUESTION_GUARD_MS } = await import("../src/frontend.ts");
+  const t = new TuiFrontend({ title: "test", onInterrupt() {} });
+  (t as any).out = () => {};
+  const keys = (s: string) => t.feed([...new TextEncoder().encode(s)]);
+  // Typing a message as the question pops up: "y" and Enter are eaten.
+  let answered: string | null | undefined;
+  const q = t.readLine("run it? ", false, [{ key: "y", label: "Yes" }]);
+  q.then((a) => (answered = a));
+  keys("y\r");
+  await new Promise((r) => setTimeout(r, 10));
+  assertEquals(answered, undefined, "not answered by keys typed before it was seen");
+  assertEquals((t as any).buf, "");
+  // Once the guard has passed, the same keys answer it.
+  await new Promise((r) => setTimeout(r, QUESTION_GUARD_MS + 50));
+  keys("y\r");
+  assertEquals(await q, "y");
+  // A free-text prompt has no guard: keys go straight in.
+  const main = t.readLine("local> ");
+  keys("hi");
+  assertEquals((t as any).buf, "hi");
+  keys("\r");
+  assertEquals(await main, "hi");
+});

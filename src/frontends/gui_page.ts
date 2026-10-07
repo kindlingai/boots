@@ -4,8 +4,8 @@
 // antenna that is grey as a line and dark red when it signals.
 
 import { bot, DROP, moodOf, sweat } from "./bot.ts";
-import { tidy } from "../frontend.ts";
 import { faviconHref } from "./icon.ts";
+import { QUESTION_GUARD_MS, tidy } from "../frontend.ts";
 
 /**
  * A line with terminal colour codes as HTML: each run of text in a span
@@ -114,7 +114,10 @@ export function page(title: string, token: string): string {
     border-top: 1px solid var(--line); flex-wrap: wrap; }
   #prompt { color: var(--cyan); white-space: pre-wrap; max-width: 100%; }
   #input { flex: 1; min-width: 12em; background: var(--bg); color: var(--text);
-    border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; font: inherit; }
+    border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; font: inherit;
+    resize: none; line-height: 1.4; height: calc(1.4em + 14px);
+    max-height: calc(5.6em + 14px); overflow-y: auto; box-sizing: border-box; }
+  #input.secret { -webkit-text-security: disc; }
   #input:focus { outline: none; border-color: var(--cyan); }
   #input:disabled { opacity: .5; }
   button { background: #242931; color: var(--text); border: 1px solid var(--line); border-radius: 6px;
@@ -135,7 +138,7 @@ export function page(title: string, token: string): string {
 <form id="form" autocomplete="off">
   <span id="prompt"></span>
   <span id="choices"></span>
-  <input id="input" autocomplete="off" spellcheck="false" disabled>
+  <textarea id="input" rows="1" autocomplete="off" spellcheck="false"></textarea>
   <button type="button" id="stop" title="Stop (Esc Esc)">Stop</button>
   <button type="button" id="quit" title="Quit ai-bootstrap">Quit</button>
 </form>
@@ -229,7 +232,7 @@ function applyState(s) {
   // Always open: without a question, what is typed steers the model while it works.
   input.disabled = false;
   input.placeholder = pr ? "" : (s.busy || s.streaming ? "type to steer the model; Enter sends it" : "");
-  input.type = pr && pr.hidden ? "password" : "text";
+  input.classList.toggle("secret", !!(pr && pr.hidden));
   if ((pr ? pr.id : null) !== before) {
     // A question (y/n, a password) sets a steering draft aside and gives it
     // back when it closes; a free-text prompt keeps it, after what a stop
@@ -259,6 +262,8 @@ function applyState(s) {
         box.appendChild(b);
       };
       if (asking) {
+        // Keys and clicks in the first moment were meant for something else.
+        guardUntil = Date.now() + ${QUESTION_GUARD_MS};
         // The full answers as buttons, in place of the input box; the key
         // letter is marked and works as a shortcut.
         for (const c of pr.choices) {
@@ -271,17 +276,28 @@ function applyState(s) {
             ? e(c.label)
             : e(c.label.slice(0, i)) + "<u>" + e(c.label.slice(i, i + 1)) + "</u>" + e(c.label.slice(i + 1));
           b.title = "key: " + c.key;
-          b.onclick = () => answer(c.key);
+          b.onclick = () => { if (Date.now() >= guardUntil) answer(c.key); };
           box.appendChild(b);
         }
         box.firstChild.focus();
       } else {
         for (const m of pr.prompt.matchAll(/\\[(\\w)\\]([\\w-]*)/g)) add(m[1] + m[2], m[1]);
         if (/\\[[Yy]\\/[Nn]\\]/.test(pr.prompt)) { add("yes", "y"); add("no", "n"); }
-        input.focus();
       }
     }
+    // A question opening or closing: the box gets the keys back (only then,
+    // so selecting text in the log is left alone between).
+    if (!asking) input.focus();
+    grow();
   }
+}
+
+/** The box grows with what is typed, to four lines, then scrolls. */
+function grow() {
+  const input = $("input");
+  input.style.height = "auto";
+  const line = parseFloat(getComputedStyle(input).lineHeight) || 20;
+  input.style.height = Math.min(input.scrollHeight + 2, line * 4 + 16) + "px";
 }
 
 /** Messages wait for the socket while it (re)connects, instead of being lost. */
@@ -295,6 +311,8 @@ function flush() {
 }
 
 let draft = "";
+/** A question that just opened ignores keys and clicks until this time. */
+let guardUntil = 0;
 
 function answer(text) {
   if (!state) return;
@@ -304,6 +322,7 @@ function answer(text) {
     if (history[history.length - 1] !== text) history.push(text);
     send({ t: "steer", text });
     $("input").value = "";
+    grow();
     return;
   }
   if (!state.prompt.hidden && text.trim() && history[history.length - 1] !== text) history.push(text);
@@ -344,6 +363,14 @@ function connect() {
 }
 
 $("form").onsubmit = (e) => { e.preventDefault(); answer($("input").value); };
+$("input").addEventListener("input", grow);
+$("input").addEventListener("keydown", (e) => {
+  // Enter sends (Shift+Enter is a new line); not while an input method composes.
+  if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+    e.preventDefault();
+    answer($("input").value);
+  }
+});
 $("stop").onclick = stop;
 $("quit").onclick = () => {
   $("quit").disabled = true;
@@ -386,7 +413,11 @@ async function editKey(e) {
 document.addEventListener("keydown", (e) => {
   // A choice's key answers it while the buttons are up.
   const pr = state && state.prompt;
-  if (pr && pr.choices && pr.choices.length && !e.metaKey && !e.ctrlKey && !e.altKey) {
+  if (
+    pr && pr.choices && pr.choices.length && !e.metaKey && !e.ctrlKey && !e.altKey &&
+    e.target !== $("input")
+  ) {
+    if (Date.now() < guardUntil) { e.preventDefault(); return; }
     const c = pr.choices.find((x) => x.key.toLowerCase() === e.key.toLowerCase());
     if (c) { e.preventDefault(); answer(c.key); return; }
   }
@@ -401,11 +432,15 @@ document.addEventListener("keydown", (e) => {
     e.preventDefault();
     stop();
   } else if ((e.key === "ArrowUp" || e.key === "ArrowDown") && document.activeElement === $("input")) {
-    if (!history.length) return;
+    // History only while the text is one line; otherwise the arrows move the caret.
+    const box = $("input");
+    const line = parseFloat(getComputedStyle(box).lineHeight) || 20;
+    if (!history.length || box.scrollHeight > line * 1.6 + 16) return;
     e.preventDefault();
     if (e.key === "ArrowUp") hpos = hpos < 0 ? history.length - 1 : Math.max(0, hpos - 1);
     else hpos = hpos < 0 ? -1 : hpos + 1 >= history.length ? -1 : hpos + 1;
     $("input").value = hpos < 0 ? "" : history[hpos];
+    grow();
   }
 });
 setInterval(() => {

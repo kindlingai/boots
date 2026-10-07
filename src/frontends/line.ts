@@ -12,6 +12,7 @@ import {
   Interrupted,
   interruptNow,
   progressText,
+  QUESTION_GUARD_MS,
   setPrefill,
   steer,
   type Style,
@@ -138,7 +139,14 @@ export class LineFrontend implements Frontend {
     const handed = takePrefill();
     if (handed && !free) setPrefill(handed);
     try {
-      return await this.input.readLine(prompt, hidden, signal, free, free ? handed : "");
+      return await this.input.readLine(
+        prompt,
+        hidden,
+        signal,
+        free,
+        free ? handed : "",
+        choices ? QUESTION_GUARD_MS : 0,
+      );
     } finally {
       this.reading = false;
       this.tick();
@@ -363,6 +371,7 @@ class Input {
     signal?: AbortSignal,
     free = false,
     prefill = "",
+    guardMs = 0,
   ): Promise<string | null> {
     const run = async () => {
       if (signal?.aborted) return null;
@@ -390,6 +399,20 @@ class Input {
       Deno.stdin.setRaw(true);
       this.prompting = true;
       try {
+        if (guardMs) {
+          // A question just opened: what was typed for something else, a
+          // moment ago or during this pause, is read and dropped (keys still
+          // in the terminal's buffer included).
+          const until = Date.now() + guardMs;
+          this.buf.length = 0;
+          while (Date.now() < until && !this.eof) {
+            await Promise.race([
+              this.fill(),
+              new Promise((r) => setTimeout(r, Math.max(1, until - Date.now()))),
+            ]);
+            if (Date.now() < until) this.buf.length = 0;
+          }
+        }
         const l = await this.rawLine(hidden, signal);
         if (l === ABORTED) {
           write(" (no answer)\r\n");

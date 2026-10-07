@@ -20,6 +20,7 @@ import {
   Interrupted,
   interruptNow,
   progressText,
+  QUESTION_GUARD_MS,
   setPrefill,
   steer,
   type Style,
@@ -94,12 +95,16 @@ interface Pending {
   hidden: boolean;
   /** The answers it offers: a question, not free text. */
   choices?: Choice[];
+  /** Keys before this time are dropped (QUESTION_GUARD_MS). */
+  guardUntil?: number;
   resolve: (s: string | null) => void;
   reject: (e: Error) => void;
 }
 
 const plain = (s: string) => s.replace(ANSI, "");
 const ESC_CHAR = String.fromCharCode(27);
+/** The input area grows to this many rows as text wraps. */
+const INPUT_ROWS = 4;
 /** Every escape code but colours removed. */
 const sgrOnly = (s: string) => s.replace(ANSI, (m) => (m.endsWith("m") ? m : ""));
 
@@ -302,6 +307,7 @@ export class TuiFrontend implements Frontend {
       return;
     }
     if (handed) setPrefill(handed);
+    if (p.choices) p.guardUntil = Date.now() + QUESTION_GUARD_MS;
     if (this.buf && !this.draft) this.draft = { buf: this.buf, cursor: this.cursor };
     this.buf = "";
     this.cursor = 0;
@@ -340,64 +346,76 @@ export class TuiFrontend implements Frontend {
         this.finish(null);
         return;
       }
-      const bytes = [...carry, ...value];
-      carry = [];
-      for (let i = 0; i < bytes.length; i++) {
-        const b = bytes[i];
-        if (b === 27) {
-          // ESC [ ... final byte, or ESC O x.
-          let j = i + 1;
-          if (bytes[j] === 91 || bytes[j] === 79) {
-            j++;
-            while (j < bytes.length && bytes[j] < 64) j++;
-            if (j >= bytes.length) {
-              carry = bytes.slice(i);
-              break;
-            }
-            this.escape(dec.decode(new Uint8Array(bytes.slice(i + 2, j + 1))));
-            i = j;
-          } else if (j >= bytes.length && this.esc()) {
-            // A lone Esc (not Alt+key, not a sequence): twice in 2 s stops
-            // like ^C, but never quits.
-            this.escEsc();
-          }
-          continue;
-        }
-        if (b === 3) this.ctrlC();
-        else if (b === 4) {
-          if (this.pending && !this.buf) this.finish(null);
-        } else if (b === 13 || b === 10) this.enter();
-        else if (b === 127 || b === 8) {
-          this.edit(() => {
-            if (this.cursor > 0) {
-              const ch = [...this.buf];
-              ch.splice(this.cursor - 1, 1);
-              this.buf = ch.join("");
-              this.cursor--;
-            }
-          });
-        } else if (b === 21) {
-          this.edit(() => {
-            this.buf = "";
-            this.cursor = 0;
-          });
-        } else if (b === 12) this.out(`${ESC}2J`);
-        else if (b >= 32) {
-          // Gather a whole UTF-8 character.
-          let j = i + 1;
-          while (j < bytes.length && (bytes[j] & 0xc0) === 0x80) j++;
-          const ch = dec.decode(new Uint8Array(bytes.slice(i, j)));
-          i = j - 1;
-          this.edit(() => {
-            const chars = [...this.buf];
-            chars.splice(this.cursor, 0, ch);
-            this.buf = chars.join("");
-            this.cursor++;
-          });
-        }
-      }
+      carry = this.feed([...carry, ...value]);
       this.schedule();
     }
+  }
+
+  /**
+   * Handles typed bytes; returns an unfinished escape sequence to carry over.
+   * While a question has just opened, keys are dropped: the user may not
+   * have seen it yet (^C still stops).
+   */
+  feed(bytes: number[]): number[] {
+    let carry: number[] = [];
+    for (let i = 0; i < bytes.length; i++) {
+      const b = bytes[i];
+      // A question just opened: keys typed for something else are dropped
+      // (^C still stops).
+      if (b !== 3 && this.pending?.guardUntil && Date.now() < this.pending.guardUntil) continue;
+      if (b === 27) {
+        // ESC [ ... final byte, or ESC O x.
+        let j = i + 1;
+        if (bytes[j] === 91 || bytes[j] === 79) {
+          j++;
+          while (j < bytes.length && bytes[j] < 64) j++;
+          if (j >= bytes.length) {
+            carry = bytes.slice(i);
+            break;
+          }
+          this.escape(dec.decode(new Uint8Array(bytes.slice(i + 2, j + 1))));
+          i = j;
+        } else if (j >= bytes.length && this.esc()) {
+          // A lone Esc (not Alt+key, not a sequence): twice in 2 s stops
+          // like ^C, but never quits.
+          this.escEsc();
+        }
+        continue;
+      }
+      if (b === 3) this.ctrlC();
+      else if (b === 4) {
+        if (this.pending && !this.buf) this.finish(null);
+      } else if (b === 13 || b === 10) this.enter();
+      else if (b === 127 || b === 8) {
+        this.edit(() => {
+          if (this.cursor > 0) {
+            const ch = [...this.buf];
+            ch.splice(this.cursor - 1, 1);
+            this.buf = ch.join("");
+            this.cursor--;
+          }
+        });
+      } else if (b === 21) {
+        this.edit(() => {
+          this.buf = "";
+          this.cursor = 0;
+        });
+      } else if (b === 12) this.out(`${ESC}2J`);
+      else if (b >= 32) {
+        // Gather a whole UTF-8 character.
+        let j = i + 1;
+        while (j < bytes.length && (bytes[j] & 0xc0) === 0x80) j++;
+        const ch = dec.decode(new Uint8Array(bytes.slice(i, j)));
+        i = j - 1;
+        this.edit(() => {
+          const chars = [...this.buf];
+          chars.splice(this.cursor, 0, ch);
+          this.buf = chars.join("");
+          this.cursor++;
+        });
+      }
+    }
+    return carry;
   }
 
   /** Typing works whether or not a prompt is open: without one, it is a steering draft. */
@@ -512,7 +530,42 @@ export class TuiFrontend implements Frontend {
   }
 
   private bodyHeight(): number {
-    return this.size().h - 11 - this.goalRows().length;
+    const { w, h } = this.size();
+    return h - 11 - this.goalRows().length - (this.inputLayout(w).rows.length - 1);
+  }
+
+  /**
+   * The input area: the prompt (or, while the model works, "› " for a
+   * steering message) and what is typed, wrapped at the screen width, at
+   * most INPUT_ROWS rows, scrolled so the cursor shows. The cursor's row
+   * (within those rows) and column (1-based, on screen).
+   */
+  private inputLayout(w: number): { rows: string[]; cursorRow: number; cursorCol: number } {
+    const steering = !this.pending;
+    const prompt = this.pending ? this.pending.prompt : "› ";
+    const text = this.pending?.hidden ? "*".repeat([...this.buf].length) : this.buf;
+    const width = Math.max(10, w - 2);
+    const p = [...prompt];
+    const all = [...p, ...[...text]];
+    const lines: string[][] = [];
+    for (let i = 0; i < all.length; i += width) lines.push(all.slice(i, i + width));
+    const at = p.length + this.cursor;
+    const cursorLine = Math.floor(at / width);
+    while (lines.length <= cursorLine) lines.push([]);
+    const first = Math.max(0, Math.min(cursorLine - (INPUT_ROWS - 1), lines.length - INPUT_ROWS));
+    const shown = lines.slice(first, first + INPUT_ROWS);
+    const rows = shown.map((chars, k) => {
+      const line = first + k;
+      if (line > 0) return ` ${chars.join("")}`;
+      // The first line carries the prompt, styled.
+      const head = chars.slice(0, p.length).join("");
+      const rest = chars.slice(p.length).join("");
+      if (steering && !text) {
+        return ` ${COLOR.dim(head)}${COLOR.dim("type to steer the model; Enter sends it")}`;
+      }
+      return ` ${steering ? COLOR.dim(head) : COLOR.bold(head)}${rest}`;
+    });
+    return { rows, cursorRow: cursorLine - first, cursorCol: 2 + (at % width) };
   }
 
   /**
@@ -620,36 +673,15 @@ export class TuiFrontend implements Frontend {
     }
     rows.push(` ${status}`);
 
-    // Input.
-    let cursorCol = 1;
-    if (this.pending) {
-      const prompt = this.pending.prompt;
-      const text = this.pending.hidden ? "*".repeat([...this.buf].length) : this.buf;
-      const room = w - [...prompt].length - 2;
-      const chars = [...text];
-      const startAt = Math.max(0, this.cursor - room + 1);
-      const visible = chars.slice(startAt, startAt + room).join("");
-      rows.push(` ${COLOR.bold(prompt)}${visible}`);
-      cursorCol = 2 + [...prompt].length + (this.cursor - startAt);
-    } else {
-      // While the model works: a message for it, sent with Enter.
-      const prompt = "› ";
-      const room = w - 4;
-      const chars = [...this.buf];
-      const startAt = Math.max(0, this.cursor - room + 1);
-      const visible = chars.slice(startAt, startAt + room).join("");
-      rows.push(
-        ` ${COLOR.dim(prompt)}${visible || COLOR.dim("type to steer the model; Enter sends it")}`,
-      );
-      cursorCol = 2 + [...prompt].length + (this.cursor - startAt);
-    }
-
+    // Input: wraps to at most INPUT_ROWS rows, scrolled to keep the cursor in view.
+    const input = this.inputLayout(w);
+    rows.push(...input.rows);
     // One write per frame: home, each row cleared and drawn, cursor to the input.
     let frame = `${ESC}H`;
     rows.slice(0, h).forEach((r, i) => {
       frame += `${ESC}${i + 1};1H${ESC}2K${r}`;
     });
-    frame += `${ESC}${h};${cursorCol}H${ESC}?25h`;
+    frame += `${ESC}${h - input.rows.length + 1 + input.cursorRow};${input.cursorCol}H${ESC}?25h`;
     this.out(frame);
   }
 }

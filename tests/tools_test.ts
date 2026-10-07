@@ -539,7 +539,7 @@ Deno.test("too complex to check: the user can take it within the grace time; els
     await s.exec("run", { command: 'eval "$(something)"' });
     assertEquals(ran.length, 1);
     assertEquals(prompts.length, 1);
-    assertStringIncludes(prompts[0], "run it anyway? [y]es [n]o (5s)");
+    assertStringIncludes(prompts[0], "run it anyway? [y]es [n]o (10s)");
     // No answer (the time ran out): back to the model for smaller steps.
     answer = null;
     const r = await s.exec("run", { command: 'eval "$(other)"' });

@@ -504,8 +504,10 @@ function pythonArithmetic(toks: string[]): boolean {
  * say: command or process substitution, a here-document, a redirect to a
  * file, or an unterminated quote.
  */
-export function stages(cmd: string): string[][] | null {
+export function stages(cmd: string, depth = 0): string[][] | null {
   const out: string[][] = [];
+  /** The stages of command substitutions, checked like the others. */
+  const inner: string[][] = [];
   let words: string[] = [];
   let w = "";
   let inWord = false;
@@ -523,6 +525,54 @@ export function stages(cmd: string): string[][] | null {
   const skipSpaces = () => {
     while (cmd[i] === " " || cmd[i] === "\t") i++;
   };
+  /**
+   * A substitution starting at i ($(...), `...` or $((...))): its inner
+   * command line joins the stages, its text joins the word. False when it
+   * does not close, nests too deep, or its inside cannot be split.
+   */
+  const substitution = (): boolean => {
+    if (depth >= 3) return false;
+    const start = i;
+    let body: string;
+    if (cmd[i] === "`") {
+      const end = cmd.indexOf("`", i + 1);
+      if (end < 0) return false;
+      body = cmd.slice(i + 1, end);
+      i = end;
+    } else {
+      // $( ... ) with nesting and quotes; $(( ... )) is arithmetic.
+      const arith = cmd[i + 2] === "(";
+      let d = 0, j = i + 1, q = "";
+      for (; j < cmd.length; j++) {
+        const c = cmd[j];
+        if (q) {
+          if (c === "\\" && q === '"') j++;
+          else if (c === q) q = "";
+          continue;
+        }
+        if (c === "'" || c === '"') q = c;
+        else if (c === "\\") j++;
+        else if (c === "(") d++;
+        else if (c === ")" && --d === 0) break;
+      }
+      if (j >= cmd.length) return false;
+      body = cmd.slice(i + (arith ? 3 : 2), arith ? j - 1 : j);
+      i = j;
+      if (arith) {
+        // Arithmetic runs nothing, unless it holds a substitution itself.
+        if (/\$\(|`/.test(body)) return false;
+        w += cmd.slice(start, i + 1);
+        inWord = true;
+        return true;
+      }
+    }
+    const st = stages(body, depth + 1);
+    if (!st) return false;
+    inner.push(...st);
+    w += cmd.slice(start, i + 1);
+    inWord = true;
+    return true;
+  };
   /** After `>`, `>>` or `&>`: only /dev/null or another descriptor are harmless. */
   const redirectOut = (): boolean => {
     if (cmd[i] === ">") i++;
@@ -535,12 +585,13 @@ export function stages(cmd: string): string[][] | null {
     }
     if (cmd[i] === "(") return false;
     skipSpaces();
-    // /dev/null, or a file in the scratch directory ($BOOTS_SCRATCH/..., no "..").
+    // /dev/null, or a file in the scratch directory: $BOOTS_SCRATCH/..., or
+    // the directory's own path as a machine reported it (no "..").
     const m = cmd.slice(i).match(/^"?(\$\{?BOOTS_SCRATCH\}?\/[A-Za-z0-9._\/-]+)"?|^[^\s;|&<>()]+/);
     if (!m) return false;
     if (m[1]) {
       if (/(^|\/)\.\.(\/|$)/.test(m[1])) return false;
-    } else if (m[0] !== "/dev/null") return false;
+    } else if (m[0] !== "/dev/null" && !inScratchDir(m[0].replace(/^"|"$/g, ""))) return false;
     i += m[0].length;
     return true;
   };
@@ -557,7 +608,10 @@ export function stages(cmd: string): string[][] | null {
     if (c === '"') {
       inWord = true;
       for (i++; i < cmd.length && cmd[i] !== '"'; i++) {
-        if (cmd[i] === "`" || (cmd[i] === "$" && cmd[i + 1] === "(")) return null;
+        if (cmd[i] === "`" || (cmd[i] === "$" && cmd[i + 1] === "(")) {
+          if (!substitution()) return null;
+          continue;
+        }
         if (cmd[i] === "\\" && i + 1 < cmd.length) i++;
         w += cmd[i];
       }
@@ -570,9 +624,13 @@ export function stages(cmd: string): string[][] | null {
         inWord = true;
         break;
       case "`":
-        return null;
+        if (!substitution()) return null;
+        break;
       case "$":
-        if (cmd[i + 1] === "(") return null;
+        if (cmd[i + 1] === "(") {
+          if (!substitution()) return null;
+          break;
+        }
         w += c;
         inWord = true;
         break;
@@ -624,13 +682,30 @@ export function stages(cmd: string): string[][] | null {
     }
   }
   endStage();
-  return out;
+  return [...out, ...inner];
 }
 
 /** True when every stage of `cmd` can only read. */
 export function isReadonly(cmd: string): boolean {
   const st = stages(cmd);
   return !!st && st.length > 0 && st.every(stageReadonly);
+}
+
+/** The scratch directories of the machines in reach (as each reported its own). */
+const scratchDirs = new Set<string>();
+
+/** A machine's scratch directory: redirects into it are not a change. */
+export function addScratchDir(dir: string | undefined): void {
+  if (dir && dir.startsWith("/") && dir.length > 8) scratchDirs.add(dir.replace(/\/+$/, ""));
+}
+
+/** A file path inside one of the known scratch directories (no ".."). */
+function inScratchDir(path: string): boolean {
+  if (!/^[A-Za-z0-9._\/-]+$/.test(path) || /(^|\/)\.\.(\/|$)/.test(path)) return false;
+  for (const d of scratchDirs) {
+    if (path.startsWith(d + "/") && path.length > d.length + 1) return true;
+  }
+  return false;
 }
 
 /** What a loop value may contain to be pasted into the body as text. */

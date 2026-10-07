@@ -20,7 +20,9 @@ Deno.test("parseVerdict and the hard rules", () => {
   // A model that calls a writing command read-only is overruled.
   assertEquals(guard("rm -rf /tmp/x", "readonly"), "writes");
   assertEquals(guard("echo hi > /etc/motd", "readonly"), "writes");
-  assertEquals(guard("echo $(id)", "readonly"), "writes");
+  // Inside a substitution counts too: a read is a read, a write a write.
+  assertEquals(guard("echo $(rm -f /tmp/x)", "readonly"), "writes");
+  assertEquals(guard("echo $(id)", "readonly"), "readonly");
   assertEquals(guard("python3 -c 'print(1)'", "readonly"), "writes");
   assertEquals(guard("curl -s -o x http://h", "readonly"), "writes");
   assertEquals(guard("curl -s http://127.0.0.1:1234/v1/models", "readonly"), "readonly");
