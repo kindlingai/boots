@@ -290,3 +290,16 @@ Deno.test("running a script file is unknown (its contents are not seen), not com
     await m.close();
   }
 });
+
+Deno.test("ssh and root together get advice: ssh tool first, then sudo there", async () => {
+  const { sshRootAdvice } = await import("../src/tools.ts");
+  const a = sshRootAdvice("ssh admin@gx10 'sudo systemctl restart spark-agent'")!;
+  assertStringIncludes(a, "ssh tool with destination admin@gx10");
+  assertStringIncludes(a, 'sudo tool with command "systemctl restart spark-agent"');
+  const b = sshRootAdvice("sudo ssh -p 2222 root@10.0.0.5 uptime")!;
+  assertStringIncludes(b, "root's ssh keys");
+  assertStringIncludes(b, "destination root@10.0.0.5");
+  assertStringIncludes(refuseInRun("ssh gx10 sudo -n reboot")!, "ssh with root:");
+  assertEquals(sshRootAdvice("ssh admin@gx10 uptime"), null);
+  assertEquals(sshRootAdvice("sudo systemctl status ssh"), null);
+});

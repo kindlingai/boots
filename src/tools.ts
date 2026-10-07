@@ -156,7 +156,39 @@ function sshRemote(words: string[]): string {
   return "";
 }
 
+/**
+ * ssh and root together (`ssh host sudo x`, `sudo ssh host ...`): the advice
+ * for doing it the supported way, or null when the line has no such mix.
+ */
+export function sshRootAdvice(cmd: string): string | null {
+  for (const w of commands(cmd)) {
+    // sudo ssh ...: connects with root's keys and known_hosts, not the user's.
+    let i = 0;
+    while (ESCALATE.has(w[i]) || (i > 0 && w[i]?.startsWith("-"))) i++;
+    const isSsh = (w[i] ?? "").replace(/^.*\//, "") === "ssh";
+    if (i > 0 && isSsh) {
+      const dest = sshTargets(w.slice(i).join(" "))[0];
+      return `sudo ssh connects with root's ssh keys and known_hosts, not the user's. To work on ${
+        dest ?? "that machine"
+      }, call the ssh tool with destination ${
+        dest ?? "user@host"
+      } (no sudo), then use run there, and the sudo tool for anything that needs root on it.`;
+    }
+    if (w[0] === "ssh") {
+      const remote = sshRemote(w);
+      if (remote && escalates(remote)) {
+        const dest = sshTargets(w.join(" "))[0] ?? "user@host";
+        const inner = remote.replace(/^\s*(sudo|doas)(\s+-\S+)*\s+/, "");
+        return `root on another machine goes through the tools, so the user approves it and ai-bootstrap handles the password there: call the ssh tool with destination ${dest}, then the sudo tool with command "${inner}" (without the word sudo). Then ssh_exit, or stay for more steps there.`;
+      }
+    }
+  }
+  return null;
+}
+
 export function refuseInRun(cmd: string): string | null {
+  const advice = sshRootAdvice(cmd);
+  if (advice) return `ssh with root: ${advice}`;
   const cmds = commands(cmd);
   if (cmds.some((w) => w[0] === "sudo") || escalates(cmd)) {
     return "running as root inside run (sudo, doas, su or pkexec, also inside xargs, find -exec, sh -c or ssh host '...'): use the sudo tool, with the command without the word sudo, so the user approves it; for another machine, connect with the ssh tool first. (Inspection rarely needs root: try it without first.)";
@@ -797,6 +829,17 @@ export class Session {
       }
       case "sudo": {
         const cmd = String(args.command ?? "").replace(/^\s*sudo\s+/, "");
+        // ssh from the sudo tool: root's identity, or root on the far side by
+        // a route the user cannot see. Point at ssh first, then sudo there.
+        if (commands(cmd).some((w) => w[0] === "ssh")) {
+          const advice = sshRootAdvice(`sudo ${cmd}`) ?? sshRootAdvice(cmd);
+          say(dim(`  [${this.where()}] sudo ${cmd}`));
+          say(yellow("    not run: ssh inside sudo; use the ssh tool, then sudo there"));
+          return `Not run: ${
+            advice ??
+              "ssh inside the sudo tool would connect as root. Call the ssh tool to reach the machine, then the sudo tool there."
+          }`;
+        }
         // Root always asks; the check (told it runs as root) still catches the
         // complex and the dangerous.
         const { verdict, checked } = await this.check(cmd, true);

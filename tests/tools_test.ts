@@ -359,3 +359,31 @@ Deno.test("the approval menu keeps wide gaps between its choices", async () => {
   assertStringIncludes(seen[0], "[y]es   [n]o   [a]lways   [s]omething else");
   assertStringIncludes(seen[1], "[n]o   always allow [r]ead-only   [s]omething");
 });
+
+Deno.test("the sudo tool refuses ssh, pointing at the ssh tool", async () => {
+  const { Router } = await import("../src/llm.ts");
+  const { Memory } = await import("../src/memory.ts");
+  const { McpManager } = await import("../src/mcp.ts");
+  const { Session } = await import("../src/tools.ts");
+  const dir = await Deno.makeTempDir();
+  try {
+    const s = new Session(
+      new Router({ label: "m", baseUrl: "http://127.0.0.1:9/v1", model: "m", contextChars: 1e4 }),
+      new Memory(`${dir}/mem`),
+      new McpManager(`${dir}/mcp.json`),
+      () => Promise.resolve(null),
+    );
+    await s.init();
+    let ran = 0;
+    (s as any).command = () => {
+      ran++;
+      return Promise.resolve({ code: 0, stdout: "", stderr: "" });
+    };
+    const out = await s.exec("sudo", { command: "ssh admin@gx10 'systemctl restart x'" });
+    assertStringIncludes(out, "Not run:");
+    assertStringIncludes(out, "ssh tool with destination admin@gx10");
+    assertEquals(ran, 0);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
