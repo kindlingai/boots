@@ -307,6 +307,7 @@ Deno.test("/mode auto: safe commands and writes run unasked; dangerous, unjudged
         "make install": "writes",
         "rm -rf /data": "dangerous",
         "mystery-tool": null,
+        "python3 /tmp/check.py": "unknown",
       };
       (s as any).classifier = {
         classify: (c: string) => Promise.resolve(c in verdicts ? verdicts[c] : "writes"),
@@ -327,6 +328,11 @@ Deno.test("/mode auto: safe commands and writes run unasked; dangerous, unjudged
     assertEquals(await asked(full, "write_file", { path: "/tmp/x", content: "x" }), 0);
     assertEquals(await asked(full, "run", { command: "rm -rf /data" }), 1, "dangerous asks");
     assertEquals(await asked(full, "run", { command: "mystery-tool" }), 1, "unjudged asks");
+    assertEquals(
+      await asked(full, "run", { command: "python3 /tmp/check.py" }),
+      1,
+      "a script asks",
+    );
     assertEquals(await asked(full, "sudo", { command: "make install" }), 1, "sudo asks");
     const base = await make("qwen3-4b");
     assertEquals(await asked(base, "run", { command: "make install" }), 1, "not on the base model");

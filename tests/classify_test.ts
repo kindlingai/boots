@@ -253,3 +253,40 @@ Deno.test("the checker is told when a command runs as root, and caches it apart"
     await m.close();
   }
 });
+
+Deno.test("running a script file is unknown (its contents are not seen), not complex", async () => {
+  const { runsScript } = await import("../src/classify.ts");
+  const { stages } = await import("../src/readonly.ts");
+  const one = (c: string) => runsScript(stages(c)![0]);
+  for (
+    const c of [
+      "python3 /tmp/dqcheck.py",
+      "/usr/bin/python3 dqcheck.py --since 3h",
+      "PYTHONPATH=. python3 -m mypkg.check",
+      "bash setup.sh",
+      "deno run -A tool.ts",
+      "./run.sh",
+      "~/bin/sync-models",
+      "/opt/spark/bin/agent --status",
+    ]
+  ) assert(one(c), c);
+  for (
+    const c of ["python3 --version", "python3 -c 'print(1)'", "bash", "ls -la", "/usr/bin/ls /tmp"]
+  ) assert(!one(c), c);
+
+  const asked: string[] = [];
+  const m = serveMock([], 0, (cmd) => {
+    asked.push(cmd);
+    return cmd.startsWith("rm") ? "dangerous" : "complex";
+  });
+  try {
+    const c = new Classifier(() => ({ label: "m", baseUrl: m.url, model: "m", contextChars: 1e4 }));
+    assertEquals(await c.classify("python3 /tmp/dqcheck.py", "Linux"), "unknown");
+    assertEquals(await c.classify("cd /tmp && /usr/bin/python3 dqcheck.py", "Linux"), "unknown");
+    assertEquals(asked, [], "the model is not asked about a script it cannot see");
+    // A dangerous stage still wins over a script.
+    assertEquals(await c.classify("./build.sh && rm -rf /srv/data", "Linux"), "dangerous");
+  } finally {
+    await m.close();
+  }
+});

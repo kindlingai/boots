@@ -6,7 +6,11 @@
 import { chat, type Endpoint } from "./llm.ts";
 import { stageReadonly, stages } from "./readonly.ts";
 
-export type Verdict = "readonly" | "writes" | "dangerous" | "complex";
+/**
+ * "unknown": it runs a script file (python3 check.py, ./setup.sh), whose
+ * contents the check cannot see: the user decides, as with any command.
+ */
+export type Verdict = "readonly" | "writes" | "dangerous" | "complex" | "unknown";
 
 /**
  * Programs that are never read-only when they run, whatever the model says.
@@ -105,7 +109,39 @@ export function guard(cmd: string, v: Verdict): Verdict {
 }
 
 /** How bad each verdict is: a command is as bad as its worst stage. */
-const RANK: Record<Verdict, number> = { readonly: 0, writes: 1, complex: 2, dangerous: 3 };
+const RANK: Record<Verdict, number> = {
+  readonly: 0,
+  writes: 1,
+  unknown: 2,
+  complex: 3,
+  dangerous: 4,
+};
+
+/** Interpreters that run a program from a file. */
+const INTERPRETERS =
+  /^(python[\d.]*|pypy3?|bash|sh|zsh|dash|ksh|fish|node|nodejs|deno|bun|perl|ruby|php|lua|Rscript|pwsh|powershell)$/;
+
+/**
+ * True when a stage runs a script file or a program by path: what it does
+ * is in the file, not the command line (inline code, -c/-e, is left to the
+ * model, which calls long inline scripts complex).
+ */
+export function runsScript(toks: string[]): boolean {
+  let i = 0;
+  while (i < toks.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(toks[i])) i++;
+  const first = toks[i] ?? "";
+  const head = first.split(/[\\/]/).pop()!;
+  if (INTERPRETERS.test(head)) {
+    // python3 x.py, bash setup.sh, deno run x.ts, python3 -m pkg; not -c/-e code.
+    const rest = toks.slice(i + 1);
+    if (rest.some((t) => /^-(c|e|-eval|-command)$/.test(t))) return false;
+    if (rest.includes("-m")) return true;
+    return rest.some((t) => !t.startsWith("-") && t !== "run");
+  }
+  // ./setup.sh, ~/bin/tool, /opt/x/run: a program by path that is not a
+  // known command (/usr/bin/ls is ls).
+  return /^(\.{1,2}\/|~\/|\/(home|tmp|opt|root|srv|var|Users|private|mnt|data)\/)/.test(first);
+}
 
 /** A word as the shell would need it written (for showing a stage on its own). */
 export function shellQuote(w: string): string {
@@ -145,6 +181,7 @@ export class Classifier {
     if (Deno.env.get("AIBOOT_CHECK") === "0") return null;
     const st = stages(cmd);
     // Loops and conditionals do not split into independent stages.
+    if (st && st.length === 1 && runsScript(st[0])) return "unknown";
     if (!st || st.length < 2 || st.some((t) => SHELL_KEYWORDS.has(t[0]))) {
       if (cmd.length > MAX_LEN) return "complex";
       return await this.ask(cmd, os, null, root);
@@ -154,6 +191,10 @@ export class Classifier {
     let worst: Verdict = "readonly";
     for (const toks of st) {
       if (stageReadonly([...toks])) continue;
+      if (runsScript(toks)) {
+        if (RANK.unknown > RANK[worst]) worst = "unknown";
+        continue;
+      }
       const seg = toks.map(shellQuote).join(" ");
       if (seg.length > MAX_LEN) return "complex";
       const v = await this.ask(seg, os, cmd, root);

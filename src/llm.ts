@@ -41,6 +41,13 @@ export interface Endpoint {
    * reject parameters they do not support.
    */
   sampling?: Record<string, unknown>;
+  /**
+   * The server's chat template wants tool-call arguments as objects, not the
+   * JSON strings of the OpenAI format (newer Qwen templates iterate them with
+   * `| items`; vLLM converts, some MLX and llama servers do not). Learnt from
+   * the first "Can only get item pairs from a mapping" error.
+   */
+  toolArgsAsObjects?: boolean;
 }
 
 /** The small local model we run ourselves: kept steady. */
@@ -106,6 +113,31 @@ export function normalize(
   return { content: content.trim(), reasoning: reasoning.trim(), calls };
 }
 
+/** Jinja errors from a template that expects tool-call arguments as a mapping. */
+const TEMPLATE_WANTS_OBJECTS =
+  /item pairs from a mapping|object has no attribute .?items|'str' object has no attribute|arguments.*(mapping|dict)/i;
+
+/** The messages with each tool call's JSON-string arguments parsed into objects. */
+export function withObjectArgs(messages: Message[]): Message[] {
+  return messages.map((m) => {
+    if (!m.tool_calls?.length) return m;
+    return {
+      ...m,
+      tool_calls: m.tool_calls.map((c) => {
+        let args: unknown = c.function.arguments;
+        if (typeof args === "string") {
+          try {
+            args = args.trim() ? JSON.parse(args) : {};
+          } catch {
+            args = { input: args };
+          }
+        }
+        return { ...c, function: { ...c.function, arguments: args as string } };
+      }),
+    };
+  });
+}
+
 export async function chat(
   ep: Endpoint,
   messages: Message[],
@@ -131,7 +163,7 @@ export async function chat(
   const body = {
     ...sampling,
     model: ep.model,
-    messages,
+    messages: ep.toolArgsAsObjects ? withObjectArgs(messages) : messages,
     tools: tools.length ? tools : undefined,
     tool_choice: tools.length && toolChoice ? toolChoice : undefined,
     stream: true,
@@ -152,6 +184,15 @@ export async function chat(
     const text = (await r.text()).slice(0, 500);
     // A server that does not support tool_choice, or a sampling parameter:
     // ask again without it.
+    // A template that iterates tool-call arguments as a mapping: send them
+    // as objects from now on.
+    if (
+      r.status === 400 && !ep.toolArgsAsObjects && TEMPLATE_WANTS_OBJECTS.test(text) &&
+      messages.some((m) => m.tool_calls?.length)
+    ) {
+      ep.toolArgsAsObjects = true;
+      return await chat(ep, messages, tools, sink, signal, temperature, toolChoice, plain);
+    }
     if (r.status === 400 && body.tool_choice) {
       return await chat(ep, messages, tools, sink, signal, temperature, undefined, plain);
     }

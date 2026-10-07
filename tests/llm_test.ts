@@ -198,3 +198,57 @@ Deno.test("the context a server declares, or a 128k in the name", async () => {
   assertEquals(declaredContext({ id: "qwen36-a3b-128k" }), 131072);
   assertEquals(declaredContext({ id: "qwen3-8b" }), 0);
 });
+
+Deno.test("a template that wants tool-call arguments as a mapping gets objects from then on", async () => {
+  const bodies: any[] = [];
+  const server = Deno.serve({ port: 0, onListen() {} }, async (req) => {
+    const b = await req.json();
+    bodies.push(b);
+    const strArgs = b.messages.some((m: any) =>
+      m.tool_calls?.some((c: any) => typeof c.function.arguments === "string")
+    );
+    if (strArgs) {
+      return Response.json({ error: { message: "Can only get item pairs from a mapping." } }, {
+        status: 400,
+      });
+    }
+    const sse = `data: ${
+      JSON.stringify({ choices: [{ delta: { content: "ok" } }] })
+    }\n\ndata: [DONE]\n\n`;
+    return new Response(sse, { headers: { "content-type": "text/event-stream" } });
+  });
+  try {
+    const ep: Endpoint = {
+      label: "mlx",
+      baseUrl: `http://127.0.0.1:${server.addr.port}/v1`,
+      model: "x",
+      contextChars: 1e4,
+    };
+    const msgs = [
+      { role: "user" as const, content: "hi" },
+      {
+        role: "assistant" as const,
+        content: "",
+        tool_calls: [{
+          id: "c1",
+          type: "function" as const,
+          function: { name: "run", arguments: '{"command":"ls"}' },
+        }],
+      },
+      { role: "tool" as const, tool_call_id: "c1", content: "out" },
+    ];
+    assertEquals((await chat(ep, msgs, [])).content, "ok");
+    assertEquals(ep.toolArgsAsObjects, true);
+    assertEquals(bodies[1].messages[1].tool_calls[0].function.arguments, { command: "ls" });
+    bodies.length = 0;
+    await chat(ep, msgs, []);
+    assertEquals(bodies.length, 1, "no failed attempt the second time");
+    assertEquals(
+      msgs[1].tool_calls![0].function.arguments,
+      '{"command":"ls"}',
+      "history untouched",
+    );
+  } finally {
+    await server.shutdown();
+  }
+});

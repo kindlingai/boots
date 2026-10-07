@@ -659,6 +659,8 @@ export class Session {
         return red(bold("  (checked: DANGEROUS)"));
       case "writes":
         return yellow("  (checked: makes changes)");
+      case "unknown":
+        return yellow("  (runs a script: contents not checked)");
       default:
         return dim("  (not checked)");
     }
