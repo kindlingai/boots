@@ -3,9 +3,12 @@
 // anything else prints. Without a terminal it prints plain lines instead.
 
 import {
+  doubleEsc,
   type EngineEvent,
+  EscInterrupted,
   type Frontend,
   Interrupted,
+  interruptNow,
   progressText,
   type Style,
 } from "../frontend.ts";
@@ -70,6 +73,8 @@ export class LineFrontend implements Frontend {
         this.busy = e.label
           ? { label: e.label, t0: e.same && this.busy ? this.busy.t0 : Date.now() }
           : null;
+        if (this.busy) this.input.watch();
+        else this.input.unwatch();
         this.tick();
         break;
       case "progress":
@@ -97,6 +102,7 @@ export class LineFrontend implements Frontend {
 
   async readLine(prompt: string, hidden = false): Promise<string | null> {
     this.clearLive();
+    this.input.unwatch();
     this.reading = true;
     try {
       return await this.input.readLine(prompt, hidden);
@@ -194,18 +200,69 @@ class Input {
   private buf: number[] = [];
   private eof = false;
   private lock: Promise<void> = Promise.resolve();
+  private esc = doubleEsc();
+  private watching = false;
+  private prompting = false;
+
+  /**
+   * While something runs (no prompt open), read keys in raw mode so ^C and
+   * Esc Esc reach us as keys. Anything else typed is kept for the next prompt.
+   */
+  watch(): void {
+    if (this.watching || this.prompting || !Deno.stdin.isTerminal()) return;
+    this.watching = true;
+    try {
+      Deno.stdin.setRaw(true);
+    } catch {
+      this.watching = false;
+      return;
+    }
+    (async () => {
+      while (this.watching && !this.eof) {
+        await this.fill();
+        // A prompt opened while we waited: what arrived is the prompt's.
+        if (!this.watching) break;
+        // ^C and a lone Esc are ours; anything else typed waits for the prompt.
+        const got = this.buf.splice(0);
+        const kept: number[] = [];
+        for (const b of got) {
+          if (b === 3) interruptNow("ctrl-c");
+          else if (b === 27 && got.length === 1) {
+            if (this.esc()) interruptNow("esc");
+          } else kept.push(b);
+        }
+        this.buf.unshift(...kept);
+      }
+    })().catch(() => {});
+  }
+
+  unwatch(): void {
+    if (!this.watching) return;
+    this.watching = false;
+    if (!this.prompting) {
+      try {
+        Deno.stdin.setRaw(false);
+      } catch {
+        // gone
+      }
+    }
+  }
+
+  /** The one read in flight: the key watcher and a prompt share it. */
+  private inflight: Promise<void> | null = null;
+
+  private fill(): Promise<void> {
+    this.reader ??= Deno.stdin.readable.getReader();
+    this.inflight ??= this.reader.read().then(({ value, done }) => {
+      if (done || !value) this.eof = true;
+      else this.buf.push(...value);
+    }).finally(() => this.inflight = null);
+    return this.inflight;
+  }
 
   private async byte(): Promise<number | null> {
-    if (this.buf.length) return this.buf.shift()!;
-    if (this.eof) return null;
-    this.reader ??= Deno.stdin.readable.getReader();
-    const { value, done } = await this.reader.read();
-    if (done || !value) {
-      this.eof = true;
-      return null;
-    }
-    this.buf.push(...value);
-    return this.buf.shift()!;
+    while (!this.buf.length && !this.eof) await this.fill();
+    return this.buf.length ? this.buf.shift()! : null;
   }
 
   /** Reads one line. Returns null at EOF. Ctrl-C throws Interrupted. */
@@ -220,9 +277,11 @@ class Input {
         return l;
       }
       Deno.stdin.setRaw(true);
+      this.prompting = true;
       try {
         return await this.rawLine(hidden);
       } finally {
+        this.prompting = false;
         Deno.stdin.setRaw(false);
       }
     };
@@ -271,7 +330,15 @@ class Input {
         continue;
       }
       if (b === 27) {
-        // Swallow escape sequences (arrows etc.).
+        // A lone Esc: twice in 2 s is ^C. Otherwise swallow escape
+        // sequences (arrows etc.).
+        if (!this.buf.length) {
+          if (this.esc()) {
+            write("Esc Esc\r\n");
+            throw new EscInterrupted();
+          }
+          continue;
+        }
         const n = await this.byte();
         if (n === 91 || n === 79) {
           let c = await this.byte();

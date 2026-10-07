@@ -50,6 +50,9 @@ export class Interrupted extends Error {
   }
 }
 
+/** Esc Esc at a prompt: cancels a tool's question, but never quits at the main prompt. */
+export class EscInterrupted extends Interrupted {}
+
 let current: Frontend | null = null;
 let fallback: (() => Frontend) | null = null;
 
@@ -69,6 +72,36 @@ export function setFrontend(f: Frontend): void {
 /** The frontend used when none was chosen (set by ui.ts, to avoid an import cycle). */
 export function setDefaultFrontend(make: () => Frontend): void {
   fallback = make;
+}
+
+/** "ctrl-c" stops what runs, or quits when nothing does; "esc" (Esc Esc) only stops. */
+export type InterruptKind = "ctrl-c" | "esc";
+let interruptHandler: (kind: InterruptKind) => void = () => {};
+
+/** What ^C or Esc Esc does outside a prompt: set by main, called by frontends. */
+export function setInterruptHandler(fn: (kind: InterruptKind) => void): void {
+  interruptHandler = fn;
+}
+
+export function interruptNow(kind: InterruptKind): void {
+  interruptHandler(kind);
+}
+
+/** Esc pressed twice within this long counts as ^C. */
+export const DOUBLE_ESC_MS = 2000;
+
+/** Tells whether an Esc press is the second within DOUBLE_ESC_MS of the first. */
+export function doubleEsc(now: () => number = Date.now): () => boolean {
+  let last = -Infinity;
+  return () => {
+    const t = now();
+    if (t - last <= DOUBLE_ESC_MS) {
+      last = -Infinity;
+      return true;
+    }
+    last = t;
+    return false;
+  };
 }
 
 export function emit(e: EngineEvent): void {

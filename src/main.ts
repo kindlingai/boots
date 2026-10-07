@@ -29,7 +29,7 @@ import {
   VERSION,
 } from "./platform.ts";
 import { bold, dim, info, red, say, warn } from "./ui.ts";
-import { emit, frontend, setFrontend } from "./frontend.ts";
+import { emit, frontend, setFrontend, setInterruptHandler } from "./frontend.ts";
 import { TuiFrontend } from "./frontends/tui.ts";
 
 async function interactive(tui: boolean): Promise<number> {
@@ -163,6 +163,7 @@ async function interactive(tui: boolean): Promise<number> {
     }
   };
   onInterrupt = onSigint;
+  setInterruptHandler((kind) => kind === "esc" ? void agent.interrupt() : onSigint());
   emit({
     type: "status",
     model: router.current().label,

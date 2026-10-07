@@ -7,7 +7,7 @@ import { BASE_TOOLS, describe, renderPlan, type Session, TOOLS } from "./tools.t
 import { currentTier, loadTemplates, systemPrompt, type Templates, tierOf } from "./prompts.ts";
 import { secrets } from "./secrets.ts";
 import { ask, bold, dim, Interrupted, plain, red, say, spinner, warn } from "./ui.ts";
-import { emit } from "./frontend.ts";
+import { emit, EscInterrupted } from "./frontend.ts";
 import { clipTools, compact, isContextError, SUMMARY_PROMPT } from "./compact.ts";
 import { Backoff } from "./backoff.ts";
 
@@ -430,6 +430,8 @@ export async function repl(agent: Agent): Promise<void> {
     try {
       line = await ask(`${bold(s.where())}> `);
     } catch (e) {
+      // Esc Esc at the main prompt does nothing; only ^C quits there.
+      if (e instanceof EscInterrupted) continue;
       if (e instanceof Interrupted) break;
       throw e;
     }

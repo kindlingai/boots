@@ -147,3 +147,18 @@ Deno.test("the TUI is chosen for modern terminals only", async () => {
   assert(!modernTerminal(env({ TERM: "vt100" })));
   assert(!modernTerminal(env({})));
 });
+
+Deno.test("Esc twice within 2 s counts, once or slower does not", async () => {
+  const { doubleEsc } = await import("../src/frontend.ts");
+  let t = 0;
+  const esc = doubleEsc(() => t);
+  assertEquals(esc(), false);
+  t = 1500;
+  assertEquals(esc(), true, "second within 2 s");
+  t = 1600;
+  assertEquals(esc(), false, "a third starts over");
+  t = 4000;
+  assertEquals(esc(), false, "too slow");
+  t = 4100;
+  assertEquals(esc(), true);
+});

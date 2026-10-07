@@ -11,9 +11,12 @@
 
 import {
   botName,
+  doubleEsc,
   type EngineEvent,
+  EscInterrupted,
   type Frontend,
   Interrupted,
+  interruptNow,
   progressText,
   type Style,
 } from "../frontend.ts";
@@ -194,6 +197,7 @@ export class TuiFrontend implements Frontend {
   private timer: ReturnType<typeof setInterval> | undefined;
   private reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
   private restore = () => this.leave();
+  private esc = doubleEsc();
 
   constructor(private opts: { title: string; onInterrupt: () => void }) {}
 
@@ -366,6 +370,10 @@ export class TuiFrontend implements Frontend {
             }
             this.escape(dec.decode(new Uint8Array(bytes.slice(i + 2, j + 1))));
             i = j;
+          } else if (j >= bytes.length && this.esc()) {
+            // A lone Esc (not Alt+key, not a sequence): twice in 2 s stops
+            // like ^C, but never quits.
+            this.escEsc();
           }
           continue;
         }
@@ -460,6 +468,13 @@ export class TuiFrontend implements Frontend {
     if (!p.hidden && v.trim() && v !== this.history.at(-1)) this.history.push(v);
     this.scroll = 0;
     this.finish(v);
+  }
+
+  private escEsc(): void {
+    if (this.pending) {
+      this.push("dim", "Esc Esc");
+      this.finish(null, new EscInterrupted());
+    } else interruptNow("esc");
   }
 
   private ctrlC(): void {
@@ -583,7 +598,7 @@ export class TuiFrontend implements Frontend {
       status = COLOR.dim(fit(
         `${
           this.scroll ? `scrolled up ${this.scroll} lines · ` : ""
-        }PgUp/PgDn scroll · ↑↓ history · ^C stop · ^D quit · /help`,
+        }PgUp/PgDn scroll · ↑↓ history · ^C or Esc Esc stop · ^D quit · /help`,
         w - 2,
       ));
     }
