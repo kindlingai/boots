@@ -33,10 +33,14 @@ Deno.test("gui: history, prompts, answers, stop and quit over the socket", async
   const g = new GuiFrontend({ title: "ai-bootstrap test", onQuit: () => quit++ });
   g.serve();
   try {
-    g.emit({ type: "line", text: "\x1b[2mbooting\x1b[0m", style: "dim" });
+    g.emit({ type: "line", text: "\x1b[2mbooting\x1b[0m\x1b[2K", style: "dim" });
     const c = await connect(g);
     const init = await c.next("init");
-    assertEquals(init.entries, [{ kind: "dim", text: "booting" }], "history, colour stripped");
+    assertEquals(
+      init.entries,
+      [{ kind: "dim", text: "\x1b[2mbooting\x1b[0m" }],
+      "history, colours kept for the page (other escapes dropped)",
+    );
     assertEquals(init.state.name, "lil boots");
 
     // A prompt opens; the page answers it.

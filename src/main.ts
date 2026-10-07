@@ -29,7 +29,7 @@ import {
   scriptsDir,
   VERSION,
 } from "./platform.ts";
-import { bold, dim, info, red, say, warn } from "./ui.ts";
+import { bold, dim, info, red, say, setColor, warn } from "./ui.ts";
 import { emit, frontend, setFrontend, setInterruptHandler } from "./frontend.ts";
 import { TuiFrontend } from "./frontends/tui.ts";
 import { GuiFrontend } from "./frontends/gui.ts";
@@ -41,6 +41,8 @@ async function interactive(mode: UiMode): Promise<number> {
   // Closing the GUI window or its Quit button: stop what runs, then end.
   let onQuit = () => {};
   if (mode === "gui") {
+    // The page draws the colours itself, terminal or not.
+    setColor(true);
     const g = new GuiFrontend({ title: `ai-bootstrap ${VERSION}`, onQuit: () => onQuit() });
     const url = g.serve();
     setFrontend(g);

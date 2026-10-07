@@ -72,7 +72,10 @@ Deno.test("a capable model chooses freely and has no reply tool", async () => {
 });
 
 Deno.test("too long for the model: older turns are summarised, the last 2 kept, and it retries", async () => {
-  const { m, agent, done } = await session("gpt-oss-120b", ["too-long", { content: "Done." }]);
+  // Too long twice: as asked, then again without max_tokens (a real overflow).
+  const { m, agent, done } = await session("gpt-oss-120b", ["too-long", "too-long", {
+    content: "Done.",
+  }]);
   try {
     for (const n of [1, 2, 3]) {
       agent.history.push({ role: "user", content: `old question ${n}` });
@@ -462,4 +465,72 @@ Deno.test("fit: the latest statuses survive dropped steps", async () => {
   assert(whole[0].content.endsWith("next"));
   // Nothing dropped: nothing added.
   assertEquals(fit(history.slice(0, 3), 1e6, statuses).length, 3);
+});
+
+Deno.test("an empty reply cut off by the output limit is retried with thinking off; nudges reset after a good step", async () => {
+  Deno.env.set("AIBOOT_BACKOFF", "0");
+  const bodies: any[] = [];
+  const replies = [
+    { finish: "length" },
+    { call: true },
+    { finish: "length" },
+    { content: "done" },
+  ];
+  let i = 0;
+  const server = Deno.serve({ port: 0, onListen() {} }, async (req) => {
+    if (new URL(req.url).pathname.endsWith("/models")) return Response.json({ data: [] });
+    const b = await req.json();
+    if (!b.tools) {
+      return new Response(
+        `data: ${
+          JSON.stringify({ choices: [{ delta: { content: "readonly" } }] })
+        }\n\ndata: [DONE]\n\n`,
+        {
+          headers: { "content-type": "text/event-stream" },
+        },
+      );
+    }
+    bodies.push(b);
+    const r = replies[Math.min(i++, replies.length - 1)];
+    const delta = r.call
+      ? { tool_calls: [{ index: 0, id: "c1", function: { name: "plan", arguments: "{}" } }] }
+      : r.content
+      ? { content: r.content }
+      : { reasoning_content: "thinking about it" };
+    const chunks = [{ choices: [{ delta }] }, {
+      choices: [{ delta: {}, finish_reason: r.finish ?? "stop" }],
+    }];
+    return new Response(
+      chunks.map((c) => `data: ${JSON.stringify(c)}\n\n`).join("") + "data: [DONE]\n\n",
+      {
+        headers: { "content-type": "text/event-stream" },
+      },
+    );
+  });
+  const dir = await Deno.makeTempDir();
+  try {
+    const s = new Session(
+      new Router({
+        label: "big",
+        baseUrl: `http://127.0.0.1:${server.addr.port}/v1`,
+        model: "gpt-oss-120b",
+        contextChars: 400_000,
+      }),
+      new Memory(join(dir, "mem")),
+      new McpManager(join(dir, "mcp.json")),
+      () => Promise.resolve(null),
+    );
+    await s.init();
+    await new Agent(s, () => "").turn("go");
+    assertEquals(bodies.length, 4, "two empties, not in a row: the turn carries on");
+    assertEquals(bodies[0].chat_template_kwargs, undefined, "thinking on by default");
+    assertEquals(bodies[1].chat_template_kwargs, { enable_thinking: false, thinking: false });
+    assertEquals(bodies[2].chat_template_kwargs, undefined, "only the one retry");
+    assertEquals(bodies[3].chat_template_kwargs, { enable_thinking: false, thinking: false });
+    assert(bodies[0].max_tokens >= 2048, `room to answer: ${bodies[0].max_tokens}`);
+  } finally {
+    Deno.env.delete("AIBOOT_BACKOFF");
+    await server.shutdown();
+    await Deno.remove(dir, { recursive: true });
+  }
 });

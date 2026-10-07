@@ -4,6 +4,45 @@
 // antenna that is grey as a line and dark red when it signals.
 
 import { bot, DROP, moodOf, sweat } from "./bot.ts";
+import { tidy } from "../frontend.ts";
+
+/**
+ * A line with terminal colour codes as HTML: each run of text in a span
+ * whose classes name its colours (a1 bold, a2 dim, a31-a36 colours). Shipped
+ * to the page with toString, so it uses no outside names.
+ */
+export function ansiHtml(text: string): string {
+  const escape = (t: string) =>
+    t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  const run = (t: string, on: string[]) =>
+    !t
+      ? ""
+      : on.length
+      ? '<span class="' + on.map((c) => "a" + c).join(" ") + '">' + escape(t) + "</span>"
+      : escape(t);
+  const [first, ...rest] = text.split(String.fromCharCode(27));
+  let on: string[] = [];
+  let out = run(first, on);
+  for (const part of rest) {
+    const m = part.match(/^\[([0-9;]*)([A-Za-z])/);
+    if (!m) {
+      out += run(part, on);
+      continue;
+    }
+    if (m[2] === "m") {
+      for (const c of (m[1] || "0").split(";")) {
+        if (c === "0") on = [];
+        else if (c === "22") on = on.filter((x) => x !== "1" && x !== "2");
+        else if (c === "39") on = on.filter((x) => !x.startsWith("3"));
+        else if (/^(1|2|3[1-6])$/.test(c)) {
+          on = [...on.filter((x) => !(c.startsWith("3") && x.startsWith("3")) && x !== c), c];
+        }
+      }
+    }
+    out += run(part.slice(m[0].length), on);
+  }
+  return out;
+}
 
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 
@@ -14,6 +53,8 @@ export function page(title: string, token: string): string {
     sweat.toString(),
     bot.toString(),
     moodOf.toString(),
+    ansiHtml.toString(),
+    tidy.toString(),
   ].join("\n");
   return `<!doctype html>
 <html lang="en">
@@ -56,7 +97,17 @@ export function page(title: string, token: string): string {
   #status { padding: 4px 12px; color: var(--dim); border-top: 1px solid var(--line);
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-height: 1.9em; }
   #status .spin { color: var(--cyan); }
-  #status .goal { padding-left: 1.4em; }
+  #goal { padding: 5px 12px; color: var(--warn); border-bottom: 1px solid var(--line);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #goal:empty { display: none; }
+  #goal .step { color: var(--text); }
+  #goal .more { color: var(--dim); }
+  .a1 { font-weight: bold; } .a2 { opacity: .65; } .a31 { color: var(--err); }
+  .a32 { color: var(--ok); } .a33 { color: var(--warn); } .a34 { color: var(--blue); }
+  .a35 { color: #d38df0; } .a36 { color: var(--cyan); }
+  form.asking #input { display: none; }
+  #choices { display: inline-flex; gap: 8px; flex-wrap: wrap; }
+  button.choice u { text-decoration: none; color: var(--warn); font-weight: bold; }
   form { display: flex; gap: 8px; align-items: center; padding: 8px 12px; background: var(--panel);
     border-top: 1px solid var(--line); flex-wrap: wrap; }
   #prompt { color: var(--cyan); white-space: pre-wrap; max-width: 100%; }
@@ -75,6 +126,7 @@ export function page(title: string, token: string): string {
 </head>
 <body>
 <header><span class="name" id="name">lil boots</span><span id="title"></span><span class="where" id="where"></span></header>
+<div id="goal"></div>
 <div id="top"><pre id="bot"></pre><div id="bubble"></div></div>
 <div id="log"></div>
 <div id="status"></div>
@@ -124,9 +176,9 @@ function mood() {
 function drawBot() {
   $("bot").innerHTML = paint(bot(mood(), frame, Date.now() < blinkUntil));
   if (!state) return;
-  const said = state.busy && !state.streaming
+  const said = tidy(state.busy && !state.streaming
     ? (state.activity || state.busy.label + "...")
-    : (state.speech || "...");
+    : (state.speech || "")) || "...";
   if ($("bubble").textContent !== said) $("bubble").textContent = said;
   const spin = '<span class="spin">' + FRAMES[frame % FRAMES.length] + "</span> ";
   const p = state.progress[state.progress.length - 1];
@@ -135,14 +187,9 @@ function drawBot() {
   if (p) status = spin + esc(p.label + "  " + p.text);
   else if (state.busy) {
     const s = Math.floor((Date.now() - state.busy.t0) / 1000);
-    status = spin + esc(state.busy.label + "..." + (s >= 3 ? " " + s + "s" : ""));
+    status = spin + esc(state.busy.label + "..." + (s >= 3 ? " " + s + "s" : "") +
+      (state.busy.note ? " · " + state.busy.note : ""));
   } else status = "Enter to send · Esc Esc or Stop to interrupt · ↑↓ history";
-  const goals = state.goals || [];
-  const more = goals.length - 2;
-  for (const [i, t] of goals.slice(0, 2).entries()) {
-    status += '<div class="goal">◆ ' + esc(t) + (i === 1 && more > 0 ? " (+" + more + " more)" : "") +
-      "</div>";
-  }
   $("status").innerHTML = status;
 }
 
@@ -151,7 +198,9 @@ function addEntry(kind, text) {
   const atEnd = log.scrollHeight - log.scrollTop - log.clientHeight < 40;
   const d = document.createElement("div");
   d.className = kind;
-  d.textContent = text;
+  // Colour codes become spans; the user's and the assistant's words stay text.
+  if (kind === "user" || kind === "assistant") d.textContent = text;
+  else d.innerHTML = ansiHtml(text);
   log.appendChild(d);
   while (log.childElementCount > 2000) log.firstChild.remove();
   if (atEnd) log.scrollTop = log.scrollHeight;
@@ -162,9 +211,19 @@ function applyState(s) {
   state = s;
   $("name").textContent = s.name;
   $("where").textContent = [s.status.model, s.status.location].filter(Boolean).join("  ·  ");
+  // The current goal and its active step, at the top.
+  const goals = (s.goals || []).map(tidy).filter(Boolean);
+  const gl = $("goal");
+  gl.innerHTML = goals.length
+    ? "◆ " + ansiHtml(goals[0]) + (goals[1] ? ' <span class="step">› ' + ansiHtml(goals[1]) + "</span>" : "") +
+      (goals.length > 2 ? ' <span class="more">(+' + (goals.length - 2) + " more)</span>" : "")
+    : "";
   const input = $("input");
   const pr = s.prompt;
-  $("prompt").textContent = pr ? pr.prompt.trim() : "";
+  const asking = !!(pr && pr.choices && pr.choices.length);
+  $("form").classList.toggle("asking", asking);
+  // With choices, the question alone ("run it?"); the buttons say the rest.
+  $("prompt").textContent = !pr ? "" : asking ? pr.prompt.replace(/\\[.*$/, "").trim() : pr.prompt.trim();
   input.disabled = !pr;
   input.type = pr && pr.hidden ? "password" : "text";
   if ((pr ? pr.id : null) !== before) {
@@ -182,9 +241,28 @@ function applyState(s) {
         b.onclick = () => answer(send);
         box.appendChild(b);
       };
-      for (const m of pr.prompt.matchAll(/\\[(\\w)\\]([\\w-]*)/g)) add(m[1] + m[2], m[1]);
-      if (/\\[[Yy]\\/[Nn]\\]/.test(pr.prompt)) { add("yes", "y"); add("no", "n"); }
-      input.focus();
+      if (asking) {
+        // The full answers as buttons, in place of the input box; the key
+        // letter is marked and works as a shortcut.
+        for (const c of pr.choices) {
+          const b = document.createElement("button");
+          b.type = "button";
+          b.className = "choice";
+          const i = c.label.toLowerCase().indexOf(c.key.toLowerCase());
+          const e = (t) => t.replace(/&/g, "&amp;").replace(/</g, "&lt;");
+          b.innerHTML = i < 0
+            ? e(c.label)
+            : e(c.label.slice(0, i)) + "<u>" + e(c.label.slice(i, i + 1)) + "</u>" + e(c.label.slice(i + 1));
+          b.title = "key: " + c.key;
+          b.onclick = () => answer(c.key);
+          box.appendChild(b);
+        }
+        box.firstChild.focus();
+      } else {
+        for (const m of pr.prompt.matchAll(/\\[(\\w)\\]([\\w-]*)/g)) add(m[1] + m[2], m[1]);
+        if (/\\[[Yy]\\/[Nn]\\]/.test(pr.prompt)) { add("yes", "y"); add("no", "n"); }
+        input.focus();
+      }
     }
   }
 }
@@ -279,6 +357,12 @@ async function editKey(e) {
   return true;
 }
 document.addEventListener("keydown", (e) => {
+  // A choice's key answers it while the buttons are up.
+  const pr = state && state.prompt;
+  if (pr && pr.choices && pr.choices.length && !e.metaKey && !e.ctrlKey && !e.altKey) {
+    const c = pr.choices.find((x) => x.key.toLowerCase() === e.key.toLowerCase());
+    if (c) { e.preventDefault(); answer(c.key); return; }
+  }
   if (e.metaKey && typeof window.__aibPaste === "function" && /^[vcxa]$/i.test(e.key)) {
     editKey(e);
     return;

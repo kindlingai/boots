@@ -2,14 +2,25 @@
 // frontend in use (frontend.ts): the line REPL by default, or the full-screen
 // TUI. Nothing in the engine writes to the terminal itself.
 
-import { emit, frontend, Interrupted, setDefaultFrontend, type Style } from "./frontend.ts";
+import {
+  type Choice,
+  emit,
+  frontend,
+  Interrupted,
+  setDefaultFrontend,
+  type Style,
+} from "./frontend.ts";
 import { LineFrontend } from "./frontends/line.ts";
 
 export { Interrupted };
 
 setDefaultFrontend(() => new LineFrontend());
 
-const color = Deno.stdout.isTerminal() && !Deno.env.get("NO_COLOR");
+let color = Deno.stdout.isTerminal() && !Deno.env.get("NO_COLOR");
+/** Colour on or off (the GUI turns it on: it draws the colours itself). */
+export function setColor(on: boolean): void {
+  color = on && !Deno.env.get("NO_COLOR");
+}
 const sgr = (n: string) => (s: string) => color ? `\x1b[${n}m${s}\x1b[0m` : s;
 export const dim = sgr("2");
 export const bold = sgr("1");
@@ -17,6 +28,18 @@ export const red = sgr("31");
 export const green = sgr("32");
 export const yellow = sgr("33");
 export const cyan = sgr("36");
+export const magenta = sgr("35");
+export const blue = sgr("34");
+
+/**
+ * How a command is shown: where it runs, then a prompt sign, then the
+ * command, each in its own colour. "$" for a command, "#" for one run as
+ * root (sudo), ">>" for an ssh hop to another machine.
+ */
+export function commandLine(where: string, sign: "$" | "#" | ">>", cmd: string): string {
+  const mark = sign === "#" ? red(sign) : sign === ">>" ? magenta(sign) : yellow(sign);
+  return `${cyan(where)} ${bold(mark)} ${cmd}`;
+}
 
 /** A transcript line. */
 export function say(text: string, style?: Style): void {
@@ -34,6 +57,8 @@ export function warn(s: string): void {
 export interface Spinner {
   /** A new label for the same task, e.g. its latest output line. */
   update(label: string): void;
+  /** A note after the time, e.g. a token count. */
+  note(text: string): void;
   stop(): void;
 }
 
@@ -43,7 +68,12 @@ export function spinner(label: string): Spinner {
   let live = true;
   return {
     update(l: string) {
-      if (live) emit({ type: "busy", label: l, same: true });
+      if (!live) return;
+      label = l;
+      emit({ type: "busy", label, same: true });
+    },
+    note(n: string) {
+      if (live) emit({ type: "busy", label, same: true, note: n });
     },
     stop() {
       if (!live) return;
@@ -62,7 +92,10 @@ export async function askSecret(prompt: string): Promise<string | null> {
 }
 
 export async function confirm(prompt: string, def = true): Promise<boolean> {
-  const a = await frontend().readLine(`${prompt} ${def ? "[Y/n]" : "[y/N]"} `);
+  const a = await frontend().readLine(`${prompt} ${def ? "[Y/n]" : "[y/N]"} `, false, [
+    { key: "y", label: "Yes" },
+    { key: "n", label: "No" },
+  ]);
   if (a === null) return false;
   const t = a.trim().toLowerCase();
   if (t === "") return def;
@@ -95,16 +128,26 @@ export type ApprovalKind = "normal" | "readonly" | "dangerous" | "root";
  * for a read-only command, r (allow every read-only command this session).
  */
 export async function approve(what: string, kind: ApprovalKind = "normal"): Promise<Approval> {
-  say(`${yellow("?")} ${what}`);
-  // Wide gaps between the choices, so they read as separate items.
-  const choices =
-    (kind === "readonly"
-      ? ["[y]es", "[n]o", "always allow [r]ead-only", "[s]omething else, I'll explain"]
-      : kind === "dangerous" || kind === "root"
-      ? ["[y]es", "[n]o", "[s]omething else, I'll explain"]
-      : ["[y]es", "[n]o", "[a]lways", "[s]omething else, I'll explain"]).join("   ");
+  say(what);
+  const offered: Choice[] = [
+    { key: "y", label: "Yes" },
+    { key: "n", label: "No" },
+    ...(kind === "readonly"
+      ? [{ key: "r", label: "Always allow read-only" }]
+      : kind === "normal"
+      ? [{ key: "a", label: "Always" }]
+      : []),
+    { key: "s", label: "Something else, I'll explain" },
+  ];
+  // As text: the key in brackets inside its label, with wide gaps between.
+  const text = offered.map((c) => {
+    const i = c.label.toLowerCase().indexOf(c.key);
+    return i < 0
+      ? `[${c.key}] ${c.label}`
+      : `${c.label.slice(0, i).toLowerCase()}[${c.key}]${c.label.slice(i + 1).toLowerCase()}`;
+  }).join("   ").replace("i'll", "I'll");
   while (true) {
-    const a = await frontend().readLine(dim(`  run it? ${choices}: `));
+    const a = await frontend().readLine(dim(`  run it? ${text}: `), false, offered);
     if (a === null) return { ok: false, note: "no input available" };
     const t = a.trim().toLowerCase();
     if (t === "y" || t === "yes") return { ok: true };

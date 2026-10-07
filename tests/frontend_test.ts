@@ -173,3 +173,35 @@ Deno.test("the GUI is opt-in: --gui or AIBOOT_UI=gui, never chosen on its own", 
   assertEquals(uiMode("--repl", env({ AIBOOT_UI: "gui" }), true), "repl");
   assertEquals(uiMode(undefined, env({ AIBOOT_UI: "repl", TERM: "xterm" }), true), "repl");
 });
+
+Deno.test("tidy: no surrounding whitespace, no dangling colon", async () => {
+  const { tidy } = await import("../src/frontend.ts");
+  assertEquals(tidy("  Let me check the sparks:\n"), "Let me check the sparks");
+  assertEquals(tidy("ratio 3:2"), "ratio 3:2");
+  assertEquals(tidy("::"), "");
+});
+
+Deno.test("approval passes its answers as choices; the busy line carries a token count", async () => {
+  const { setFrontend, busyText } = await import("../src/frontend.ts");
+  const { approve } = await import("../src/ui.ts");
+  const { tokenCount } = await import("../src/agent.ts");
+  let got: any = null;
+  setFrontend({
+    emit() {},
+    readLine: (_p: string, _h?: boolean, choices?: any) => {
+      got = choices;
+      return Promise.resolve(choices?.some((c: any) => c.key === "a") ? "a" : "y");
+    },
+    close() {},
+  });
+  assertEquals((await approve("x $ make install")).always, true);
+  assertEquals(got.map((c: any) => c.key), ["y", "n", "a", "s"]);
+  assertEquals(got[3].label, "Something else, I'll explain");
+  await approve("x # rm", "root");
+  assertEquals(got.map((c: any) => c.key), ["y", "n", "s"], "no always for root");
+  assertEquals(
+    busyText({ label: "thinking", t0: 0, note: tokenCount(3456) }, 5000),
+    "thinking... 5s · 3.5k tokens",
+  );
+  assertEquals(tokenCount(312), "312 tokens");
+});

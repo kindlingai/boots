@@ -11,6 +11,7 @@
 
 import {
   botName,
+  busyText,
   doubleEsc,
   type EngineEvent,
   EscInterrupted,
@@ -19,6 +20,8 @@ import {
   interruptNow,
   progressText,
   type Style,
+  tidy,
+  wrapAnsi,
 } from "../frontend.ts";
 
 import { bot, type Mood, moodOf, wrap } from "./bot.ts";
@@ -79,8 +82,7 @@ interface Entry {
   kind: Kind;
   text: string;
 }
-/** Active goals shown under the status line. */
-const MAX_GOALS_SHOWN = 2;
+
 type ProgressEv = Extract<EngineEvent, { type: "progress" }>;
 
 interface Pending {
@@ -91,6 +93,9 @@ interface Pending {
 }
 
 const plain = (s: string) => s.replace(ANSI, "");
+const ESC_CHAR = String.fromCharCode(27);
+/** Every escape code but colours removed. */
+const sgrOnly = (s: string) => s.replace(ANSI, (m) => (m.endsWith("m") ? m : ""));
 
 const fit = (s: string, w: number) => {
   const chars = [...s];
@@ -103,7 +108,7 @@ export class TuiFrontend implements Frontend {
   private entries: Entry[] = [];
   private streaming: Entry | null = null;
   private speech = `Hi! I'm ${botName()}. I set up AI models on your machines.`;
-  private busy: { label: string; t0: number } | null = null;
+  private busy: { label: string; t0: number; note?: string } | null = null;
   private progress = new Map<string, ProgressEv>();
   /** Active goals' titles, shown under the status line. */
   private goals: string[] = [];
@@ -170,7 +175,8 @@ export class TuiFrontend implements Frontend {
   emit(e: EngineEvent): void {
     switch (e.type) {
       case "line": {
-        for (const l of plain(e.text).split("\n")) this.push(e.style ?? "plain", l);
+        // Colours are kept (commands, verdicts); other escape codes are not.
+        for (const l of sgrOnly(e.text).split("\n")) this.push(e.style ?? "plain", l);
         if (e.style === "error") this.mood("sad", 4000);
         if (e.style === "ok") this.mood("happy", 3000);
         break;
@@ -192,7 +198,7 @@ export class TuiFrontend implements Frontend {
       case "busy":
         // A new label for the same task (its latest output) keeps the clock.
         this.busy = e.label
-          ? { label: e.label, t0: e.same && this.busy ? this.busy.t0 : Date.now() }
+          ? { label: e.label, t0: e.same && this.busy ? this.busy.t0 : Date.now(), note: e.note }
           : null;
         break;
       case "goals":
@@ -447,13 +453,16 @@ export class TuiFrontend implements Frontend {
     return this.size().h - 11 - this.goalRows().length;
   }
 
-  /** The first two active goals, title only; a count when there are more. */
+  /**
+   * The current goal at the top: the first active goal, and its active step
+   * when it has one ("Serve GLM › Start TP4"); a count of any other goals.
+   */
   private goalRows(): string[] {
-    const shown = this.goals.slice(0, MAX_GOALS_SHOWN);
-    const more = this.goals.length - shown.length;
-    return shown.map((t, i) =>
-      `◆ ${t}${i === shown.length - 1 && more > 0 ? ` (+${more} more)` : ""}`
-    );
+    const [goal, ...rest] = this.goals.map(tidy).filter(Boolean);
+    if (!goal) return [];
+    const step = rest.length ? rest[0] : "";
+    const more = rest.length > 1 ? `  (+${rest.length - 1} more)` : "";
+    return [`◆ ${goal}${step ? ` › ${step}` : ""}${more}`];
   }
 
   private styled(kind: Kind, s: string): string {
@@ -487,15 +496,17 @@ export class TuiFrontend implements Frontend {
     const title = ` ${botName(this.status.full)} · ${this.opts.title}`;
     const right = [this.status.model, this.status.location].filter(Boolean).join("  ·  ") + " ";
     rows.push(COLOR.inverse(fit(title, w - [...right].length) + right));
+    // The current goal, under the header.
+    for (const g of this.goalRows()) rows.push(` ${COLOR.yellow(fit(g, w - 2))}`);
 
     // The bot and its speech bubble.
     const mood = this.currentMood();
     const art = paintBot(bot(mood, this.frame, Date.now() < this.blinkUntil));
     const bw = Math.max(10, w - 16);
-    const said = this.busy && !this.streaming
-      ? this.activity ?? `${this.busy.label}...`
-      : this.speech || "...";
-    const words = wrap(said.trim(), bw - 4);
+    const said = tidy(
+      this.busy && !this.streaming ? this.activity ?? `${this.busy.label}...` : this.speech,
+    ) || "...";
+    const words = wrap(said, bw - 4);
     const shown = words.length > 3 ? ["…" + words.at(-3)!.slice(1), ...words.slice(-2)] : words;
     while (shown.length < 3) shown.push("");
     const bubble = [
@@ -516,8 +527,10 @@ export class TuiFrontend implements Frontend {
     const lines: string[] = [];
     for (const e of this.entries) {
       const prefix = e.kind === "assistant" ? "● " : e.kind === "user" ? "› " : "";
-      const wrapped = wrap(prefix + e.text, w - 2);
-      for (const l of wrapped) lines.push(this.styled(e.kind, l));
+      // A line with its own colours keeps them; others take their kind's.
+      const own = e.text.includes(ESC_CHAR);
+      const wrapped = own ? wrapAnsi(prefix + e.text, w - 2) : wrap(prefix + e.text, w - 2);
+      for (const l of wrapped) lines.push(own ? l : this.styled(e.kind, l));
     }
     this.scroll = Math.min(this.scroll, Math.max(0, lines.length - body));
     const end = lines.length - this.scroll;
@@ -534,8 +547,7 @@ export class TuiFrontend implements Frontend {
       const bar = Math.max(10, Math.min(30, w - 80));
       status = `${spin} ${COLOR.dim(fit(`${p.label}  ${progressText(p, bar)}`, w - 4))}`;
     } else if (this.busy) {
-      const s = Math.floor((Date.now() - this.busy.t0) / 1000);
-      status = `${spin} ${COLOR.dim(fit(`${this.busy.label}...${s >= 3 ? ` ${s}s` : ""}`, w - 4))}`;
+      status = `${spin} ${COLOR.dim(fit(busyText(this.busy), w - 4))}`;
     } else {
       status = COLOR.dim(fit(
         `${
@@ -545,7 +557,6 @@ export class TuiFrontend implements Frontend {
       ));
     }
     rows.push(` ${status}`);
-    for (const g of this.goalRows()) rows.push(`   ${COLOR.dim(fit(g, w - 4))}`);
 
     // Input.
     let cursorCol = 1;

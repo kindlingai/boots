@@ -59,6 +59,26 @@ export interface Endpoint {
  */
 const THINKING_OFF = { enable_thinking: false, thinking: false };
 
+/** A server's way of saying the request is longer than the model's context. */
+export const CONTEXT_TOO_LONG =
+  /context[ _-]?(length|size|window)|exceeds? (the )?(available |maximum )?context|maximum context|too many tokens|prompt is too long|input is too long|exceed_context/i;
+
+/** Most output tokens asked for in one reply. */
+const MAX_OUTPUT = 32_768;
+
+/**
+ * max_tokens for a request: what the context has left after the prompt
+ * (counted generously, at 3 characters a token), at most MAX_OUTPUT; 0 (send
+ * none) when that leaves too little to be worth stating.
+ */
+export function outputRoom(ep: Endpoint, messages: Message[], tools: ToolDef[] = []): number {
+  const prompt = Math.ceil(
+    (JSON.stringify(messages).length + (tools.length ? JSON.stringify(tools).length : 0)) / 3,
+  );
+  const left = Math.floor(ep.contextChars / 3) - prompt - 256;
+  return left >= 2048 ? Math.min(MAX_OUTPUT, left) : 0;
+}
+
 /** The small local model we run ourselves: kept steady. */
 export const BOOTSTRAP_SAMPLING = { temperature: 0.3 };
 
@@ -84,6 +104,8 @@ export interface Reply {
 export interface StreamSink {
   content?: (s: string) => void;
   reasoning?: (s: string) => void;
+  /** Each streamed chunk (text, thinking or tool-call arguments): about one token. */
+  token?: () => void;
 }
 
 // A text tool call, closed or cut off at the end of the reply.
@@ -207,6 +229,8 @@ export async function chat(
   plain = false,
   /** Ask the model not to think (/thinking off). */
   thinkingOff = false,
+  /** Internal: retrying a context overflow without max_tokens. */
+  noRoom = false,
 ): Promise<Reply> {
   const headers: Record<string, string> = { "content-type": "application/json" };
   const key = apiKey(ep);
@@ -217,6 +241,11 @@ export async function chat(
   }
   const sampling: Record<string, unknown> = plain ? {} : { ...ep.sampling };
   if (!plain && temperature !== undefined) sampling.temperature = temperature;
+  // Room to answer: some servers' default output limit is small (MLX: 512),
+  // which a thinking model spends before it says anything. Sized to what the
+  // context has left, so it is never refused as too long.
+  const room = outputRoom(ep, messages, tools);
+  if (!plain && !noRoom && room && !("max_tokens" in sampling)) sampling.max_tokens = room;
   const body = {
     ...sampling,
     model: ep.model,
@@ -244,6 +273,25 @@ export async function chat(
     // ask again without it.
     // A template that iterates tool-call arguments as a mapping: send them
     // as objects from now on.
+    // Too long for the context. max_tokens counts against it on some servers
+    // (vLLM): try once without; otherwise it is the caller's to shorten.
+    if (r.status === 400 && CONTEXT_TOO_LONG.test(text)) {
+      if ("max_tokens" in body && !noRoom) {
+        return await chat(
+          ep,
+          messages,
+          tools,
+          sink,
+          signal,
+          temperature,
+          toolChoice,
+          plain,
+          thinkingOff,
+          true,
+        );
+      }
+      throw new LLMError(`${ep.label}: HTTP ${r.status}: ${text}`, false);
+    }
     if (
       r.status === 400 && !ep.toolArgsAsObjects && TEMPLATE_WANTS_OBJECTS.test(text) &&
       messages.some((m) => m.tool_calls?.length)
@@ -331,6 +379,7 @@ export async function chat(
       if (!ch) continue;
       if (ch.finish_reason) finish = ch.finish_reason;
       const d = ch.delta ?? {};
+      if (d.content || d.reasoning_content || d.reasoning || d.tool_calls?.length) sink.token?.();
       const r2 = d.reasoning_content ?? d.reasoning;
       if (typeof r2 === "string" && r2) {
         reasoning += r2;
@@ -397,6 +446,8 @@ export class Router {
   private smartDownUntil = 0;
   /** /thinking off: ask every model the agent talks to not to think. */
   thinkingOff = false;
+  /** Just the next request without thinking (after one that thought until it ran out). */
+  thinkingOffOnce = false;
   onNotice: (s: string) => void = () => {};
 
   constructor(public bootstrap: Endpoint, private control?: BootstrapControl) {}
@@ -450,6 +501,8 @@ export class Router {
     signal?: AbortSignal,
   ): Promise<Reply> {
     const shape = (e: Endpoint): ChatShape => typeof tools === "function" ? tools(e) : { tools };
+    const quiet = this.thinkingOff || this.thinkingOffOnce;
+    this.thinkingOffOnce = false;
     const send = (e: Endpoint) => {
       const s = shape(e);
       return chat(
@@ -461,7 +514,7 @@ export class Router {
         undefined,
         s.toolChoice,
         false,
-        this.thinkingOff,
+        quiet,
       );
     };
     const ep = this.current();

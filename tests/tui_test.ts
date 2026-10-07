@@ -18,20 +18,42 @@ function frame(t: TuiFrontend): string[] {
   return rows;
 }
 
-Deno.test("active goals show under the status line, titles only, at most two", () => {
+Deno.test("the current goal and its step show at the top, tidied; the bubble too", () => {
   const t = new TuiFrontend({ title: "test", onInterrupt() {} });
-  const before = frame(t);
+  t.emit({ type: "goals", titles: ["  Serve GLM:  ", "Start TP4", "Benchmark"] });
   t.emit({ type: "busy", label: "thinking" });
-  t.emit({ type: "goals", titles: ["Serve GLM", "Mentat router", "Benchmark"] });
+  t.emit({ type: "activity", text: "  checking rank 2:\n" });
   const rows = frame(t);
   assertEquals(rows.length, 24, "still fills the screen exactly");
-  const at = rows.findLastIndex((r) => r?.includes("thinking..."));
-  assert(at > 0);
-  assertEquals(rows[at + 1].trim(), "◆ Serve GLM");
-  assertEquals(rows[at + 2].trim(), "◆ Mentat router (+1 more)");
-  assertEquals(before.length, 24);
+  assertEquals(rows[1].trim(), "◆ Serve GLM › Start TP4  (+1 more)", "right under the header");
+  const top = rows.slice(0, 9).join("\n");
+  assert(top.includes("checking rank 2") && !top.includes("rank 2:"), "no dangling colon");
   t.emit({ type: "goals", titles: [] });
   assert(!frame(t).some((r) => r?.includes("◆")));
+});
+
+Deno.test("commands keep their colours in the TUI, wrapped by visible width", async () => {
+  const { commandLine, setColor } = await import("../src/ui.ts");
+  const { wrapAnsi } = await import("../src/frontend.ts");
+  setColor(true);
+  const line = commandLine("local > admin@192.168.1.70", "#", "docker ps -a " + "x".repeat(60));
+  const E = String.fromCharCode(27);
+  const visible = (x: string) => x.replace(new RegExp(E + "\\[[0-9;]*m", "g"), "");
+  const w = wrapAnsi(line, 40);
+  assert(w.length > 1 && w.every((l) => visible(l).length <= 40));
+  assert(w[0].includes(E + "[36m") && w[0].includes(E + "[31m"), "location cyan, # red");
+  assertEquals(
+    visible(w.join("")).replace(/ /g, ""),
+    visible(line).replace(/ /g, ""),
+    "no text lost",
+  );
+  const t = new TuiFrontend({ title: "test", onInterrupt() {} });
+  t.emit({ type: "line", text: line });
+  let out = "";
+  (t as any).out = (s: string) => (out = s);
+  (t as any).size = () => ({ w: 80, h: 24 });
+  t.render();
+  assert(out.includes(E + "[36mlocal > admin@192.168.1.70"), "the TUI keeps the colours");
 });
 
 Deno.test('update_status replaces "thinking..." in the bubble while working', () => {

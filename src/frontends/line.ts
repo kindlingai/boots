@@ -3,6 +3,7 @@
 // anything else prints. Without a terminal it prints plain lines instead.
 
 import {
+  busyText,
   doubleEsc,
   type EngineEvent,
   EscInterrupted,
@@ -41,7 +42,7 @@ export class LineFrontend implements Frontend {
   private input = new Input();
   private tty = Deno.stdout.isTerminal();
   private shown = false;
-  private busy: { label: string; t0: number } | null = null;
+  private busy: { label: string; t0: number; note?: string } | null = null;
   private progress = new Map<string, Progress>();
   private lastPrinted = new Map<string, number>();
   private streaming = false;
@@ -71,7 +72,7 @@ export class LineFrontend implements Frontend {
       case "busy":
         // A new label for the same task (its latest output) keeps the clock.
         this.busy = e.label
-          ? { label: e.label, t0: e.same && this.busy ? this.busy.t0 : Date.now() }
+          ? { label: e.label, t0: e.same && this.busy ? this.busy.t0 : Date.now(), note: e.note }
           : null;
         if (this.busy) this.input.watch();
         else this.input.unwatch();
@@ -136,8 +137,7 @@ export class LineFrontend implements Frontend {
     const p = [...this.progress.values()].at(-1);
     if (p) return `${f} ${p.label}  ${dim(progressText(p))}`;
     if (this.busy) {
-      const s = Math.floor((Date.now() - this.busy.t0) / 1000);
-      return `${f} ${dim(`${this.busy.label}...${s >= 3 ? ` ${s}s` : ""}`)}`;
+      return `${f} ${dim(busyText(this.busy))}`;
     }
     return null;
   }

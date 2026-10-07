@@ -10,6 +10,7 @@
 
 import {
   botName,
+  type Choice,
   type EngineEvent,
   EscInterrupted,
   type Frontend,
@@ -28,6 +29,7 @@ interface Pending {
   id: number;
   prompt: string;
   hidden: boolean;
+  choices?: Choice[];
   resolve: (s: string | null) => void;
   reject: (e: Error) => void;
 }
@@ -37,9 +39,9 @@ export interface GuiState {
   speech: string;
   status: { model?: string; location?: string; full?: boolean };
   name: string;
-  busy: { label: string; t0: number } | null;
+  busy: { label: string; t0: number; note?: string } | null;
   progress: { label: string; text: string }[];
-  prompt: { id: number; prompt: string; hidden: boolean } | null;
+  prompt: { id: number; prompt: string; hidden: boolean; choices?: Choice[] } | null;
   flash: { mood: Mood; until: number } | null;
   talkedAt: number;
   streaming: boolean;
@@ -65,6 +67,7 @@ export type FromPage =
 
 const ANSI = new RegExp(String.fromCharCode(27) + "\\[[0-9;?]*[A-Za-z]", "g");
 const plain = (s: string) => s.replace(ANSI, "");
+const sgrOnly = (s: string) => s.replace(ANSI, (m) => (m.endsWith("m") ? m : ""));
 
 export class GuiFrontend implements Frontend {
   private entries: { kind: Kind; text: string }[] = [];
@@ -180,9 +183,12 @@ export class GuiFrontend implements Frontend {
   private receive(m: FromPage): void {
     if (m.t === "answer" && this.pending && m.id === this.pending.id) {
       const p = this.pending;
+      const picked = p.choices?.find((c) => c.key === m.text.trim().toLowerCase());
       this.push(
         "user",
-        `${p.prompt.trim()} ${p.hidden ? "*".repeat(Math.min(m.text.length, 8)) : m.text}`,
+        picked
+          ? picked.label
+          : `${p.prompt.trim()} ${p.hidden ? "*".repeat(Math.min(m.text.length, 8)) : m.text}`,
       );
       this.finish(m.text);
     } else if (m.t === "stop") {
@@ -209,7 +215,8 @@ export class GuiFrontend implements Frontend {
   emit(e: EngineEvent): void {
     switch (e.type) {
       case "line": {
-        for (const l of plain(e.text).split("\n")) this.push(e.style ?? "plain", l);
+        // Colours are kept (the page draws them); other escape codes are not.
+        for (const l of sgrOnly(e.text).split("\n")) this.push(e.style ?? "plain", l);
         if (e.style === "error") this.mood("sad", 4000);
         if (e.style === "ok") this.mood("happy", 3000);
         break;
@@ -231,7 +238,7 @@ export class GuiFrontend implements Frontend {
         break;
       case "busy":
         this.busy = e.label
-          ? { label: e.label, t0: e.same && this.busy ? this.busy.t0 : Date.now() }
+          ? { label: e.label, t0: e.same && this.busy ? this.busy.t0 : Date.now(), note: e.note }
           : null;
         break;
       case "progress":
@@ -263,10 +270,17 @@ export class GuiFrontend implements Frontend {
     this.stateSoon();
   }
 
-  readLine(prompt: string, hidden = false): Promise<string | null> {
+  readLine(prompt: string, hidden = false, choices?: Choice[]): Promise<string | null> {
     if (this.closed) return Promise.resolve(null);
     return new Promise((resolve, reject) => {
-      const p: Pending = { id: this.nextId++, prompt: plain(prompt), hidden, resolve, reject };
+      const p: Pending = {
+        id: this.nextId++,
+        prompt: plain(prompt),
+        hidden,
+        choices,
+        resolve,
+        reject,
+      };
       if (this.pending) this.queue.push(p);
       else this.begin(p);
     });
@@ -331,7 +345,12 @@ export class GuiFrontend implements Frontend {
         text: progressText(p, 24),
       })),
       prompt: this.pending
-        ? { id: this.pending.id, prompt: this.pending.prompt, hidden: this.pending.hidden }
+        ? {
+          id: this.pending.id,
+          prompt: this.pending.prompt,
+          hidden: this.pending.hidden,
+          choices: this.pending.choices,
+        }
         : null,
       flash: this.flash,
       talkedAt: this.talkedAt,

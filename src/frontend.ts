@@ -11,7 +11,13 @@ export type EngineEvent =
   /** The assistant's reply, streamed: start, any number of deltas, end. */
   | { type: "assistant"; phase: "start" | "delta" | "end"; text?: string }
   /** Something is in progress without a measure ("thinking", "checking the command"); null ends it. */
-  | { type: "busy"; label: string | null; same?: boolean }
+  | {
+    type: "busy";
+    label: string | null;
+    same?: boolean;
+    /** Shown after the time, e.g. "312 tokens". */
+    note?: string;
+  }
   /** A measurable task: a download, a model loading. `total` absent: indeterminate. */
   | {
     type: "progress";
@@ -40,10 +46,37 @@ export function botName(full?: boolean): string {
   return full ? "Boots" : "lil boots";
 }
 
+/** One answer a prompt offers: its key (what readLine returns) and its label. */
+export interface Choice {
+  key: string;
+  label: string;
+}
+
+/**
+ * Text for the box at the top (speech bubble, goals, status): no surrounding
+ * whitespace, and no colon left dangling at the end ("Let me check:").
+ */
+export function tidy(s: string): string {
+  return s.trim().replace(/\s*:+$/, "").trim();
+}
+
+/** "thinking... 5s · 312 tokens": the busy line every frontend shows. */
+export function busyText(
+  b: { label: string; t0: number; note?: string },
+  now = Date.now(),
+): string {
+  const s = Math.floor((now - b.t0) / 1000);
+  return `${b.label}...${s >= 3 ? ` ${s}s` : ""}${b.note ? ` · ${b.note}` : ""}`;
+}
+
 export interface Frontend {
   emit(e: EngineEvent): void;
-  /** One line of input; null at end of input. Throws Interrupted on ^C. */
-  readLine(prompt: string, hidden?: boolean): Promise<string | null>;
+  /**
+   * One line of input; null at end of input. Throws Interrupted on ^C.
+   * `choices`, when given, are the answers the prompt offers (the GUI shows
+   * them as buttons in place of the input box); the answer is a choice's key.
+   */
+  readLine(prompt: string, hidden?: boolean, choices?: Choice[]): Promise<string | null>;
   /** Called before the process exits (restore the terminal). */
   close(): void;
 }
@@ -203,4 +236,60 @@ export async function downloadTo(
   await r.body!.pipeThrough(counter).pipeTo(w);
   p.update(done, undefined, true);
   return done;
+}
+
+const ESC_CHAR = String.fromCharCode(27);
+const SGR = new RegExp(`${ESC_CHAR}\\[([0-9;]*)m`, "y");
+
+/**
+ * Wraps text that carries colour codes to `w` visible columns, breaking at
+ * spaces where it can. Each line ends with a reset and the next one reopens
+ * the colours in effect, so every line stands on its own.
+ */
+export function wrapAnsi(text: string, w: number): string[] {
+  const out: string[] = [];
+  for (const raw of text.split("\n")) {
+    // Visible characters, each with the colour codes in effect before it.
+    const cells: { ch: string; sgr: string }[] = [];
+    let open = "";
+    for (let i = 0; i < raw.length;) {
+      SGR.lastIndex = i;
+      const m = SGR.exec(raw);
+      if (m) {
+        open = m[1] === "0" || m[1] === "" ? "" : open + m[0];
+        i += m[0].length;
+        continue;
+      }
+      const ch = String.fromCodePoint(raw.codePointAt(i)!);
+      cells.push({ ch: ch === "\t" ? "  " : ch, sgr: open });
+      i += ch.length;
+    }
+    const draw = (cs: { ch: string; sgr: string }[]) => {
+      let s = "", cur = "";
+      for (const c of cs) {
+        if (c.sgr !== cur) {
+          s += `${ESC_CHAR}[0m${c.sgr}`;
+          cur = c.sgr;
+        }
+        s += c.ch;
+      }
+      return cur ? `${s}${ESC_CHAR}[0m` : s;
+    };
+    let rest = cells;
+    if (!rest.length) {
+      out.push("");
+      continue;
+    }
+    while (rest.length > w) {
+      let cut = rest.slice(0, w + 1).map((c) => c.ch).lastIndexOf(" ");
+      if (cut <= w / 3) cut = w;
+      let line = rest.slice(0, cut);
+      while (line.length && line.at(-1)!.ch === " ") line = line.slice(0, -1);
+      out.push(draw(line));
+      rest = rest.slice(cut);
+      if (rest[0]?.ch === " ") rest = rest.slice(1);
+    }
+    out.push(draw(rest));
+  }
+  return out;
 }

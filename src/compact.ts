@@ -1,14 +1,13 @@
 // Compaction: when the conversation no longer fits the model, summarise the
 // older turns with the model itself and keep the last two turns verbatim.
 
-import { LLMError, type Message } from "./llm.ts";
+import { CONTEXT_TOO_LONG, LLMError, type Message } from "./llm.ts";
 import { splitTurns } from "./transcript.ts";
 
 /** The server refused the request because it is longer than the model's context. */
 export function isContextError(e: unknown): boolean {
   if (!(e instanceof LLMError)) return false;
-  return /context[ _-]?(length|size|window)|exceeds? (the )?(available |maximum )?context|maximum context|too many tokens|prompt is too long|input is too long|exceed_context/i
-    .test(e.message);
+  return CONTEXT_TOO_LONG.test(e.message);
 }
 
 export const SUMMARY_PROMPT =

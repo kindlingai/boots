@@ -33,6 +33,8 @@ import {
   approve,
   askSecret,
   bold,
+  commandLine,
+  cyan,
   dim,
   green,
   info,
@@ -795,13 +797,13 @@ export class Session {
         const loc = this.where();
         const again = this.repeated(`${loc}\0${cmd}`);
         if (again) {
-          say(dim(`  [${loc}] $ ${cmd}`));
+          say(commandLine(loc, "$", cmd));
           say(yellow("    not run: the same command again"));
           return again;
         }
         const refused = refuseInRun(cmd);
         if (refused) {
-          say(dim(`  [${loc}] $ ${cmd}`));
+          say(commandLine(loc, "$", cmd));
           say(yellow(`    not run: ${refused.split(":")[0]}`));
           return `Not run: ${refused}`;
         }
@@ -809,7 +811,7 @@ export class Session {
         const targets = sshTargets(cmd);
         const again2 = targets.find((t) => this.manualSsh.has(`${loc}\0${sshHost(t)}`));
         if (again2) {
-          say(dim(`  [${loc}] $ ${cmd}`));
+          say(commandLine(loc, "$", cmd));
           say(yellow(`    not run: ssh to ${sshHost(again2)} again; use the ssh tool`));
           return `Not run: this is the second command that connects to ${
             sshHost(again2)
@@ -817,23 +819,27 @@ export class Session {
         }
         const { verdict, checked, culprit } = await this.check(cmd);
         if (verdict === "complex") {
-          say(dim(`  [${loc}] $ ${cmd}`));
+          say(commandLine(loc, "$", cmd));
           say(yellow("    too complex to check; asking for smaller steps"));
           return Session.TOO_COMPLEX;
         }
         const label = Session.label(verdict, checked, culprit);
         if (verdict === "readonly" && this.allowReadonly) {
-          say(dim(`  [${loc}] $ ${cmd}`) + label);
+          say(commandLine(loc, "$", cmd) + label);
         } else if (this.autoActive() && (verdict === "readonly" || verdict === "writes")) {
           // Auto mode: checked, and not dangerous. (Unchecked commands still ask.)
-          say(dim(`  [${loc}] $ ${cmd}`) + label + dim("  (auto)"));
+          say(commandLine(loc, "$", cmd) + label + dim("  (auto)"));
         } else {
           const kind = verdict === "readonly"
             ? "readonly"
             : verdict === "dangerous"
             ? "dangerous"
             : "normal";
-          const no = await this.gate(`[${bold(loc)}] $ ${cmd}${label}`, `${loc}\0${cmd}`, kind);
+          const no = await this.gate(
+            `${commandLine(loc, "$", cmd)}${label}`,
+            `${loc}\0${cmd}`,
+            kind,
+          );
           if (no) return no;
         }
         for (const t of targets) this.manualSsh.add(`${loc}\0${sshHost(t)}`);
@@ -847,7 +853,7 @@ export class Session {
         // a route the user cannot see. Point at ssh first, then sudo there.
         if (commands(cmd).some((w) => w[0] === "ssh")) {
           const advice = sshRootAdvice(`sudo ${cmd}`) ?? sshRootAdvice(cmd);
-          say(dim(`  [${this.where()}] sudo ${cmd}`));
+          say(commandLine(this.where(), "#", cmd));
           say(yellow("    not run: ssh inside sudo; use the ssh tool, then sudo there"));
           return `Not run: ${
             advice ??
@@ -858,7 +864,7 @@ export class Session {
         // complex and the dangerous.
         const { verdict, checked, culprit } = await this.check(cmd, true);
         if (verdict === "complex") {
-          say(dim(`  [${this.where()}] sudo ${cmd}`));
+          say(commandLine(this.where(), "#", cmd));
           say(yellow("    too complex to check; asking for smaller steps"));
           return Session.TOO_COMPLEX;
         }
@@ -867,12 +873,10 @@ export class Session {
         // commands; otherwise the prompt offers that.
         const safeRead = !checked && verdict === "readonly" && !readsSecrets(cmd);
         if (safeRead && this.allowReadonly) {
-          say(dim(`  [${this.where()}] sudo ${cmd}  (read-only)`));
+          say(commandLine(this.where(), "#", cmd) + dim("  (read-only)"));
         } else {
           const no = await this.gate(
-            `[${bold(this.where())}] ${red("sudo")} ${cmd}${
-              Session.label(verdict, checked, culprit)
-            }`,
+            `${commandLine(this.where(), "#", cmd)}${Session.label(verdict, checked, culprit)}`,
             `${this.where()}\0sudo\0${cmd}`,
             safeRead ? "readonly" : verdict === "dangerous" ? "dangerous" : "root",
           );
@@ -883,7 +887,7 @@ export class Session {
         return this.render(r);
       }
       case "read_file": {
-        say(dim(`  [${this.where()}] read ${args.path}`));
+        say(`${cyan(this.where())} ${dim("read")} ${args.path}`);
         const r = await this.call("read", { path: String(args.path) });
         if (r.binary) return `${r.path} is binary (${r.size} bytes)`;
         return this.clip(r.content) +
@@ -894,9 +898,9 @@ export class Session {
         const refused = refuseStartFull(String(args.path ?? ""), content);
         if (refused) return refused;
         const preview = content.split("\n").slice(0, 12).map((l) => dim(`    ${l}`)).join("\n");
-        const what = `[${bold(this.where())}] write ${args.path} (${content.length} bytes${
-          args.mode ? `, mode ${args.mode}` : ""
-        })`;
+        const what = `${cyan(this.where())} write ${
+          bold(String(args.path))
+        } (${content.length} bytes${args.mode ? `, mode ${args.mode}` : ""})`;
         if (this.autoActive()) {
           say(dim(`  ${plainText(what)}  (auto)`));
         } else {
@@ -921,7 +925,7 @@ export class Session {
         }
         const from = hop ? this.where() : this.stack[0].label;
         const no = await this.gate(
-          `[${bold(from)}] ssh to ${bold(dest)}${
+          `${commandLine(from, ">>", bold(dest))}${
             hop ? ` ${yellow("(multi-hop, through " + this.here.label + ")")}` : ""
           } (ai-bootstrap installs itself there)`,
           `ssh\0${from}\0${dest}`,
@@ -1069,7 +1073,7 @@ export class Session {
         return await this.fetchUrl(String(args.url ?? ""));
       case "git_clone": {
         const url = String(args.url ?? "");
-        say(dim(`  [${this.where()}] git clone ${url}${args.ref ? ` (${args.ref})` : ""}`));
+        say(commandLine(this.where(), "$", `git clone ${url}${args.ref ? ` (${args.ref})` : ""}`));
         const r = await this.call("git_clone", {
           url,
           ref: args.ref ? String(args.ref) : undefined,

@@ -133,6 +133,13 @@ export function fit(history: Message[], budget: number, statuses: string[] = [])
   return msgs;
 }
 
+/** "512 tokens", "3.4k tokens". */
+export function tokenCount(n: number): string {
+  return `${n < 1000 ? n : `${(n / 1000).toFixed(n < 10_000 ? 1 : 0)}k`} token${
+    n === 1 ? "" : "s"
+  }`;
+}
+
 /** Text on one line, cut to `n` characters. */
 function oneLine(s: string, n: number): string {
   const t = s.replace(/\s+/g, " ").trim();
@@ -388,9 +395,19 @@ export class Agent {
         full: current !== this.s.router.bootstrap,
       });
       const spin = spinner("thinking");
+      // Tokens so far, next to "thinking", so a long think or tool call shows progress.
+      let tokens = 0, shownAt = 0;
       let tooLong = false;
       try {
         reply = await this.s.router.chat(await this.messages(), shape, {
+          token: () => {
+            tokens++;
+            const now = Date.now();
+            if (!printed && now - shownAt >= 250) {
+              shownAt = now;
+              spin.note(tokenCount(tokens));
+            }
+          },
           content: (t) => {
             if (!printed) {
               // Whitespace before a tool call is not a reply: wait for words.
@@ -458,14 +475,23 @@ export class Agent {
         tool_calls: reply.toolCalls.length ? reply.toolCalls : undefined,
       });
       if (broken || empty) {
+        // Out of output tokens with nothing said: it thought until the limit.
+        // The next try answers without thinking.
+        const thoughtOut = empty && reply.finish === "length";
+        if (thoughtOut) this.s.router.thinkingOffOnce = true;
         const why = broken
           ? "a tool call that could not be read"
-          : reply.finish === "length"
-          ? "an empty reply (it ran out of output tokens)"
+          : thoughtOut
+          ? `an empty reply: it ${
+            reply.reasoning ? "thought" : "ran"
+          } until it ran out of output tokens (asking again with thinking off for this reply)`
           : "an empty reply";
         if (nudges < 2) {
           nudges++;
-          say(`the model sent ${why}; asking it to try again`, "dim");
+          say(
+            thoughtOut ? `the model sent ${why}` : `the model sent ${why}; asking it to try again`,
+            "dim",
+          );
           this.push({
             role: "user",
             content: broken
@@ -477,6 +503,8 @@ export class Agent {
         say(`the model sent ${why} again; stopping here`, "warn");
         return;
       }
+      // A reply that worked: only empty or broken ones in a row count.
+      nudges = 0;
       if (!reply.toolCalls.length) return;
       let replied = false;
       // Only what the answering model was offered (the base model is on rails).
