@@ -48,7 +48,16 @@ export interface Endpoint {
    * the first "Can only get item pairs from a mapping" error.
    */
   toolArgsAsObjects?: boolean;
+  /** The server refused chat_template_kwargs (learnt from a 400): /thinking off cannot reach it. */
+  noTemplateKwargs?: boolean;
 }
+
+/**
+ * Asks the chat template not to think: Qwen, GLM and Gemma read
+ * enable_thinking, DeepSeek reads thinking. llama.cpp, vLLM and SGLang pass
+ * these to the template; a server that refuses them is asked again without.
+ */
+const THINKING_OFF = { enable_thinking: false, thinking: false };
 
 /** The small local model we run ourselves: kept steady. */
 export const BOOTSTRAP_SAMPLING = { temperature: 0.3 };
@@ -196,6 +205,8 @@ export async function chat(
   toolChoice?: "required",
   /** Internal: retrying after a 400 without the sampling parameters. */
   plain = false,
+  /** Ask the model not to think (/thinking off). */
+  thinkingOff = false,
 ): Promise<Reply> {
   const headers: Record<string, string> = { "content-type": "application/json" };
   const key = apiKey(ep);
@@ -212,6 +223,7 @@ export async function chat(
     messages: ep.toolArgsAsObjects ? withObjectArgs(messages) : messages,
     tools: tools.length ? tools : undefined,
     tool_choice: tools.length && toolChoice ? toolChoice : undefined,
+    chat_template_kwargs: thinkingOff && !ep.noTemplateKwargs ? THINKING_OFF : undefined,
     stream: true,
   };
   let r: Response;
@@ -237,13 +249,47 @@ export async function chat(
       messages.some((m) => m.tool_calls?.length)
     ) {
       ep.toolArgsAsObjects = true;
-      return await chat(ep, messages, tools, sink, signal, temperature, toolChoice, plain);
+      return await chat(
+        ep,
+        messages,
+        tools,
+        sink,
+        signal,
+        temperature,
+        toolChoice,
+        plain,
+        thinkingOff,
+      );
+    }
+    if (r.status === 400 && body.chat_template_kwargs) {
+      ep.noTemplateKwargs = true;
+      return await chat(
+        ep,
+        messages,
+        tools,
+        sink,
+        signal,
+        temperature,
+        toolChoice,
+        plain,
+        thinkingOff,
+      );
     }
     if (r.status === 400 && body.tool_choice) {
-      return await chat(ep, messages, tools, sink, signal, temperature, undefined, plain);
+      return await chat(
+        ep,
+        messages,
+        tools,
+        sink,
+        signal,
+        temperature,
+        undefined,
+        plain,
+        thinkingOff,
+      );
     }
     if (r.status === 400 && Object.keys(sampling).length) {
-      return await chat(ep, messages, tools, sink, signal, undefined, undefined, true);
+      return await chat(ep, messages, tools, sink, signal, undefined, undefined, true, thinkingOff);
     }
     throw new LLMError(
       `${ep.label}: HTTP ${r.status}: ${text}`,
@@ -349,6 +395,8 @@ export interface BootstrapControl {
 export class Router {
   smart: Endpoint | null = null;
   private smartDownUntil = 0;
+  /** /thinking off: ask every model the agent talks to not to think. */
+  thinkingOff = false;
   onNotice: (s: string) => void = () => {};
 
   constructor(public bootstrap: Endpoint, private control?: BootstrapControl) {}
@@ -404,7 +452,17 @@ export class Router {
     const shape = (e: Endpoint): ChatShape => typeof tools === "function" ? tools(e) : { tools };
     const send = (e: Endpoint) => {
       const s = shape(e);
-      return chat(e, messages(), s.tools, sink, signal, undefined, s.toolChoice);
+      return chat(
+        e,
+        messages(),
+        s.tools,
+        sink,
+        signal,
+        undefined,
+        s.toolChoice,
+        false,
+        this.thinkingOff,
+      );
     };
     const ep = this.current();
     if (ep === this.smart) {

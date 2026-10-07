@@ -357,3 +357,44 @@ Deno.test("active goals: shown by title, reminded with details every 3 turns or 
     await done();
   }
 });
+
+Deno.test('fit: after a long turn, "continue" keeps that turn\'s latest steps and what it was for', async () => {
+  const { fit } = await import("../src/agent.ts");
+  const call = (id: string) => ({
+    id,
+    type: "function" as const,
+    function: { name: "run", arguments: `{"command":"step ${id}"}` },
+  });
+  const history: any[] = [
+    { role: "user", content: "older, finished request" },
+    { role: "assistant", content: "done with that" },
+    { role: "user", content: "bring up GLM-5.3 TP4 on the sparks" },
+  ];
+  for (let i = 0; i < 60; i++) {
+    history.push({ role: "assistant", content: "", tool_calls: [call(`c${i}`)] });
+    history.push({
+      role: "tool",
+      tool_call_id: `c${i}`,
+      content: `output ${i} ` + "y".repeat(500),
+    });
+  }
+  history.push({ role: "user", content: "continue" });
+  const out = fit(history, 12_000);
+  assertEquals(out.at(-1)!.content, "continue");
+  // The start of the long turn went, but a note keeps the request...
+  assertEquals(out[0].role, "user");
+  assertStringIncludes(out[0].content, "bring up GLM-5.3 TP4 on the sparks");
+  assertStringIncludes(out[0].content, "history_search");
+  // ...and its latest steps are still there, with every tool result after its call.
+  assert(out.some((m) => m.content.startsWith("output 59")));
+  assert(!out.some((m) => m.content.startsWith("output 0 ")));
+  assertEquals(out[1].role, "assistant");
+  for (const [i, m] of out.entries()) {
+    if (m.role === "tool") assert(["assistant", "tool"].includes(out[i - 1].role));
+  }
+  const size = out.reduce(
+    (n, m) => n + m.content.length + JSON.stringify(m.tool_calls ?? "").length,
+    0,
+  );
+  assert(size <= 12_000, `fits: ${size}`);
+});

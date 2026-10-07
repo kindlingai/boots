@@ -47,7 +47,7 @@ experimental Gemma 4 variant that generates text by diffusion. Checked October 2
     - Unquantized memory: E2B/E4B 24 GB, 12B 40 GB, 26B-A4B and 31B 80 GB.
   - Thinking: put `<|think|>` at the start of the system prompt; thoughts come back wrapped in
     `<|channel>thought ... <channel|>`. llama-server:
-    `--chat-template-kwargs '{"enable_thinking":false}'` to turn it off.
+    `--chat-template-kwargs '{"enable_thinking":false}'` turns it off (only if the user asks).
   - llama.cpp: use `--jinja`.
   - Ollama: `gemma4:e2b`, `gemma4:e4b` (default), `:12b`, `:26b`, `:31b` (unconfirmed).
 

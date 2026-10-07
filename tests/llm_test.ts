@@ -278,3 +278,42 @@ Deno.test("recovers XML-style, unclosed and in-thinking tool calls", () => {
   assertEquals(normalize("done", [], '<tool_call>{"name":"run"}</tool_call>').calls, []);
   assertEquals(parseTextCall("{broken"), null);
 });
+
+Deno.test("/thinking off asks the template not to think; a server that refuses is asked without", async () => {
+  const bodies: any[] = [];
+  let refuse = false;
+  const server = Deno.serve({ port: 0, onListen() {} }, async (req) => {
+    const b = await req.json();
+    bodies.push(b);
+    if (refuse && b.chat_template_kwargs) {
+      return new Response("unknown field: chat_template_kwargs", { status: 400 });
+    }
+    const sse = `data: ${
+      JSON.stringify({ choices: [{ delta: { content: "ok" } }] })
+    }\n\ndata: [DONE]\n\n`;
+    return new Response(sse, { headers: { "content-type": "text/event-stream" } });
+  });
+  try {
+    const ep = (): Endpoint => ({
+      label: "x",
+      baseUrl: `http://127.0.0.1:${server.addr.port}/v1`,
+      model: "x",
+      contextChars: 1e4,
+    });
+    const hi = () => [{ role: "user" as const, content: "hi" }];
+    const r = new Router(ep());
+    await r.chat(hi, [], {});
+    assert(!("chat_template_kwargs" in bodies[0]), "on by default: the server's own setting");
+    r.thinkingOff = true;
+    await r.chat(hi, [], {});
+    assertEquals(bodies[1].chat_template_kwargs, { enable_thinking: false, thinking: false });
+    refuse = true;
+    const other = new Router(ep());
+    other.thinkingOff = true;
+    assertEquals((await other.chat(hi, [], {})).content, "ok");
+    assert(!("chat_template_kwargs" in bodies.at(-1)), "retried without");
+    assertEquals(other.current().noTemplateKwargs, true, "and not sent again");
+  } finally {
+    await server.shutdown();
+  }
+});

@@ -43,8 +43,9 @@ suits Apple silicon and unified-memory boxes, where memory bandwidth is the limi
   - vLLM:
     `vllm serve Qwen/Qwen3.8-27B --reasoning-parser qwen3 --enable-auto-tool-choice --tool-call-parser qwen3_coder`
   - SGLang: `--reasoning-parser qwen3 --tool-call-parser qwen3_coder`
-  - Thinking is controlled with chat-template kwargs: `{"enable_thinking": false}` turns it off;
-    `{"reasoning_effort": "low|medium|high"}` sets the depth (default high).
+  - Thinking is controlled with chat-template kwargs (leave it on unless the user asks):
+    `{"enable_thinking": false}` turns it off; `{"reasoning_effort": "low|medium|high"}` sets the
+    depth (default high).
   - llama.cpp: pass the same kwargs with `--chat-template-kwargs '{"enable_thinking": false}'`.
   - Ollama: `qwen3.8` (27B, ~18 GB with vision).
 
@@ -91,8 +92,8 @@ weights: the open line went from 3.6 to 3.8.
 - Links: https://huggingface.co/collections/Qwen/qwen35 · https://github.com/QwenLM/Qwen3.5 ·
   https://huggingface.co/unsloth/Qwen3.5-35B-A3B-GGUF · `unsloth/Qwen3.5-27B-GGUF`
 - Serving:
-  - llama.cpp: `-hf unsloth/Qwen3.5-35B-A3B-GGUF:UD-Q4_K_XL --jinja`. Thinking off:
-    `--chat-template-kwargs '{"enable_thinking": false}'`. Vision needs the mmproj file.
+  - llama.cpp: `-hf unsloth/Qwen3.5-35B-A3B-GGUF:UD-Q4_K_XL --jinja`. Thinking off, only if the user
+    asks: `--chat-template-kwargs '{"enable_thinking": false}'`. Vision needs the mmproj file.
   - Known issue: some `<think>` text can leak even with thinking off.
   - Ollama: `qwen3.5` (0.8b to 122b; default `qwen3.5:9b`, 6.6 GB).
 
@@ -146,8 +147,9 @@ weights: the open line went from 3.6 to 3.8.
 
 ## Tips
 
-- With llama.cpp, always pass `--jinja` so tool calls are parsed. Add `--reasoning off` (newer
-  builds) or `--chat-template-kwargs '{"enable_thinking": false}'` when an agent should answer
-  quickly.
+- With llama.cpp, always pass `--jinja` so tool calls are parsed. Leave thinking on (the default):
+  agents and users need the stronger reasoning. Turn it off (`--reasoning off` on newer builds, or
+  `--chat-template-kwargs '{"enable_thinking": false}'`) only when the user asks for faster,
+  shallower replies.
 - Unsloth's `UD-` quants (e.g. `UD-Q4_K_XL`) are dynamic quants. They are usually the best quality
   for their size.

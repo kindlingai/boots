@@ -203,7 +203,7 @@ Deno.test("goals.json is in the full prompt, with its shape", async () => {
   assertStringIncludes(full, "Goals (memory goals.json):\n\n```json\n" + goals + "\n```");
   assertStringIncludes(
     flat(full),
-    'a list of goals, each `{"title": "...", "done": false, "children": [ ...goals... ]}`',
+    'a list of goals, each `{"title": "...", "details": "...", "done": false, "active": true, "children": [ ...goals... ]}`',
   );
   const empty = systemPrompt(t, new Router(ep("gpt-oss-120b")), { ...vars, goals: "[]\n" });
   assertStringIncludes(empty, "[] (empty: no goals recorded yet)");

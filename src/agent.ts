@@ -58,14 +58,35 @@ export function fit(history: Message[], budget: number): Message[] {
   const size = (ms: Message[]) =>
     ms.reduce((n, m) => n + m.content.length + JSON.stringify(m.tool_calls ?? "").length, 0);
   const lastUser = msgs.findLastIndex((m) => m.role === "user");
-  if (lastUser > 0) {
-    // Drop whole turns from the front, never the last one.
+  if (lastUser > 0 && size(msgs) > budget) {
+    // Drop from the front a step at a time (a message, with an assistant's
+    // tool results), never the last user message or anything after it. A
+    // long turn followed by "continue" then keeps its latest steps instead
+    // of vanishing whole; when its start goes, a note says what it was for.
+    const stepEnd = (i: number) => {
+      let j = i + 1;
+      if (msgs[i].role === "assistant") { while (j < lastUser && msgs[j].role === "tool") j++; }
+      return j;
+    };
+    const note = (asked: string): Message => ({
+      role: "user",
+      content:
+        `(Earlier steps were dropped to fit the context; history_search can look through them. The work below began with the user asking: ${
+          asked.length > 600 ? asked.slice(0, 600) + "…" : asked
+        })`,
+    });
     let from = 0;
-    while (size(msgs.slice(from)) > budget && from < lastUser) {
-      from++;
-      while (from < lastUser && msgs[from].role !== "user") from++;
+    let asked: string | null = null;
+    const withNote = () => {
+      const kept = msgs.slice(from);
+      // Only when part of that turn is kept: a whole turn dropped needs no note.
+      return asked !== null && kept[0]?.role !== "user" ? [note(asked), ...kept] : kept;
+    };
+    while (from < lastUser && size(withNote()) > budget) {
+      if (msgs[from].role === "user") asked = msgs[from].content;
+      from = stepEnd(from);
     }
-    msgs = msgs.slice(from);
+    msgs = withNote();
   }
   // Still too long: shorten the biggest tool outputs, largest first.
   for (let guard = 0; size(msgs) > budget && guard < 50; guard++) {
@@ -497,6 +518,8 @@ const HELP = `commands:
   /compact      summarise older turns to free context (keeps the last 2)
   /mode [auto|ask]  auto: run read-only commands and non-sudo writes without
                 asking (never dangerous ones, never sudo, never on the base model)
+  /thinking [on|off]  off: ask models to answer without thinking first
+                (faster, shallower); on: each model's default
   /exit         leave the current remote host
   /quit         quit`;
 
@@ -570,6 +593,25 @@ export async function repl(agent: Agent): Promise<void> {
                   : ""
               } /mode ask turns it off.`
               : "mode: ask. Commands that change something ask first. /mode auto runs the safe ones without asking.",
+          );
+          break;
+        }
+        case "/thinking": {
+          const want = rest[0];
+          if (want === "off" || want === "on") s.router.thinkingOff = want === "off";
+          else if (want) {
+            say("usage: /thinking [on | off]");
+            break;
+          }
+          const ep = s.router.current();
+          say(
+            s.router.thinkingOff
+              ? `thinking: off. Models are asked not to think before answering (faster, shallower).${
+                ep.noTemplateKwargs
+                  ? ` ${ep.label} does not accept the setting, so it may still think.`
+                  : ""
+              } /thinking on turns it back on.`
+              : "thinking: on (each model's default). /thinking off asks models to answer without thinking first.",
           );
           break;
         }

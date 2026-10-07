@@ -76,6 +76,7 @@ verified at the source.
   `vllm serve zai-org/GLM-4.7-FP8 --tensor-parallel-size 4 --enable-auto-tool-choice --tool-call-parser glm47 --reasoning-parser glm45`
 - SGLang: the same parsers, `--tool-call-parser glm47 --reasoning-parser glm45`.
 - GLM-4.5 and 4.6 use `glm45` for both parsers (unconfirmed).
-- Thinking is on by default. Turn it off with the chat-template kwarg `{"enable_thinking": false}`;
-  for llama.cpp, `--chat-template-kwargs '{"enable_thinking": false}'`.
+- Thinking is on by default; leave it on. Only if the user asks, turn it off with the chat-template
+  kwarg `{"enable_thinking": false}`; for llama.cpp,
+  `--chat-template-kwargs '{"enable_thinking": false}'`.
 - llama.cpp: use the unsloth GGUFs with `--jinja`.
