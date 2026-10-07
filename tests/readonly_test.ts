@@ -1,5 +1,5 @@
-import { assert, assertFalse } from "@std/assert";
-import { isReadonly } from "../src/readonly.ts";
+import { assert, assertEquals, assertFalse } from "@std/assert";
+import { isReadonly, unrollLoops } from "../src/readonly.ts";
 
 Deno.test("read-only commands pass", () => {
   for (
@@ -118,4 +118,39 @@ Deno.test("anything that writes or escapes asks", () => {
       "timedatectl set-time 12:00",
     ]
   ) assertFalse(isReadonly(c), c);
+});
+
+Deno.test("for loops over literal words are checked as the commands they run", () => {
+  assertEquals(
+    unrollLoops('for h in gx10 spark; do ssh-keygen -F "$h"; done'),
+    'ssh-keygen -F "gx10"; ssh-keygen -F "spark"',
+  );
+  assertEquals(
+    unrollLoops("for f in a.log 'b c.log'; do wc -l \"${f}\"; done | sort"),
+    '( wc -l "a.log"; wc -l "b c.log" ) | sort',
+  );
+  assertEquals(
+    unrollLoops("echo start && for p in 8000 8080\ndo\n  lsof -i :$p\ndone"),
+    "echo start && ( lsof -i :8000; lsof -i :8080 )",
+  );
+  // Read-only once unrolled; the loop itself never was.
+  assert(isReadonly(unrollLoops("for d in /tmp /var/log; do ls -la $d; done")));
+  assert(!isReadonly(unrollLoops("for d in /tmp /var/log; do rm -rf $d; done")));
+  // Left alone: globs, substitutions, variables, $v in single quotes,
+  // nested loops, break, and values the shell would treat specially.
+  for (
+    const c of [
+      "for f in *.log; do cat $f; done",
+      "for f in $(ls); do cat $f; done",
+      "for f in $FILES; do cat $f; done",
+      "for f in a b; do echo '$f'; done",
+      "for f in a b; do for g in c; do echo $f$g; done; done",
+      "for f in a b; do cat $f || break; done",
+      'for f in "a;rm -rf ~" b; do echo $f; done',
+      "for f in ~/x; do cat $f; done",
+      "for f in {a,b}; do cat $f; done",
+    ]
+  ) assertEquals(unrollLoops(c), c, c);
+  // $fx is another variable, not $f followed by x.
+  assertEquals(unrollLoops("for f in a; do echo $fx $f; done"), "echo $fx a");
 });

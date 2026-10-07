@@ -8,7 +8,7 @@ import { b64, DEFAULT_TIMEOUT_MS, type ExecResult, Host, type HostInfo } from ".
 import { chat, type Endpoint, reachable, type Router, type ToolDef } from "./llm.ts";
 import { JSON_MEMORIES, jsonMemory, type Memory } from "./memory.ts";
 import type { McpManager } from "./mcp.ts";
-import { isReadonly, stages } from "./readonly.ts";
+import { isReadonly, stages, unrollLoops } from "./readonly.ts";
 import {
   describeFailure,
   type FullFailure,
@@ -666,10 +666,12 @@ export class Session {
     cmd: string,
     root = false,
   ): Promise<{ verdict: Verdict | null; checked: boolean }> {
-    if (isReadonly(cmd)) return { verdict: "readonly", checked: false };
+    // A loop over literal words is checked as the commands it runs.
+    const unrolled = unrollLoops(cmd);
+    if (isReadonly(unrolled)) return { verdict: "readonly", checked: false };
     const spin = spinner("checking the command");
-    const verdict = await this.classifier.classify(cmd, this.here.info.osName, root).finally(() =>
-      spin.stop()
+    const verdict = await this.classifier.classify(unrolled, this.here.info.osName, root).finally(
+      () => spin.stop(),
     );
     if (verdict === "complex") {
       const n = (this.complexTries.get(cmd) ?? 0) + 1;
@@ -680,7 +682,7 @@ export class Session {
   }
 
   private static TOO_COMPLEX =
-    "Not run: the safety check could not analyze this command, it is too complex. Rewrite it as smaller steps: one simple command per call, without long pipelines or command lists, loops, inline scripts (python -c, bash -c), eval, here-documents or nested substitutions. To create or edit a file, use write_file.";
+    "Not run: the safety check could not analyze this command, it is too complex. Rewrite it as smaller steps: one simple command per call, without long pipelines or command lists, loops (a for loop over a fixed list of words is fine), inline scripts (python -c, bash -c), eval, here-documents or nested substitutions. To create or edit a file, use write_file.";
 
   private static label(verdict: Verdict | null, checked: boolean): string {
     if (!checked) return "";

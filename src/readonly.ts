@@ -586,3 +586,91 @@ export function isReadonly(cmd: string): boolean {
   const st = stages(cmd);
   return !!st && st.length > 0 && st.every(stageReadonly);
 }
+
+/** What a loop value may contain to be pasted into the body as text. */
+const LITERAL = /^[A-Za-z0-9_\-.\/:=@%+, ]+$/;
+
+/** The words of a for list, unquoted; null if one is not a plain literal. */
+function literalWords(list: string): string[] | null {
+  const out: string[] = [];
+  for (const m of list.matchAll(/'([^']*)'|"([^"$`\\]*)"|([^\s'"]+)|(\S)/g)) {
+    if (m[4] !== undefined) return null;
+    const w = m[1] ?? m[2] ?? m[3];
+    if (!LITERAL.test(w) || (m[3] !== undefined && w.includes(" "))) return null;
+    out.push(w);
+  }
+  return out;
+}
+
+/**
+ * The loop body with `$v` / `${v}` replaced by `value`, as the shell would
+ * expand it: unquoted and in double quotes (the value has no characters
+ * either context treats specially). null when `$v` is in single quotes,
+ * where the shell would not expand it, or the body is not simple.
+ */
+function substitute(body: string, v: string, value: string): string | null {
+  let out = "";
+  let q: "" | "'" | '"' = "";
+  for (let i = 0; i < body.length; i++) {
+    const c = body[i];
+    if (c === "\\" && q !== "'") {
+      out += c + (body[i + 1] ?? "");
+      i++;
+      continue;
+    }
+    if (c === "'" && q !== '"') q = q ? "" : "'";
+    else if (c === '"' && q !== "'") q = q ? "" : '"';
+    else if (c === "$") {
+      const rest = body.slice(i + 1);
+      const m = rest.startsWith(`{${v}}`)
+        ? `{${v}}`
+        : rest.startsWith(v) && !/[A-Za-z0-9_]/.test(rest[v.length] ?? "")
+        ? v
+        : null;
+      if (m) {
+        if (q === "'") return null;
+        out += value;
+        i += m.length;
+        continue;
+      }
+    }
+    out += c;
+  }
+  return q ? null : out;
+}
+
+const FOR_LOOP =
+  /(^|[;&|(\n]\s*)for\s+([A-Za-z_][A-Za-z0-9_]*)\s+in\s+([^;\n]*?)\s*[;\n]\s*do\s+([\s\S]*?)\s*[;\n]\s*done(?=\s*(?:$|[;&|)\n]))/;
+
+/** Words that make a loop body more than straight-line commands. */
+const BODY_KEYWORDS =
+  /(^|[\s;&|(])(for|while|until|do|done|break|continue|select|case|esac|function)(?=$|[\s;&|)])/;
+
+/**
+ * `for x in a b c; do cmd $x; done` written out as `cmd a; cmd b; cmd c`, so
+ * the safety check sees each command the loop runs. Only loops over plain
+ * literal words with a straight-line body are unrolled; anything else (a
+ * glob, $(...), nested loops) stays as it was.
+ */
+export function unrollLoops(cmd: string): string {
+  let out = cmd;
+  for (let n = 0; n < 4; n++) {
+    const m = out.match(FOR_LOOP);
+    if (!m) break;
+    const [all, lead, v, list, body] = m;
+    const words = literalWords(list);
+    if (!words?.length || words.length > 32 || BODY_KEYWORDS.test(body)) return cmd;
+    const runs: string[] = [];
+    for (const w of words) {
+      const s = substitute(body, v, w);
+      if (s === null) return cmd;
+      runs.push(s);
+    }
+    const start = m.index! + lead.length;
+    const alone = start === 0 && m.index! + all.length === out.length;
+    const text = alone ? runs.join("; ") : `( ${runs.join("; ")} )`;
+    out = out.slice(0, start) + text + out.slice(m.index! + all.length);
+    if (out.length > 4000) return cmd;
+  }
+  return out;
+}

@@ -387,3 +387,45 @@ Deno.test("the sudo tool refuses ssh, pointing at the ssh tool", async () => {
     await Deno.remove(dir, { recursive: true });
   }
 });
+
+Deno.test("run: a loop over literal words is checked as the commands it runs", async () => {
+  const { Router } = await import("../src/llm.ts");
+  const { Memory } = await import("../src/memory.ts");
+  const { McpManager } = await import("../src/mcp.ts");
+  const { Session } = await import("../src/tools.ts");
+  const { setFrontend } = await import("../src/frontend.ts");
+  const dir = await Deno.makeTempDir();
+  const prompts: string[] = [];
+  setFrontend({
+    emit() {},
+    readLine: (p: string) => {
+      prompts.push(p);
+      return Promise.resolve("n");
+    },
+    close() {},
+  });
+  try {
+    const s = new Session(
+      new Router({ label: "m", baseUrl: "http://127.0.0.1:9/v1", model: "m", contextChars: 1e4 }),
+      new Memory(`${dir}/mem`),
+      new McpManager(`${dir}/mcp.json`),
+      () => Promise.resolve(null),
+    );
+    await s.init();
+    s.allowReadonly = true;
+    const judged: string[] = [];
+    (s as any).classifier = {
+      classify: (c: string) => (judged.push(c), Promise.resolve("writes")),
+    };
+    (s as any).command = (_op: string, cmd: string) =>
+      Promise.resolve({ code: 0, stdout: "", stderr: "", cmd });
+    await s.exec("run", { command: "for d in /tmp /var/log; do ls -la $d; done" });
+    assertEquals(prompts.length, 0, "read-only once unrolled: runs unasked");
+    assertEquals(judged, []);
+    await s.exec("run", { command: "for m in a b; do ollama rm $m; done" });
+    assertEquals(judged, ["ollama rm a; ollama rm b"], "the checker sees each command");
+    assertEquals(prompts.length, 1);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
