@@ -107,19 +107,22 @@ async function sha256(data: Uint8Array): Promise<string> {
   return encodeHex(new Uint8Array(await crypto.subtle.digest("SHA-256", data as BufferSource)));
 }
 
-/** Downloads this version's package for `target`, checked against SHA256SUMS. */
-async function download(target: string, log: (s: string) => void): Promise<Uint8Array> {
-  const base = `${Deno.env.get("AIBOOT_RELEASES") ?? RELEASES}/v${VERSION}`;
-  const pkg = packageName(target);
+/**
+ * The binary in release package `pkg` under `base` (a releases/download/<tag>
+ * URL), checked against that release's SHA256SUMS before it is unpacked.
+ */
+export async function downloadPackage(
+  base: string,
+  pkg: string,
+  log: (s: string) => void,
+): Promise<Uint8Array> {
   const url = `${base}/${pkg}`;
-  log(`downloading the ${target} build from ${url}`);
+  log(`downloading ${url}`);
   const [r, s] = await Promise.all([fetch(url), fetch(`${base}/SHA256SUMS`)]);
   if (!r.ok) {
     await r.body?.cancel();
     await s.body?.cancel();
-    throw new Error(
-      `no ai-bootstrap build for ${target}: ${url} returned ${r.status}. Set AIBOOT_FAR_BINARY to a binary for that platform.`,
-    );
+    throw new Error(`${url} returned ${r.status}`);
   }
   const data = new Uint8Array(await r.arrayBuffer());
   const want = s.ok ? checksumFor(await s.text(), pkg) : (await s.body?.cancel(), null);
@@ -129,6 +132,21 @@ async function download(target: string, log: (s: string) => void): Promise<Uint8
     throw new Error(`${pkg} does not match its checksum (got ${got}, SHA256SUMS says ${want})`);
   }
   return await unpack(pkg, data);
+}
+
+/** Downloads this version's package for `target`, checked against SHA256SUMS. */
+async function download(target: string, log: (s: string) => void): Promise<Uint8Array> {
+  const base = `${Deno.env.get("AIBOOT_RELEASES") ?? RELEASES}/v${VERSION}`;
+  log(`downloading the ${target} build`);
+  try {
+    return await downloadPackage(base, packageName(target), log);
+  } catch (e) {
+    throw new Error(
+      `no ai-bootstrap build for ${target}: ${
+        (e as Error).message
+      }. Set AIBOOT_FAR_BINARY to a binary for that platform.`,
+    );
+  }
 }
 
 /** Fetches the build for `target` from the machine above, a chunk at a time. */

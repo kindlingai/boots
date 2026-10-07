@@ -68,7 +68,7 @@ Deno.test("no update when up to date, offline, slow or switched off", async () =
   }
 });
 
-Deno.test("the prompt note names the version, the download and how to replace the binary", () => {
+Deno.test("the prompt note names the version, the package and the upgrade command", () => {
   assertEquals(
     assetName("0.2.0", "x86_64-unknown-linux-gnu"),
     "ai-bootstrap-0.2.0-x86_64-unknown-linux-gnu.tar.gz",
@@ -85,10 +85,9 @@ Deno.test("the prompt note names the version, the download and how to replace th
   const note = updateNote(u, "0.1.17", "/opt/bin/ai-bootstrap");
   assertStringIncludes(note, "ai-bootstrap 0.2.0 is out");
   assertStringIncludes(note, "this is 0.1.17");
-  assertStringIncludes(
-    note,
-    `https://github.com/kindlingai/boots/releases/download/v0.2.0/${assetName("0.2.0")}`,
-  );
-  assertStringIncludes(note, "replaces /opt/bin/ai-bootstrap");
+  // The model runs the upgrade command, which downloads, checks and replaces.
+  assertStringIncludes(note, "`/opt/bin/ai-bootstrap upgrade`");
+  assertStringIncludes(note, assetName("0.2.0"));
+  assertStringIncludes(note, "SHA256SUMS");
   assertStringIncludes(updateNote(u, "0.1.17", "/usr/bin/deno"), "git pull");
 });

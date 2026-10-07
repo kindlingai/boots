@@ -2,7 +2,7 @@
 // latest release and takes whichever answers first. A newer version adds a
 // note to the system prompt so the model offers to update.
 
-import { basename, dirname } from "@std/path";
+import { basename } from "@std/path";
 import { currentTarget, isWindows, VERSION } from "./platform.ts";
 import { packageName } from "./package.ts";
 
@@ -53,6 +53,24 @@ async function latest(repo: string, signal: AbortSignal): Promise<Update> {
   };
 }
 
+/** The latest release, from whichever repository answers first; null if none does. */
+export async function latestRelease(
+  repos = RELEASE_REPOS,
+  timeoutMs = 15_000,
+  fetchLatest = latest,
+): Promise<Update | null> {
+  const stop = new AbortController();
+  const timer = setTimeout(() => stop.abort(), timeoutMs);
+  try {
+    return await Promise.any(repos.map((r) => fetchLatest(r, stop.signal)));
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+    stop.abort();
+  }
+}
+
 /**
  * A release newer than this one, from whichever repository answers first;
  * null when we are up to date, offline, or AIBOOT_UPDATE_CHECK=0.
@@ -84,18 +102,14 @@ export function assetName(version: string, target = currentTarget()): string {
 
 /** The system prompt note: what is newer, and how this install updates. */
 export function updateNote(u: Update, current = VERSION, exe = Deno.execPath()): string {
-  const asset = assetName(u.version);
-  const download = `https://github.com/${u.repo}/releases/download/${u.tag}/${asset}`;
   const compiled = basename(exe).toLowerCase().startsWith("ai-bootstrap");
   const how = !compiled
     ? "This copy runs from source: the user updates it with git pull."
-    : `Download ${download} and unpack it so it replaces ${exe} (the .tar.gz holds ai-bootstrap; the macOS .sh writes ai-bootstrap next to itself when run with sh; the .zip holds ai-bootstrap.exe). ${
-      isWindows
-        ? `Windows will not overwrite a running .exe: rename it first (e.g. to ai-bootstrap.old.exe) in ${
-          dirname(exe)
-        }. `
-        : ""
-    }Each command goes through the usual approval. Then the user restarts ai-bootstrap.`;
+    : `run \`${exe} upgrade\` with run (timeout_s 300): it downloads ${
+      assetName(u.version)
+    }, checks it against the release's SHA256SUMS and replaces ${
+      isWindows ? "this .exe (the running one is renamed aside)" : "this binary"
+    }. Then the user restarts ai-bootstrap.`;
   return `## Update available
 
 ai-bootstrap ${u.version} is out (${u.url}); this is ${current}. Early in the session, tell the

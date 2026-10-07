@@ -5,6 +5,7 @@
 //   ai-bootstrap --far        far agent (started by ai-bootstrap over ssh)
 //   ai-bootstrap --version
 
+import { cleanUpgradeLeftovers, upgradeMain } from "./upgrade.ts";
 import { Transcript } from "./transcript.ts";
 import { checkForUpdate } from "./update.ts";
 import { askpassMain } from "./askpass.ts";
@@ -36,6 +37,8 @@ import { GuiFrontend } from "./frontends/gui.ts";
 import { windowMain } from "./frontends/window.ts";
 
 async function interactive(mode: UiMode): Promise<number> {
+  // Binaries an upgrade on Windows renamed aside.
+  void cleanUpgradeLeftovers();
   // ^C at the TUI's input arrives as a key, not a signal: it goes through here too.
   let onInterrupt = () => {};
   // Closing the GUI window or its Quit button: stop what runs, then end.
@@ -268,6 +271,9 @@ async function main(args: string[]): Promise<number> {
         `data:    ${dataDir()}\nmodels:  ${modelsDir()}\nscripts: ${scriptsDir()}\ncache:   ${cacheDir()}`,
       );
       return 0;
+    case "upgrade":
+    case "--upgrade":
+      return await upgradeMain(args.slice(1));
     case "--gui-window":
       return await windowMain(args[1] ?? "", args[2] ?? "ai-bootstrap");
     case undefined:
@@ -277,7 +283,7 @@ async function main(args: string[]): Promise<number> {
       return await interactive(uiMode(args[0]));
     default:
       console.log(
-        "usage: ai-bootstrap [--gui | --tui | --repl | --version | --paths | --docs | --search WORDS]",
+        "usage: ai-bootstrap [--gui | --tui | --repl | upgrade [VERSION] [--force] | --version | --paths | --docs | --search WORDS]",
       );
       return 2;
   }
