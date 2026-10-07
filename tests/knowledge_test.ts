@@ -99,7 +99,9 @@ Deno.test("the model reaches the knowledge base through memory_search", async ()
   try {
     const r = await run(
       [],
-      { OPENAI_BASE_URL: m.url, OPENAI_MODEL: "mock" },
+      // A size in the name: an unsized "mock" is taken for a small model whose
+      // context the prompt and tools mostly fill.
+      { OPENAI_BASE_URL: m.url, OPENAI_MODEL: "mock-30b" },
       "1\nhelp me\n/quit\n",
     );
     assertEquals(r.code, 0, r.out + r.err);

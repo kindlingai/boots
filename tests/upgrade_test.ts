@@ -38,7 +38,10 @@ Deno.test("upgrade on Linux/macOS: the checked package replaces the binary in pl
       "https://github.com/kindlingai/boots/releases/download/v0.1.46/ai-bootstrap-0.1.46-x86_64-unknown-linux-gnu.tar.gz",
     ]);
     assertEquals(await Deno.readTextFile(exe), "new");
-    assertEquals((await Deno.stat(exe)).mode! & 0o111, 0o111, "executable");
+    // Permission bits exist on Linux and macOS only (Windows reports none).
+    if (Deno.build.os !== "windows") {
+      assertEquals((await Deno.stat(exe)).mode! & 0o111, 0o111, "executable");
+    }
     assertEquals([...Deno.readDirSync(dir)].length, 1, "nothing left beside it");
     // Current already: nothing to do, unless forced.
     deps.current = "0.1.46";

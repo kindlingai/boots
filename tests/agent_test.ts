@@ -525,6 +525,11 @@ Deno.test("an empty reply cut off by the output limit is retried with thinking o
     assertEquals(bodies.length, 4, "two empties, not in a row: the turn carries on");
     assertEquals(bodies[0].chat_template_kwargs, undefined, "thinking on by default");
     assertEquals(bodies[1].chat_template_kwargs, { enable_thinking: false, thinking: false });
+    // The retry is handed where the cut-off thinking got to.
+    const nudge = bodies[1].messages.at(-1);
+    assertEquals(nudge.role, "user");
+    assertStringIncludes(nudge.content, "ran out of room while thinking");
+    assertStringIncludes(nudge.content, "thinking about it");
     assertEquals(bodies[2].chat_template_kwargs, undefined, "only the one retry");
     assertEquals(bodies[3].chat_template_kwargs, { enable_thinking: false, thinking: false });
     assert(bodies[0].max_tokens >= 2048, `room to answer: ${bodies[0].max_tokens}`);
@@ -532,5 +537,24 @@ Deno.test("an empty reply cut off by the output limit is retried with thinking o
     Deno.env.delete("AIBOOT_BACKOFF");
     await server.shutdown();
     await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("a full history leaves room in the context for the reply", async () => {
+  const { replyRoom } = await import("../src/agent.ts");
+  const { m, agent, done } = await session("gpt-oss-120b", [{ content: "ok" }]);
+  try {
+    for (let i = 0; i < 40; i++) {
+      agent.history.push({ role: "user", content: `q${i} ` + "x".repeat(2000) });
+      agent.history.push({ role: "assistant", content: `a${i} ` + "y".repeat(2000) });
+    }
+    await agent.turn("go");
+    const sent = m.seen.filter((b) => b.tools).at(-1);
+    const used = JSON.stringify(sent.messages).length + JSON.stringify(sent.tools).length;
+    // contextChars is 40,000 in these sessions: a quarter stays free.
+    assertEquals(replyRoom(40_000), 10_000);
+    assert(used <= 40_000 - 10_000 + 2_000, `request uses ${used} of 40,000 characters`);
+  } finally {
+    await done();
   }
 });

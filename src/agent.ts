@@ -133,6 +133,17 @@ export function fit(history: Message[], budget: number, statuses: string[] = [])
   return msgs;
 }
 
+/**
+ * Characters kept free in the context for the reply (thinking included): a
+ * quarter of the context, at most 32k tokens' worth.
+ */
+export function replyRoom(contextChars: number): number {
+  return Math.min(Math.floor(contextChars / 4), 32_768 * 3);
+}
+
+/** How much of a cut-off thought to hand back (its end: the latest conclusions). */
+const THOUGHT_KEPT = 4000;
+
 /** "512 tokens", "3.4k tokens". */
 export function tokenCount(n: number): string {
   return `${n < 1000 ? n : `${(n / 1000).toFixed(n < 10_000 ? 1 : 0)}k`} token${
@@ -350,7 +361,12 @@ export class Agent {
     const sys = await this.system();
     return () => {
       const content = sys();
-      const budget = this.s.router.current().contextChars - content.length;
+      const ep = this.s.router.current();
+      // The history gets what is left after the system prompt, the tool
+      // definitions, and room for the reply: without that room, a long
+      // session fills the context and the model runs out while thinking.
+      const tools = JSON.stringify(shape(ep).tools).length;
+      const budget = ep.contextChars - content.length - tools - replyRoom(ep.contextChars);
       return [
         { role: "system", content },
         ...fit(this.history, Math.max(budget, 4000), this.statuses.map((x) => x.text)),
@@ -483,8 +499,8 @@ export class Agent {
           ? "a tool call that could not be read"
           : thoughtOut
           ? `an empty reply: it ${
-            reply.reasoning ? "thought" : "ran"
-          } until it ran out of output tokens (asking again with thinking off for this reply)`
+            reply.reasoning ? `thought (${tokenCount(tokens)})` : "ran"
+          } until it ran out of output tokens (asking again with thinking off, handing back where its thinking got to)`
           : "an empty reply";
         if (nudges < 2) {
           nudges++;
@@ -496,6 +512,12 @@ export class Agent {
             role: "user",
             content: broken
               ? "(Your last tool call could not be parsed. Call the tool again through the tool-calling interface with valid JSON arguments, or answer in plain text.)"
+              : thoughtOut && reply.reasoning.trim()
+              ? `(You ran out of room while thinking, before you acted. The end of your thinking was:\n\n${
+                reply.reasoning.trim().length > THOUGHT_KEPT ? "…" : ""
+              }${
+                reply.reasoning.trim().slice(-THOUGHT_KEPT)
+              }\n\nAct on it now without thinking it over again: call the next tool, or answer the user.)`
               : "(Your last reply was empty. Continue: call a tool or answer the user.)",
           });
           continue;
