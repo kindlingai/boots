@@ -182,7 +182,7 @@ export async function scanApiKeys(): Promise<Source[]> {
       },
     });
   }
-  const base = Deno.env.get("OPENAI_BASE_URL");
+  const base = openaiBase();
   if (Deno.env.get("OPENAI_API_KEY") || base) {
     const model = Deno.env.get("OPENAI_MODEL") ?? (base ? "default" : "gpt-4.1-mini");
     const url = (base ?? "https://api.openai.com/v1").replace(/\/$/, "");
@@ -203,4 +203,48 @@ export async function scanApiKeys(): Promise<Source[]> {
     });
   }
   return out;
+}
+
+/** OPENAI_BASE_URL, or its shorter spelling OPENAI_URL. */
+export function openaiBase(): string | undefined {
+  return Deno.env.get("OPENAI_BASE_URL") || Deno.env.get("OPENAI_URL") || undefined;
+}
+
+/**
+ * With OPENAI_BASE_URL (or OPENAI_URL) given, that endpoint is the one model
+ * for everything: bootstrap and full, until the model itself switches. Its
+ * model is OPENAI_MODEL, else the first one the server lists; its context
+ * what the server declares. null without a base URL.
+ */
+export async function pinnedEndpoint(): Promise<Endpoint | null> {
+  const base = openaiBase();
+  if (!base) return null;
+  const url = base.replace(/\/$/, "");
+  const keyEnv = Deno.env.get("OPENAI_API_KEY") ? "OPENAI_API_KEY" : undefined;
+  const key = keyEnv ? Deno.env.get(keyEnv) : undefined;
+  let model = Deno.env.get("OPENAI_MODEL") ?? "";
+  if (!model) {
+    try {
+      const r = await fetch(`${url}/models`, {
+        headers: key ? { authorization: `Bearer ${key}` } : {},
+        signal: AbortSignal.timeout(5000),
+      });
+      const j = r.ok ? await r.json() : (await r.body?.cancel(), {});
+      model = String(
+        (j.data ?? j.models ?? [])[0]?.id ?? (j.data ?? j.models ?? [])[0]?.name ?? "",
+      );
+    } catch {
+      // asked for anyway below
+    }
+  }
+  model ||= "default";
+  const hosted = url.includes("api.openai.com");
+  const ctx = await serverContext(url, model, key);
+  return {
+    label: model,
+    baseUrl: url,
+    model,
+    keyEnv,
+    contextChars: ctx ? ctx * CHARS_PER_TOKEN : contextFor(sizeFromName(model), hosted),
+  };
 }

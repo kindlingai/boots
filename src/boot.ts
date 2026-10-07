@@ -56,16 +56,23 @@ async function machineFacts(): Promise<string> {
  * `deferLocal`: the full model has a start script, so an installed local
  * bootstrap is not started yet (it only would be handed over at once).
  */
-export async function boot(memory: Memory, deferLocal = false): Promise<Booted> {
-  info("looking for local AI sources...");
-  const [local, facts] = await Promise.all([scanLocal(), machineFacts()]);
-  const sources = [...local, ...(await scanApiKeys())];
-  const installed = await installedServer();
+export async function boot(
+  memory: Memory,
+  deferLocal = false,
+  pinned: Endpoint | null = null,
+): Promise<Booted> {
+  info(pinned ? "using the endpoint given (OPENAI_BASE_URL)" : "looking for local AI sources...");
+  const [local, facts] = await Promise.all([pinned ? [] : scanLocal(), machineFacts()]);
+  const sources = pinned ? [] : [...local, ...(await scanApiKeys())];
+  const installed = pinned ? null : await installedServer();
   let bootstrap: Endpoint;
   let llama: Running | null = null;
   let deferred: string | null = null;
 
-  if (!sources.length) {
+  if (pinned) {
+    // Given on the command line: no choosing, nothing downloaded or started.
+    bootstrap = pinned;
+  } else if (!sources.length) {
     if (!installed) {
       info("no bootstrap intelligence found (no local model servers, no API keys)");
       const free = await freeBytes(modelsDir());
@@ -113,7 +120,9 @@ export async function boot(memory: Memory, deferLocal = false): Promise<Booted> 
   }
   if (!deferred) say(`${bold("bootstrap:")} ${bootstrap.label} ${dim(bootstrap.baseUrl)}`);
 
-  const found = sources.length
+  const found = pinned
+    ? `  - ${pinned.model} at ${pinned.baseUrl} (OPENAI_BASE_URL: used for everything)`
+    : sources.length
     ? sources.map((s) => `  - ${s.label} (${s.endpoint.baseUrl})`).join("\n")
     : "  - none";
   const allFacts =

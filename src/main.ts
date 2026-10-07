@@ -14,7 +14,7 @@ import { farMain } from "./far.ts";
 import { jsonEvalMain } from "./jsoneval.ts";
 import { Memory } from "./memory.ts";
 import { McpManager } from "./mcp.ts";
-import { type BootstrapControl, Router } from "./llm.ts";
+import { type BootstrapControl, type Endpoint, Router } from "./llm.ts";
 import { makeNearAsker } from "./secrets.ts";
 import { loadSmart, restoreSmart, saveSmart, Session } from "./tools.ts";
 import { type FullFailure, gpuOffload, logPath, scriptPath, startFull } from "./intelligence.ts";
@@ -22,6 +22,7 @@ import { startLlama } from "./llama.ts";
 import { downloadSize } from "./rails.ts";
 import { Agent, repl } from "./agent.ts";
 import { boot } from "./boot.ts";
+import { pinnedEndpoint } from "./discover.ts";
 import {
   cacheDir,
   currentTarget,
@@ -76,8 +77,11 @@ async function interactive(mode: UiMode, perms: Permissions = NO_PERMISSIONS): P
   await memory.init();
   const pulled = await memory.pull();
   if (pulled) say(pulled, "dim");
-  const hasFull = await exists(scriptPath("full"));
-  const booted = await boot(memory, hasFull);
+  // OPENAI_BASE_URL given: that one endpoint is every model (bootstrap and
+  // full) until the model switches; no saved or scripted full model starts.
+  const pinned = await pinnedEndpoint();
+  const hasFull = !pinned && await exists(scriptPath("full"));
+  const booted = await boot(memory, hasFull, pinned);
   // The local bootstrap is stopped while the full model runs (handover), and
   // started again if that fails or stops answering.
   let llama = booted.llama;
@@ -99,7 +103,11 @@ async function interactive(mode: UiMode, perms: Permissions = NO_PERMISSIONS): P
     : undefined;
   const router = new Router(booted.bootstrap, control);
   router.onNotice = (s) => warn(s);
-  let smart = await restoreSmart(router);
+  let smart: Endpoint | null = null;
+  if (pinned) {
+    smart = { ...pinned };
+    router.setSmart(smart);
+  } else smart = await restoreSmart(router);
   let failure: FullFailure | null = null;
   if (!smart && hasFull) {
     // Nothing answering: hand over to the full model's start script.
@@ -253,6 +261,19 @@ async function main(argv: string[]): Promise<number> {
   const { perms, rest: args } = argv.some((a) => /^--(allow-|dangerously-)/.test(a))
     ? parsePermissionFlags(argv)
     : { perms: NO_PERMISSIONS, rest: argv };
+  // --openai-url URL / --openai-model NAME: the same as OPENAI_BASE_URL / OPENAI_MODEL.
+  for (let i = 0; i < args.length; i++) {
+    const m = args[i].match(/^--openai-(url|model)(?:=(.*))?$/);
+    if (!m) continue;
+    const value = m[2] ?? args[i + 1];
+    if (!value || value.startsWith("--")) {
+      console.error(`--openai-${m[1]} needs a value`);
+      return 2;
+    }
+    Deno.env.set(m[1] === "url" ? "OPENAI_BASE_URL" : "OPENAI_MODEL", value);
+    args.splice(i, m[2] === undefined ? 2 : 1);
+    i--;
+  }
   // ssh runs us as SSH_ASKPASS with the prompt as the only argument.
   if (args[0] === "--askpass") return await askpassMain(args.slice(1).join(" "));
   if (Deno.env.get("AIBOOT_ASKPASS_TOKEN") && !args[0]?.startsWith("--")) {
@@ -294,7 +315,7 @@ async function main(argv: string[]): Promise<number> {
       return await interactive(uiMode(args[0]), perms);
     default:
       console.log(
-        "usage: ai-bootstrap [--gui | --tui | --repl] [--allow-read-only] [--allow-host HOST]... [--allow-all-hosts] [--dangerously-skip-permissions]\n       ai-bootstrap upgrade [VERSION] [--force] | --version | --paths | --docs | --search WORDS",
+        "usage: ai-bootstrap [--gui | --tui | --repl] [--allow-read-only] [--allow-host HOST]... [--allow-all-hosts] [--dangerously-skip-permissions]\n                    [--openai-url URL [--openai-model NAME]]\n       ai-bootstrap upgrade [VERSION] [--force] | --version | --paths | --docs | --search WORDS",
       );
       return 2;
   }
