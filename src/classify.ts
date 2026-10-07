@@ -166,6 +166,7 @@ export function pipesDownloadIntoShell(st: string[][]): boolean {
 
 export class Classifier {
   private cache = new Map<string, Verdict>();
+  private culprits = new Map<string, string>();
 
   constructor(private model: () => Endpoint) {}
 
@@ -179,6 +180,7 @@ export class Classifier {
    */
   async classify(cmd: string, os: string, root = false): Promise<Verdict | null> {
     if (Deno.env.get("AIBOOT_CHECK") === "0") return null;
+    this.culprits.delete(cmd);
     const st = stages(cmd);
     // Loops and conditionals do not split into independent stages.
     if (st && st.length === 1 && runsScript(st[0])) return "unknown";
@@ -189,20 +191,31 @@ export class Classifier {
     if (pipesDownloadIntoShell(st)) return "dangerous";
     if (st.length > MAX_STAGES || cmd.length > MAX_LEN * 3) return "complex";
     let worst: Verdict = "readonly";
+    let culprit = "";
     for (const toks of st) {
       if (stageReadonly([...toks])) continue;
+      const seg = toks.map(shellQuote).join(" ");
       if (runsScript(toks)) {
-        if (RANK.unknown > RANK[worst]) worst = "unknown";
+        if (RANK.unknown > RANK[worst]) [worst, culprit] = ["unknown", seg];
         continue;
       }
-      const seg = toks.map(shellQuote).join(" ");
       if (seg.length > MAX_LEN) return "complex";
       const v = await this.ask(seg, os, cmd, root);
       if (v === null) return null;
-      if (RANK[v] > RANK[worst]) worst = v;
+      if (RANK[v] > RANK[worst]) [worst, culprit] = [v, seg];
       if (worst === "dangerous") break;
     }
+    if (culprit) this.culprits.set(cmd, culprit);
     return worst;
+  }
+
+  /**
+   * The stage that decided the verdict of a command line judged stage by
+   * stage (the first one as bad as the whole line); undefined when the line
+   * was judged whole or every stage was read-only.
+   */
+  culprit(cmd: string): string | undefined {
+    return this.culprits.get(cmd);
   }
 
   /** One question to the model, about `cmd` (a stage of `whole`, when given). */

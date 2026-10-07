@@ -12,7 +12,7 @@ export const INDEX_LIMIT = 4096;
 /** The fleet inventory: always in context, always a valid JSON object. */
 export const FLEET = "fleet.json";
 export const FLEET_LIMIT = 8192;
-/** The user's goals: always in context, a list of {title, done?, children?}. */
+/** The user's goals: always in context, a list of {title, details?, done?, active?, children?}. */
 export const GOALS = "goals.json";
 
 /** A JSON memory: kept whole, checked on every write, stored pretty-printed. */
@@ -25,30 +25,47 @@ interface JsonMemory {
   check(doc: unknown): string | null;
   /** Where detail should go instead, when it is too big. */
   tooBig: string;
+  /** Fixes up a checked document before it is saved. */
+  normalize?(doc: unknown): unknown;
 }
 
-/** Why a goals list does not match [{title, done?, children?}], or null. */
+export interface Goal {
+  title: string;
+  /** For the model only: how, where, what is known. Never shown to the user. */
+  details?: string;
+  done?: boolean;
+  /** Being worked on now. */
+  active?: boolean;
+  children?: Goal[];
+}
+
+const GOAL_KEYS = ["title", "details", "done", "active", "children"];
+
+/** Why a goals list does not match [{title, details?, done?, active?, children?}], or null. */
 export function checkGoals(doc: unknown, at = "goals"): string | null {
   if (!Array.isArray(doc)) {
-    return `${at} must be a list of goals: [{"title": "...", "done": false, "children": []}]`;
+    return `${at} must be a list of goals: [{"title": "...", "details": "...", "done": false, "active": true, "children": []}]`;
   }
   for (const [i, g] of doc.entries()) {
     const here = `${at}[${i}]`;
     if (g === null || typeof g !== "object" || Array.isArray(g)) {
       return `${here} must be an object with a title`;
     }
-    const extra = Object.keys(g).filter((k) => !["title", "done", "children"].includes(k));
+    const extra = Object.keys(g).filter((k) => !GOAL_KEYS.includes(k));
     if (extra.length) {
       return `${here} has ${
         extra.join(", ")
-      }: a goal has only title, done (optional) and children (optional)`;
+      }: a goal has only title, and optionally details, done, active and children`;
     }
     const goal = g as Record<string, unknown>;
     if (typeof goal.title !== "string" || !goal.title.trim()) {
       return `${here}.title must be a non-empty string`;
     }
-    if ("done" in goal && typeof goal.done !== "boolean") {
-      return `${here}.done must be true or false`;
+    for (const k of ["done", "active"]) {
+      if (k in goal && typeof goal[k] !== "boolean") return `${here}.${k} must be true or false`;
+    }
+    if ("details" in goal && typeof goal.details !== "string") {
+      return `${here}.details must be a string`;
     }
     if ("children" in goal) {
       const bad = checkGoals(goal.children, `${here}.children`);
@@ -56,6 +73,51 @@ export function checkGoals(doc: unknown, at = "goals"): string | null {
     }
   }
   return null;
+}
+
+/**
+ * Goals as saved: a finished goal is no longer active, and when nothing is
+ * active the first unfinished top-level goal becomes active.
+ */
+export function normalizeGoals(goals: Goal[]): Goal[] {
+  let any = false;
+  const walk = (list: Goal[]) => {
+    for (const g of list) {
+      if (g.done) delete g.active;
+      else if (g.active) any = true;
+      else if ("active" in g) delete g.active;
+      if (g.children) walk(g.children);
+    }
+  };
+  walk(goals);
+  if (!any) {
+    const first = goals.find((g) => !g.done);
+    if (first) first.active = true;
+  }
+  return goals;
+}
+
+/** The active, unfinished goals, outermost first (parents before their children). */
+export function activeGoals(goals: Goal[]): Goal[] {
+  const out: Goal[] = [];
+  const walk = (list: Goal[]) => {
+    for (const g of list) {
+      if (g.active && !g.done) out.push(g);
+      if (g.children) walk(g.children);
+    }
+  };
+  walk(goals);
+  return out;
+}
+
+/** goals.json text as goals; [] when empty or not readable. */
+export function parseGoals(text: string): Goal[] {
+  try {
+    const d = JSON.parse(text || "[]");
+    return checkGoals(d) ? [] : d;
+  } catch {
+    return [];
+  }
 }
 
 export const JSON_MEMORIES: JsonMemory[] = [
@@ -74,6 +136,7 @@ export const JSON_MEMORIES: JsonMemory[] = [
     limit: 8192,
     empty: "[]",
     check: (d) => checkGoals(d),
+    normalize: (d) => normalizeGoals(d as Goal[]),
     tooBig:
       "Keep titles short, drop finished goals that no longer matter, and move detail into a separate memory.",
   },
@@ -303,6 +366,7 @@ export class Memory {
     }
     const bad = m.check(doc);
     if (bad) throw new Error(`${m.file} was not changed: ${bad}`);
+    if (m.normalize) doc = m.normalize(doc);
     const text = JSON.stringify(doc, null, 2) + "\n";
     const bytes = new TextEncoder().encode(text).length;
     if (bytes > m.limit) {

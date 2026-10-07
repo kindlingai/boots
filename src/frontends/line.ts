@@ -95,6 +95,10 @@ export class LineFrontend implements Frontend {
         if (e.text) this.print(STYLE[e.ok ? "dim" : "warn"](e.text), true);
         else this.tick();
         break;
+      case "goals":
+        // No status area here: a line when the active goals change.
+        if (e.titles.length) this.print(STYLE.dim(`◆ ${e.titles.slice(0, 2).join(" · ")}`), true);
+        break;
       case "status":
         break;
     }

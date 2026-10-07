@@ -124,13 +124,18 @@ Deno.test("goals.json: a checked list of goals, always JSON", async () => {
       { title: "Serve GLM on the Sparks", children: [{ title: "mentat router up", done: false }] },
     ];
     assertStringIncludes(await m.write("goals.json", JSON.stringify(goals)), "wrote goals.json");
-    assertEquals(JSON.parse(await m.goals()), goals);
+    // Nothing was active: the first unfinished goal is made active.
+    const saved = structuredClone(goals) as any[];
+    saved[1].active = true;
+    assertEquals(JSON.parse(await m.goals()), saved);
     // Not the shape: refused, and the stored goals stay as they were.
     for (
       const [bad, why] of [
         ['{"title": "x"}', "must be a list"],
         ['[{"done": true}]', "goals[0].title must be a non-empty string"],
         ['[{"title": "x", "done": "yes"}]', "goals[0].done must be true or false"],
+        ['[{"title": "x", "active": 1}]', "goals[0].active must be true or false"],
+        ['[{"title": "x", "details": 3}]', "goals[0].details must be a string"],
         ['[{"title": "x", "priority": 1}]', "goals[0] has priority"],
         ['[{"title": "x", "children": [{"title": ""}]}]', "goals[0].children[0].title"],
         ['[{"title": "x", "children": {}}]', "goals[0].children must be a list"],
@@ -139,7 +144,7 @@ Deno.test("goals.json: a checked list of goals, always JSON", async () => {
     ) {
       await assertRejects(() => m.write("goals.json", bad), Error, why);
     }
-    assertEquals(JSON.parse(await m.goals()), goals);
+    assertEquals(JSON.parse(await m.goals()), saved);
     assertEquals(checkGoals([]), null);
     // A goals list means the user has told us something: no onboarding.
     assertEquals(await m.isEmpty(), false);
@@ -149,4 +154,28 @@ Deno.test("goals.json: a checked list of goals, always JSON", async () => {
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
+});
+
+Deno.test("goals: details for the model, active cleared when done, first open one active", async () => {
+  const { normalizeGoals, activeGoals } = await import("../src/memory.ts");
+  const g = normalizeGoals([
+    { title: "A", done: true, active: true },
+    { title: "B", details: "on spark-1, port 41873", children: [{ title: "B1", active: true }] },
+    { title: "C" },
+  ]);
+  // A finished goal is never active; B1 was already active, so nothing else is made so.
+  assertEquals(g[0].active, undefined);
+  assertEquals(g[1].active, undefined);
+  assertEquals(activeGoals(g).map((x) => x.title), ["B1"]);
+  // B1 done: nothing active, so the first open top-level goal (B) is.
+  g[1].children![0].done = true;
+  normalizeGoals(g);
+  assertEquals(activeGoals(g).map((x) => x.title), ["B"]);
+  assertEquals(activeGoals(g)[0].details, "on spark-1, port 41873");
+  // active: false is dropped (it is the default).
+  assertEquals(normalizeGoals([{ title: "X", done: true }, { title: "Y", active: false }])[1], {
+    title: "Y",
+    active: true,
+  });
+  assertEquals(normalizeGoals([{ title: "X", done: true }]), [{ title: "X", done: true }]);
 });

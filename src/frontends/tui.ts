@@ -79,6 +79,8 @@ interface Entry {
   kind: Kind;
   text: string;
 }
+/** Active goals shown under the status line. */
+const MAX_GOALS_SHOWN = 2;
 type ProgressEv = Extract<EngineEvent, { type: "progress" }>;
 
 interface Pending {
@@ -103,6 +105,8 @@ export class TuiFrontend implements Frontend {
   private speech = `Hi! I'm ${botName()}. I set up AI models on your machines.`;
   private busy: { label: string; t0: number } | null = null;
   private progress = new Map<string, ProgressEv>();
+  /** Active goals' titles, shown under the status line. */
+  private goals: string[] = [];
   private status: { model?: string; location?: string; full?: boolean } = {};
   private flash: { mood: Mood; until: number } | null = null;
   private talkedAt = 0;
@@ -188,6 +192,9 @@ export class TuiFrontend implements Frontend {
         this.busy = e.label
           ? { label: e.label, t0: e.same && this.busy ? this.busy.t0 : Date.now() }
           : null;
+        break;
+      case "goals":
+        this.goals = e.titles;
         break;
       case "progress":
         this.progress.set(e.id, e);
@@ -432,7 +439,16 @@ export class TuiFrontend implements Frontend {
   }
 
   private bodyHeight(): number {
-    return this.size().h - 11;
+    return this.size().h - 11 - this.goalRows().length;
+  }
+
+  /** The first two active goals, title only; a count when there are more. */
+  private goalRows(): string[] {
+    const shown = this.goals.slice(0, MAX_GOALS_SHOWN);
+    const more = this.goals.length - shown.length;
+    return shown.map((t, i) =>
+      `◆ ${t}${i === shown.length - 1 && more > 0 ? ` (+${more} more)` : ""}`
+    );
   }
 
   private styled(kind: Kind, s: string): string {
@@ -522,6 +538,7 @@ export class TuiFrontend implements Frontend {
       ));
     }
     rows.push(` ${status}`);
+    for (const g of this.goalRows()) rows.push(`   ${COLOR.dim(fit(g, w - 4))}`);
 
     // Input.
     let cursorCol = 1;

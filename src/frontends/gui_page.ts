@@ -56,6 +56,7 @@ export function page(title: string, token: string): string {
   #status { padding: 4px 12px; color: var(--dim); border-top: 1px solid var(--line);
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-height: 1.9em; }
   #status .spin { color: var(--cyan); }
+  #status .goal { padding-left: 1.4em; }
   form { display: flex; gap: 8px; align-items: center; padding: 8px 12px; background: var(--panel);
     border-top: 1px solid var(--line); flex-wrap: wrap; }
   #prompt { color: var(--cyan); white-space: pre-wrap; max-width: 100%; }
@@ -134,6 +135,12 @@ function drawBot() {
     const s = Math.floor((Date.now() - state.busy.t0) / 1000);
     status = spin + esc(state.busy.label + "..." + (s >= 3 ? " " + s + "s" : ""));
   } else status = "Enter to send · Esc Esc or Stop to interrupt · ↑↓ history";
+  const goals = state.goals || [];
+  const more = goals.length - 2;
+  for (const [i, t] of goals.slice(0, 2).entries()) {
+    status += '<div class="goal">◆ ' + esc(t) + (i === 1 && more > 0 ? " (+" + more + " more)" : "") +
+      "</div>";
+  }
   $("status").innerHTML = status;
 }
 

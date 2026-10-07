@@ -10,6 +10,13 @@ import { ask, bold, dim, Interrupted, plain, red, say, spinner, warn } from "./u
 import { emit, EscInterrupted } from "./frontend.ts";
 import { clipTools, compact, isContextError, SUMMARY_PROMPT } from "./compact.ts";
 import { Backoff } from "./backoff.ts";
+import { activeGoals, normalizeGoals, parseGoals } from "./memory.ts";
+
+/** How often the model is reminded of its active goals. */
+const REMIND_EVERY_TURNS = 3;
+const REMIND_EVERY_TOOLS = 10;
+/** A goal reminder appended to a message (not shown when turns are restored). */
+const REMINDER = /\n\n\(Reminder: your active goals[\s\S]*$/;
 
 /** Tool-call markup left in a reply: the call was malformed. */
 const BROKEN_CALL = /<tool_call>|<function=|<\|tool_call/;
@@ -125,11 +132,50 @@ export class Agent {
     return r.messages.filter((m) => m.role === "user").length;
   }
 
+  private userTurns = 0;
+  private toolCalls = 0;
+  private goalTitles = "";
+
+  /**
+   * goals.json as the model should see it (finished goals inactive, the first
+   * open one active when none is), and the active titles sent to the screen
+   * when they change. Details stay with the model.
+   */
+  private noteGoals(stored: string): string {
+    const goals = parseGoals(stored);
+    if (!goals.length) {
+      this.showGoals([]);
+      return stored;
+    }
+    normalizeGoals(goals);
+    this.showGoals(activeGoals(goals).map((g) => g.title));
+    return JSON.stringify(goals, null, 2);
+  }
+
+  private showGoals(titles: string[]): void {
+    const key = JSON.stringify(titles);
+    if (key === this.goalTitles) return;
+    this.goalTitles = key;
+    emit({ type: "goals", titles });
+  }
+
+  /** A reminder of the active goals, with their details; "" when none is active. */
+  private async goalReminder(): Promise<string> {
+    const goals = parseGoals(await this.s.memory.goals());
+    const active = activeGoals(normalizeGoals(goals));
+    if (!active.length) return "";
+    const lines = active.map((g) => `- ${g.title}${g.details ? `: ${g.details}` : ""}`);
+    return `\n\n(Reminder: your active goals, from goals.json. Keep working toward them; mark one done, or move "active" to the next, as things progress.\n${
+      lines.join("\n")
+    })`;
+  }
+
   /** The restored turns, shown the way they looked: questions, replies, and the tools used. */
   showRestored(): void {
     for (const m of this.history) {
       if (m.role === "user") {
-        if (!/^\(.*\)$/s.test(m.content.trim())) say(dim(`› ${oneLine(m.content, 200)}`));
+        const text = m.content.replace(REMINDER, "").trim();
+        if (!/^\(.*\)$/s.test(text)) say(dim(`› ${oneLine(text, 200)}`));
       } else if (m.role === "assistant") {
         if (m.content.trim()) say(dim(`● ${oneLine(m.content, 300)}`));
         for (const c of m.tool_calls ?? []) {
@@ -199,6 +245,7 @@ export class Agent {
       this.s.memory.isEmpty(),
     ]);
     const extra = this.extraContext();
+    const shownGoals = this.noteGoals(goals);
     // Rendered lazily: the router may fall back to the bootstrap model mid-request.
     return () =>
       systemPrompt(t, this.s.router, {
@@ -218,7 +265,7 @@ export class Agent {
         other_sources: extra,
         index,
         fleet,
-        goals,
+        goals: shownGoals,
         plan: this.s.plan.length ? plain(renderPlan(this.s.plan)) : "(none yet)",
         fresh,
         failure: this.s.fullFailure,
@@ -253,7 +300,9 @@ export class Agent {
   }
 
   private async steps(userText: string): Promise<void> {
-    this.push({ role: "user", content: userText });
+    this.userTurns++;
+    const remind = this.userTurns % REMIND_EVERY_TURNS === 0 ? await this.goalReminder() : "";
+    this.push({ role: "user", content: userText + remind });
     let compactions = 0;
     let nudges = 0;
     for (let step = 0; step < MAX_STEPS; step++) {
@@ -426,6 +475,8 @@ export class Agent {
           this.abort = null;
           this.pace.done();
         }
+        this.toolCalls++;
+        if (this.toolCalls % REMIND_EVERY_TOOLS === 0) result += await this.goalReminder();
         this.push({ role: "tool", tool_call_id: tc.id, content: result });
       }
       // reply hands the turn back to the user.

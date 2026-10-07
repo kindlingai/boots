@@ -303,3 +303,18 @@ Deno.test("ssh and root together get advice: ssh tool first, then sudo there", a
   assertEquals(sshRootAdvice("ssh admin@gx10 uptime"), null);
   assertEquals(sshRootAdvice("sudo systemctl status ssh"), null);
 });
+
+Deno.test("a line checked stage by stage names the stage that made it more than read-only", async () => {
+  const m = serveMock([], 0, (cmd) => (cmd.startsWith("ollama") ? "writes" : "readonly"));
+  try {
+    const c = new Classifier(() => ({ label: "b", baseUrl: m.url, model: "b", contextChars: 1e4 }));
+    const line = "nvidia-smi | head -5 && ollama rm qwen3:8b && mystery --list";
+    assertEquals(await c.classify(line, "Linux"), "writes");
+    assertEquals(c.culprit(line), "ollama rm qwen3:8b");
+    // Judged whole: no stage to name.
+    assertEquals(await c.classify("ollama rm x", "Linux"), "writes");
+    assertEquals(c.culprit("ollama rm x"), undefined);
+  } finally {
+    await m.close();
+  }
+});

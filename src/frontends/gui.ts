@@ -43,6 +43,8 @@ export interface GuiState {
   flash: { mood: Mood; until: number } | null;
   talkedAt: number;
   streaming: boolean;
+  /** Active goals' titles. */
+  goals: string[];
 }
 
 /** Messages to the page. */
@@ -71,6 +73,7 @@ export class GuiFrontend implements Frontend {
   private progress = new Map<string, ProgressEv>();
   private flash: GuiState["flash"] = null;
   private talkedAt = 0;
+  private goals: string[] = [];
   private pending: Pending | null = null;
   private queue: Pending[] = [];
   private nextId = 1;
@@ -236,6 +239,9 @@ export class GuiFrontend implements Frontend {
         if (e.text) this.push(e.ok ? "dim" : "warn", e.text);
         this.mood(e.ok ? "happy" : "sad", 2500);
         break;
+      case "goals":
+        this.goals = e.titles;
+        break;
       case "status": {
         const handedOver = e.full !== undefined && !!e.full !== !!this.status.full;
         this.status = { ...this.status, ...e };
@@ -324,6 +330,7 @@ export class GuiFrontend implements Frontend {
       flash: this.flash,
       talkedAt: this.talkedAt,
       streaming: !!this.streamingEntry,
+      goals: this.goals,
     };
   }
 

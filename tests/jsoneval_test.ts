@@ -95,7 +95,7 @@ Deno.test("json_eval edits goals.json, and its shape is enforced", async () => {
       await s.exec("json_eval", { memory: "goals.json", code: "json[0].done = 'yes'" }),
       "goals[0].done must be true or false",
     );
-    assertEquals(JSON.parse(await memory.goals()), [{ title: "Serve GLM" }]);
+    assertEquals(JSON.parse(await memory.goals()), [{ title: "Serve GLM", active: true }]);
     assertStringIncludes(
       await s.exec("json_eval", { memory: "notes", code: "" }),
       "JSON memories only",

@@ -29,7 +29,9 @@ export type EngineEvent =
    * What the header shows: the model in use, the location, and whether the
    * full model (rather than the bootstrap) is answering.
    */
-  | { type: "status"; model?: string; location?: string; full?: boolean };
+  | { type: "status"; model?: string; location?: string; full?: boolean }
+  /** The active goals' titles (never their details), for showing under the status line. */
+  | { type: "goals"; titles: string[] };
 
 /** The bot's name: lil boots on the bootstrap model, Boots once the full model answers. */
 export function botName(full?: boolean): string {

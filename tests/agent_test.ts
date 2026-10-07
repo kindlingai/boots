@@ -310,3 +310,50 @@ Deno.test("two nudges, then the turn stops with a warning", async () => {
     await done();
   }
 });
+
+Deno.test("active goals: shown by title, reminded with details every 3 turns or 10 tool calls", async () => {
+  const { setFrontend } = await import("../src/frontend.ts");
+  const shown: string[][] = [];
+  setFrontend({
+    emit(e) {
+      if (e.type === "goals") shown.push(e.titles);
+    },
+    readLine: () => Promise.resolve(null),
+    close() {},
+  });
+  Deno.env.set("AIBOOT_BACKOFF", "0");
+  const calls = Array.from({ length: 10 }, () => ({ calls: [{ name: "plan", args: {} }] }));
+  const { m, s, agent, done } = await session("gpt-oss-120b", [
+    { content: "one" },
+    { content: "two" },
+    { content: "three" },
+    ...calls,
+    { content: "four" },
+  ]);
+  try {
+    await s.memory.init();
+    await s.memory.write(
+      "goals.json",
+      JSON.stringify([{ title: "Serve GLM", details: "secret-ish detail: port 41873" }]),
+    );
+    await agent.turn("a");
+    assertEquals(shown.at(-1), ["Serve GLM"], "titles only, the first open goal made active");
+    assert(!JSON.stringify(shown).includes("41873"), "details are never sent to the screen");
+    await agent.turn("b");
+    await agent.turn("c");
+    const asks = m.seen.filter((b) => b.tools);
+    const users = asks[2].messages.filter((x: any) => x.role === "user");
+    assert(!users[0].content.includes("Reminder"));
+    assertStringIncludes(users.at(-1).content, "Reminder: your active goals");
+    assertStringIncludes(users.at(-1).content, "Serve GLM: secret-ish detail: port 41873");
+    // The fourth turn makes 10 tool calls: the 10th result carries the reminder.
+    await agent.turn("d");
+    const tools = m.seen.at(-1).messages.filter((x: any) => x.role === "tool");
+    assertEquals(tools.length, 10);
+    assert(!tools[8].content.includes("Reminder"));
+    assertStringIncludes(tools[9].content, "Reminder: your active goals");
+  } finally {
+    Deno.env.delete("AIBOOT_BACKOFF");
+    await done();
+  }
+});

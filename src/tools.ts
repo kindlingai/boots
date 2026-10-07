@@ -367,7 +367,7 @@ export const TOOLS: ToolDef[] = [
   ),
   fn(
     "memory_write",
-    "Save durable facts about the user's setup. Write INDEX to update the always-visible index (4 kB limit; one line per memory file). Write fleet.json to update the always-visible fleet inventory: the content must be a complete, valid JSON object (it replaces the file; 8 kB limit). Write goals.json to replace the always-visible goals: a JSON list of {title, done?, children?}, and nothing else (8 kB limit). For small changes to either, json_eval is easier.",
+    "Save durable facts about the user's setup. Write INDEX to update the always-visible index (4 kB limit; one line per memory file). Write fleet.json to update the always-visible fleet inventory: the content must be a complete, valid JSON object (it replaces the file; 8 kB limit). Write goals.json to replace the always-visible goals: a JSON list of {title, details?, done?, active?, children?}, and nothing else (8 kB limit; details are for you, never shown to the user). For small changes to either, json_eval is easier.",
     {
       name: str("memory name, letters digits - _ ."),
       content: str("Markdown"),
@@ -665,7 +665,7 @@ export class Session {
   private async check(
     cmd: string,
     root = false,
-  ): Promise<{ verdict: Verdict | null; checked: boolean }> {
+  ): Promise<{ verdict: Verdict | null; checked: boolean; culprit?: string }> {
     // A loop over literal words is checked as the commands it runs.
     const unrolled = unrollLoops(cmd);
     if (isReadonly(unrolled)) return { verdict: "readonly", checked: false };
@@ -678,23 +678,30 @@ export class Session {
       this.complexTries.set(cmd, n);
       if (n > 2) return { verdict: null, checked: true };
     }
-    return { verdict, checked: true };
+    // Which part of a line checked stage by stage made it more than read-only.
+    const culprit = verdict && verdict !== "readonly"
+      ? this.classifier.culprit?.(unrolled)
+      : undefined;
+    return { verdict, checked: true, culprit };
   }
 
   private static TOO_COMPLEX =
     "Not run: the safety check could not analyze this command, it is too complex. Rewrite it as smaller steps: one simple command per call, without long pipelines or command lists, loops (a for loop over a fixed list of words is fine), inline scripts (python -c, bash -c), eval, here-documents or nested substitutions. To create or edit a file, use write_file.";
 
-  private static label(verdict: Verdict | null, checked: boolean): string {
+  private static label(verdict: Verdict | null, checked: boolean, culprit?: string): string {
     if (!checked) return "";
+    // The part of a longer line that earned the verdict.
+    const one = culprit?.replace(/\s+/g, " ");
+    const part = one ? `: ${one.length > 80 ? one.slice(0, 79) + "…" : one}` : "";
     switch (verdict) {
       case "readonly":
         return dim("  (checked: read-only)");
       case "dangerous":
-        return red(bold("  (checked: DANGEROUS)"));
+        return red(bold(`  (checked: DANGEROUS${part})`));
       case "writes":
-        return yellow("  (checked: makes changes)");
+        return yellow(`  (checked: makes changes${part})`);
       case "unknown":
-        return yellow("  (runs a script: contents not checked)");
+        return yellow(`  (runs a script${part}: contents not checked)`);
       default:
         return dim("  (not checked)");
     }
@@ -803,13 +810,13 @@ export class Session {
             sshHost(again2)
           } with ssh inside run. To work on that machine, call the ssh tool with destination ${again2} instead: ai-bootstrap connects once, installs itself there, and run, read_file, write_file and sudo then work on that machine directly (no ssh in the command) until ssh_exit. Passwords are handled for you.`;
         }
-        const { verdict, checked } = await this.check(cmd);
+        const { verdict, checked, culprit } = await this.check(cmd);
         if (verdict === "complex") {
           say(dim(`  [${loc}] $ ${cmd}`));
           say(yellow("    too complex to check; asking for smaller steps"));
           return Session.TOO_COMPLEX;
         }
-        const label = Session.label(verdict, checked);
+        const label = Session.label(verdict, checked, culprit);
         if (verdict === "readonly" && this.allowReadonly) {
           say(dim(`  [${loc}] $ ${cmd}`) + label);
         } else if (this.autoActive() && (verdict === "readonly" || verdict === "writes")) {
@@ -844,7 +851,7 @@ export class Session {
         }
         // Root always asks; the check (told it runs as root) still catches the
         // complex and the dangerous.
-        const { verdict, checked } = await this.check(cmd, true);
+        const { verdict, checked, culprit } = await this.check(cmd, true);
         if (verdict === "complex") {
           say(dim(`  [${this.where()}] sudo ${cmd}`));
           say(yellow("    too complex to check; asking for smaller steps"));
@@ -858,7 +865,9 @@ export class Session {
           say(dim(`  [${this.where()}] sudo ${cmd}  (read-only)`));
         } else {
           const no = await this.gate(
-            `[${bold(this.where())}] ${red("sudo")} ${cmd}${Session.label(verdict, checked)}`,
+            `[${bold(this.where())}] ${red("sudo")} ${cmd}${
+              Session.label(verdict, checked, culprit)
+            }`,
             `${this.where()}\0sudo\0${cmd}`,
             safeRead ? "readonly" : verdict === "dangerous" ? "dangerous" : "root",
           );
