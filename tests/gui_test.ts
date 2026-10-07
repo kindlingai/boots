@@ -105,3 +105,12 @@ Deno.test("gui: the page needs the token, and draws the TUI's own bot", async ()
     for (let f = 0; f < 8; f++) assertEquals(shipped(m, f, false), bot(m as any, f, false));
   }
 });
+
+Deno.test("the page's script parses, and handles ⌘V/⌘C/⌘X/⌘A when the macOS window offers its clipboard", async () => {
+  const { page } = await import("../src/frontends/gui_page.ts");
+  const html = page("t", "tok");
+  const script = html.slice(html.lastIndexOf("<script>") + 8, html.lastIndexOf("</script>"));
+  // A stray escape in the template (a "\n" that became a newline) breaks it all.
+  new Function(script);
+  assert(script.includes("__aibPaste") && script.includes("__aibCopy"));
+});

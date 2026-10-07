@@ -186,6 +186,13 @@ Deno.test("plan steps are saved as the active goal's children in goals.json", as
   try {
     const m = new Memory(join(dir, "mem"));
     await m.init();
+    // No goal active and none named: refused, asking for the goal.
+    await assertRejects(
+      () => m.setPlan([{ step: "Inspect cluster state on all nodes", status: "in_progress" }]),
+      Error,
+      "name the one these steps serve",
+    );
+    assertEquals(parseGoals(await m.goals()), []);
     // No goals yet: the plan's goal is added and made active.
     const r = await m.setPlan(
       [

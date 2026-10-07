@@ -446,7 +446,7 @@ export class Memory {
   /**
    * The plan tool: `steps` become the children of a goal in goals.json, the
    * one saved state. The goal is the one titled `goal` (added when there is
-   * none), else the active one, else a new one; it becomes the active goal,
+   * none), else the active one (with neither, it is refused); it becomes the active goal,
    * and the step in progress its active child. Done and skipped steps are
    * done; notes go into details (a step without a new note keeps its old one).
    */
@@ -467,7 +467,13 @@ export class Memory {
     let target = goal ? find(goals) : activeGoals(goals).find((g) => goals.includes(g)) ??
       activeGoals(goals)[0];
     if (!target) {
-      target = { title: goal?.trim() || steps[0]?.step || "Current work" };
+      // A step's text makes a poor goal: ask for the goal by name.
+      if (!goal?.trim()) {
+        throw new Error(
+          'no goal is active, so name the one these steps serve: pass goal (a short title of what the user wants, e.g. "Serve GLM-5.3 on the four GX10s") and details (what you know so far)',
+        );
+      }
+      target = { title: goal.trim() };
       goals.push(target);
     }
     if (details !== undefined) target.details = details;

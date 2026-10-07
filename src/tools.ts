@@ -340,7 +340,7 @@ export const TOOLS: ToolDef[] = [
     "Record or update the plan: the steps of a goal, saved in goals.json (they become the goal's children, and the goal becomes the active one). Pass the whole list each time. Include, as notes on steps, what could go wrong and how you will detect and handle it, and the outcome once known.",
     {
       goal: str(
-        "the goal these steps are for (its title); default: the active goal. A new title adds the goal.",
+        "the goal these steps are for (its title): required when no goal is active; otherwise the active goal. A new title adds the goal.",
       ),
       details: str("optional: the goal's details (for you only; never shown to the user)"),
       steps: {

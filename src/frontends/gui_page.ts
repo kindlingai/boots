@@ -245,7 +245,44 @@ $("quit").onclick = () => {
   $("quit").textContent = "Quitting…";
   send({ t: "quit" });
 };
+// The native macOS window has no Edit menu, so ⌘V/⌘C/⌘X/⌘A never arrive by
+// themselves: when the window offers its clipboard (window.__aibPaste), do them here.
+async function editKey(e) {
+  if (!e.metaKey || e.ctrlKey || e.altKey || typeof window.__aibPaste !== "function") return false;
+  const k = e.key.toLowerCase();
+  if (!["v", "c", "x", "a"].includes(k)) return false;
+  e.preventDefault();
+  const el = document.activeElement;
+  const field = el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA") && !el.disabled ? el : null;
+  const picked = field
+    ? field.value.slice(field.selectionStart, field.selectionEnd)
+    : String(getSelection());
+  if (k === "a") {
+    if (field) field.select();
+    else getSelection().selectAllChildren($("log"));
+  } else if (k === "c" || k === "x") {
+    if (picked) await window.__aibCopy(picked);
+    if (k === "x" && field && picked) {
+      field.setRangeText("", field.selectionStart, field.selectionEnd, "end");
+      field.dispatchEvent(new Event("input"));
+    }
+  } else if (k === "v") {
+    const text = await window.__aibPaste();
+    const into = field || ($("input").disabled ? null : $("input"));
+    if (into && text) {
+      into.focus();
+      // A one-line input: newlines become spaces.
+      into.setRangeText(String(text).replace(/\\r?\\n/g, " "), into.selectionStart, into.selectionEnd, "end");
+      into.dispatchEvent(new Event("input"));
+    }
+  }
+  return true;
+}
 document.addEventListener("keydown", (e) => {
+  if (e.metaKey && typeof window.__aibPaste === "function" && /^[vcxa]$/i.test(e.key)) {
+    editKey(e);
+    return;
+  }
   if (e.key === "Escape") {
     const now = Date.now();
     if (now - lastEsc <= 2000) { lastEsc = -1e9; stop(); } else lastEsc = now;
