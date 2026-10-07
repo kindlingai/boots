@@ -98,10 +98,66 @@ function startsServer(words: string[]): boolean {
 }
 
 /** Commands that run must not take: they need another tool. Returns why, or null. */
+/** Paths whose contents are secrets: reading them as root always asks. */
+const SECRET_PATHS =
+  /shadow|sudoers|\/\.ssh\/|ssh_host_\w*key|\.(pem|key|p12|pfx|keystore|kdbx)\b|private|secret|token|credential|\.env\b|\/etc\/ssl\/private/i;
+
+export function readsSecrets(cmd: string): boolean {
+  return SECRET_PATHS.test(cmd);
+}
+
+/** Programs that run something as another user (root, usually). */
+const ESCALATE = new Set(["sudo", "doas", "pkexec", "su", "runuser", "run0"]);
+
+/** Programs that run a command given as their arguments. */
+const RUNS_ARGS = new Set(["xargs", "watch", "parallel", "flock", "chroot", "unbuffer", "stdbuf"]);
+
+/**
+ * True when a command line runs something as root by any route: as a
+ * stage, after a wrapper (xargs, watch, find -exec), or inside an inline
+ * shell script (sh -c '...', ssh host '...' runs on the other side and
+ * is left alone).
+ */
+export function escalates(cmd: string, depth = 0): boolean {
+  if (depth > 3) return false;
+  for (const w of commands(cmd)) {
+    const head = w[0];
+    if (ESCALATE.has(head)) return true;
+    if ((RUNS_ARGS.has(head) || head === "find") && w.slice(1).some((t) => ESCALATE.has(t))) {
+      return true;
+    }
+    if (/^(sh|bash|zsh|dash|ksh|fish)$/.test(head)) {
+      const c = w.indexOf("-c");
+      if (c > 0 && w[c + 1] && escalates(w[c + 1], depth + 1)) return true;
+    }
+    // ssh host 'sudo ...': root on the other machine, past the sudo tool.
+    if (head === "ssh") {
+      const remote = sshRemote(w);
+      if (remote && escalates(remote, depth + 1)) return true;
+    }
+  }
+  return false;
+}
+
+/** The command an ssh invocation runs on the other side ("" for a login shell). */
+function sshRemote(words: string[]): string {
+  for (let i = 1; i < words.length; i++) {
+    const w = words[i];
+    if (w === "--") return words.slice(i + 2).join(" ");
+    if (!w.startsWith("-") || w.length < 2) return words.slice(i + 1).join(" ");
+    for (let k = 1; k < w.length; k++) {
+      if (!SSH_VALUE_OPTS.includes(w[k])) continue;
+      if (k === w.length - 1) i++;
+      break;
+    }
+  }
+  return "";
+}
+
 export function refuseInRun(cmd: string): string | null {
   const cmds = commands(cmd);
-  if (cmds.some((w) => w[0] === "sudo")) {
-    return "sudo inside run: use the sudo tool, with the command without the word sudo. (Inspection rarely needs root: try it without first.)";
+  if (cmds.some((w) => w[0] === "sudo") || escalates(cmd)) {
+    return "running as root inside run (sudo, doas, su or pkexec, also inside xargs, find -exec, sh -c or ssh host '...'): use the sudo tool, with the command without the word sudo, so the user approves it; for another machine, connect with the ssh tool first. (Inspection rarely needs root: try it without first.)";
   }
   if (cmds.some(startsServer)) {
     return "this starts a model server, which would block until it times out. Write the command into a start script instead: for the model ai-bootstrap should use, start-full.sh in the startup scripts folder, started with start_full_model. For another server, start-<name>.sh in that machine's startup scripts folder, run in the background with its output to a log: nohup sh <script> > <name>.log 2>&1 &";
@@ -560,10 +616,13 @@ export class Session {
    * The read-only list, then the bootstrap model's verdict. "complex" twice in a row
    * for the same command is returned at most twice; after that the user decides.
    */
-  private async check(cmd: string): Promise<{ verdict: Verdict | null; checked: boolean }> {
+  private async check(
+    cmd: string,
+    root = false,
+  ): Promise<{ verdict: Verdict | null; checked: boolean }> {
     if (isReadonly(cmd)) return { verdict: "readonly", checked: false };
     const spin = spinner("checking the command");
-    const verdict = await this.classifier.classify(cmd, this.here.info.osName).finally(() =>
+    const verdict = await this.classifier.classify(cmd, this.here.info.osName, root).finally(() =>
       spin.stop()
     );
     if (verdict === "complex") {
@@ -596,9 +655,10 @@ export class Session {
     key: string,
     kind: ApprovalKind = "normal",
   ): Promise<string | null> {
-    if (kind !== "dangerous" && this.always.has(key)) return null;
+    // Never remembered for root or anything dangerous: those ask every time.
+    if (kind !== "dangerous" && kind !== "root" && this.always.has(key)) return null;
     const a = await approve(what, kind);
-    if (a.always) this.always.add(key);
+    if (a.always && kind !== "dangerous" && kind !== "root") this.always.add(key);
     if (a.readonly) this.allowReadonly = true;
     if (a.ok) return null;
     return a.note ? `the user declined: ${a.note}` : "the user declined to run this";
@@ -718,19 +778,28 @@ export class Session {
       }
       case "sudo": {
         const cmd = String(args.command ?? "").replace(/^\s*sudo\s+/, "");
-        // Root always asks; the check still catches the complex and the dangerous.
-        const { verdict, checked } = await this.check(cmd);
+        // Root always asks; the check (told it runs as root) still catches the
+        // complex and the dangerous.
+        const { verdict, checked } = await this.check(cmd, true);
         if (verdict === "complex") {
           say(dim(`  [${this.where()}] sudo ${cmd}`));
           say(yellow("    too complex to check; asking for smaller steps"));
           return Session.TOO_COMPLEX;
         }
-        const no = await this.gate(
-          `[${bold(this.where())}] ${red("sudo")} ${cmd}${Session.label(verdict, checked)}`,
-          `${this.where()}\0sudo\0${cmd}`,
-          verdict === "dangerous" ? "dangerous" : "normal",
-        );
-        if (no) return no;
+        // Definitely read-only (on the fixed list, not the model's guess) and
+        // not reading secrets: runs unasked once the user allows read-only
+        // commands; otherwise the prompt offers that.
+        const safeRead = !checked && verdict === "readonly" && !readsSecrets(cmd);
+        if (safeRead && this.allowReadonly) {
+          say(dim(`  [${this.where()}] sudo ${cmd}  (read-only)`));
+        } else {
+          const no = await this.gate(
+            `[${bold(this.where())}] ${red("sudo")} ${cmd}${Session.label(verdict, checked)}`,
+            `${this.where()}\0sudo\0${cmd}`,
+            safeRead ? "readonly" : verdict === "dangerous" ? "dangerous" : "root",
+          );
+          if (no) return no;
+        }
         const r = await this.command("sudo", cmd, args, signal);
         this.show(r);
         return this.render(r);

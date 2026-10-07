@@ -185,3 +185,95 @@ Deno.test("after ^C, a command that will not stop is let go within a few seconds
     await Deno.remove(dir, { recursive: true });
   }
 });
+
+Deno.test("sudo asks every time: no always, and none remembered", async () => {
+  const { Router } = await import("../src/llm.ts");
+  const { Memory } = await import("../src/memory.ts");
+  const { McpManager } = await import("../src/mcp.ts");
+  const { Session } = await import("../src/tools.ts");
+  const { setFrontend } = await import("../src/frontend.ts");
+  const dir = await Deno.makeTempDir();
+  const prompts: string[] = [];
+  const answers = ["a", "y", "y"];
+  setFrontend({
+    emit() {},
+    readLine: (p: string) => {
+      prompts.push(p.replace(new RegExp(String.fromCharCode(27) + "\\[[0-9;]*m", "g"), ""));
+      return Promise.resolve(answers.shift() ?? null);
+    },
+    close() {},
+  });
+  try {
+    const s = new Session(
+      new Router({ label: "m", baseUrl: "http://127.0.0.1:9/v1", model: "m", contextChars: 1e4 }),
+      new Memory(`${dir}/mem`),
+      new McpManager(`${dir}/mcp.json`),
+      () => Promise.resolve(null),
+    );
+    await s.init();
+    (s as any).check = () => Promise.resolve({ verdict: "writes", checked: true });
+    const ran: string[] = [];
+    (s as any).command = (_op: string, cmd: string) => {
+      ran.push(cmd);
+      return Promise.resolve({ code: 0, stdout: "", stderr: "", cmd });
+    };
+    await s.exec("sudo", { command: "systemctl restart ollama" });
+    await s.exec("sudo", { command: "systemctl restart ollama" });
+    assertEquals(ran.length, 2);
+    assertEquals(prompts.length, 3, "'a' is not a choice; the second run asks again");
+    assert(prompts.every((p) => !p.includes("[a]lways")), prompts.join(" | "));
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("sudo: a listed read-only command runs unasked once read-only is allowed; secrets still ask", async () => {
+  const { Router } = await import("../src/llm.ts");
+  const { Memory } = await import("../src/memory.ts");
+  const { McpManager } = await import("../src/mcp.ts");
+  const { Session, readsSecrets } = await import("../src/tools.ts");
+  const { setFrontend } = await import("../src/frontend.ts");
+  const dir = await Deno.makeTempDir();
+  const prompts: string[] = [];
+  const answers = ["r", "y", "y"];
+  setFrontend({
+    emit() {},
+    readLine: (p: string) => {
+      prompts.push(p);
+      return Promise.resolve(answers.shift() ?? null);
+    },
+    close() {},
+  });
+  try {
+    const s = new Session(
+      new Router({ label: "m", baseUrl: "http://127.0.0.1:9/v1", model: "m", contextChars: 1e4 }),
+      new Memory(`${dir}/mem`),
+      new McpManager(`${dir}/mcp.json`),
+      () => Promise.resolve(null),
+    );
+    await s.init();
+    // The model's checker is never asked here: these are on the fixed list or not at all.
+    (s as any).classifier = { classify: () => Promise.resolve("writes") };
+    const ran: string[] = [];
+    (s as any).command = (_op: string, cmd: string) => {
+      ran.push(cmd);
+      return Promise.resolve({ code: 0, stdout: "", stderr: "", cmd });
+    };
+    // First listed read: asks, offering read-only; "r" allows them from now on.
+    await s.exec("sudo", { command: "journalctl -u ollama -n 20 --no-pager" });
+    assertEquals(prompts.length, 1);
+    assertStringIncludes(prompts[0], "[r]ead-only");
+    await s.exec("sudo", { command: "ls -la /root" });
+    assertEquals(prompts.length, 1, "a listed read now runs unasked");
+    // Secrets and anything not on the list still ask.
+    await s.exec("sudo", { command: "cat /etc/shadow" });
+    assertEquals(prompts.length, 2);
+    await s.exec("sudo", { command: "systemctl restart ollama" });
+    assertEquals(prompts.length, 3);
+    assertEquals(ran.length, 4);
+    assert(readsSecrets("cat /home/a/.ssh/id_ed25519") && readsSecrets("cat server.key"));
+    assert(!readsSecrets("journalctl -u x"));
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});

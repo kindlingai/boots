@@ -202,3 +202,54 @@ Deno.test("a command line is judged stage by stage, as bad as its worst stage", 
     await m.close();
   }
 });
+
+Deno.test("run refuses root by any route: wrappers, xargs, find -exec, sh -c", async () => {
+  const { escalates } = await import("../src/tools.ts");
+  for (
+    const c of [
+      "sudo ls",
+      "nohup sudo systemctl restart x &",
+      "ls | xargs sudo rm",
+      "find /tmp -name x -exec sudo rm {} \;",
+      "bash -c 'apt-get update && sudo apt-get install -y x'",
+      "sh -c \"sh -c 'doas reboot'\"",
+      "su -c 'id' root",
+      "pkexec visudo",
+      "timeout 5 sudo -n true",
+      "ssh admin@gx10 'sudo systemctl restart x'",
+      "ssh -p 2222 -o BatchMode=yes gx10 sudo reboot",
+    ]
+  ) {
+    assert(escalates(c), c);
+    assert(refuseInRun(c), c);
+  }
+  for (
+    const c of [
+      "grep sudo /var/log/auth.log",
+      "echo sudo",
+      "cat /etc/sudoers.d/README",
+      "ssh admin@gx10 'systemctl status x'",
+      "ssh admin@gx10",
+      "which sudo",
+    ]
+  ) assert(!escalates(c), c);
+});
+
+Deno.test("the checker is told when a command runs as root, and caches it apart", async () => {
+  const asked: string[] = [];
+  const m = serveMock([], 0, (cmd) => {
+    asked.push(cmd);
+    return "writes";
+  });
+  try {
+    const c = new Classifier(() => ({ label: "m", baseUrl: m.url, model: "m", contextChars: 1e4 }));
+    await c.classify("my-tool --fix", "Linux");
+    await c.classify("my-tool --fix", "Linux", true);
+    assertEquals(asked.length, 2, "root is asked about separately");
+    const last = m.seen.at(-1).messages[1].content;
+    assertStringIncludes(last, "It runs as root (with sudo)");
+    assert(!m.seen.at(-2).messages[1].content.includes("runs as root"));
+  } finally {
+    await m.close();
+  }
+});

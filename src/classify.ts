@@ -141,13 +141,13 @@ export class Classifier {
    * worst stage. A line that cannot be split safely (substitution, a
    * here-document, a redirect into a file) is asked about whole.
    */
-  async classify(cmd: string, os: string): Promise<Verdict | null> {
+  async classify(cmd: string, os: string, root = false): Promise<Verdict | null> {
     if (Deno.env.get("AIBOOT_CHECK") === "0") return null;
     const st = stages(cmd);
     // Loops and conditionals do not split into independent stages.
     if (!st || st.length < 2 || st.some((t) => SHELL_KEYWORDS.has(t[0]))) {
       if (cmd.length > MAX_LEN) return "complex";
-      return await this.ask(cmd, os, null);
+      return await this.ask(cmd, os, null, root);
     }
     if (pipesDownloadIntoShell(st)) return "dangerous";
     if (st.length > MAX_STAGES || cmd.length > MAX_LEN * 3) return "complex";
@@ -156,7 +156,7 @@ export class Classifier {
       if (stageReadonly([...toks])) continue;
       const seg = toks.map(shellQuote).join(" ");
       if (seg.length > MAX_LEN) return "complex";
-      const v = await this.ask(seg, os, cmd);
+      const v = await this.ask(seg, os, cmd, root);
       if (v === null) return null;
       if (RANK[v] > RANK[worst]) worst = v;
       if (worst === "dangerous") break;
@@ -165,8 +165,13 @@ export class Classifier {
   }
 
   /** One question to the model, about `cmd` (a stage of `whole`, when given). */
-  private async ask(cmd: string, os: string, whole: string | null): Promise<Verdict | null> {
-    const key = `${os}\0${cmd}`;
+  private async ask(
+    cmd: string,
+    os: string,
+    whole: string | null,
+    root = false,
+  ): Promise<Verdict | null> {
+    const key = `${os}\0${root ? "root\0" : ""}${cmd}`;
     const hit = this.cache.get(key);
     if (hit) return hit;
     const context = whole
@@ -179,7 +184,11 @@ export class Classifier {
           { role: "system", content: CLASSIFY_PROMPT },
           {
             role: "user",
-            content: `Operating system: ${os}\nCommand:\n\`\`\`\n${cmd}\n\`\`\`${context}`,
+            content: `Operating system: ${os}\n${
+              root
+                ? "It runs as root (with sudo): judge it as root. Changes to system files, services, users, permissions or disks are writes, and anything that could break the system or lock the user out is dangerous.\n"
+                : ""
+            }Command:\n\`\`\`\n${cmd}\n\`\`\`${context}`,
           },
         ],
         [],

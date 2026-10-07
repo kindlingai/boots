@@ -84,8 +84,11 @@ export async function choose(prompt: string, options: string[], def = 0): Promis
 
 export type Approval = { ok: boolean; always?: boolean; readonly?: boolean; note?: string };
 
-/** "readonly" offers r (allow every read-only command); "dangerous" offers no always. */
-export type ApprovalKind = "normal" | "readonly" | "dangerous";
+/**
+ * "readonly" offers r (allow every read-only command); "dangerous" and
+ * "root" (anything run with sudo) offer no always: they ask every time.
+ */
+export type ApprovalKind = "normal" | "readonly" | "dangerous" | "root";
 
 /**
  * y / n / s(omething else: tell the model), plus a(lways allow this one) or,
@@ -95,7 +98,7 @@ export async function approve(what: string, kind: ApprovalKind = "normal"): Prom
   say(`${yellow("?")} ${what}`);
   const choices = kind === "readonly"
     ? "[y]es [n]o always allow [r]ead-only [s]omething else, I'll explain"
-    : kind === "dangerous"
+    : kind === "dangerous" || kind === "root"
     ? "[y]es [n]o [s]omething else, I'll explain"
     : "[y]es [n]o [a]lways [s]omething else, I'll explain";
   while (true) {
