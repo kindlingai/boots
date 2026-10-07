@@ -5,6 +5,7 @@
 
 import { bot, DROP, moodOf, sweat } from "./bot.ts";
 import { tidy } from "../frontend.ts";
+import { faviconHref } from "./icon.ts";
 
 /**
  * A line with terminal colour codes as HTML: each run of text in a span
@@ -62,6 +63,7 @@ export function page(title: string, token: string): string {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${esc(title)}</title>
+<link rel="icon" type="image/svg+xml" href="${faviconHref()}">
 <style>
   :root {
     --bg: #121417; --panel: #1a1d22; --line: #2a2f37; --text: #d8dde4; --dim: #8b94a1;

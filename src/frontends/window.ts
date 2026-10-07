@@ -5,11 +5,15 @@
 // Windows) is fetched on first use; if it cannot load, this exits non-zero
 // and the main process opens the page in a browser instead.
 
+import { setWindowIcon } from "./icon.ts";
+
 export async function windowMain(url: string, title: string): Promise<number> {
   try {
     const { Webview, SizeHint } = await import("@webview/webview");
     const w = new Webview(false, { width: 1000, height: 760, hint: SizeHint.NONE });
     w.title = title;
+    // lil boots in the Dock / taskbar instead of a generic icon.
+    await setWindowIcon(w.unsafeWindowHandle);
     // macOS delivers ⌘V/⌘C/⌘X/⌘A through the app's Edit menu, and this window
     // has none: the page handles those keys itself, through these. (The
     // callbacks are synchronous: run() blocks the event loop.)
