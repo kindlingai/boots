@@ -176,3 +176,32 @@ Deno.test("bash -c / sh -c / zsh -c are checked as the script they run", () => {
     ]
   ) assertEquals(unwrapShell(c), c, c);
 });
+
+Deno.test("reads reported as asking: systemctl verbs, timeout, awk, python arithmetic, loop redirects", () => {
+  const ok = [
+    "systemctl get-default",
+    "systemctl list-timers",
+    `timeout 25 ssh -o BatchMode=yes -o ConnectTimeout=6 admin@192.168.1.36 'hostname; ls -d /srv/models/glm-*; pgrep -c mentatd; docker ps --format "{{.Names}} {{.Status}}" 2>/dev/null | head -6'; echo ===93`,
+    `free -g | awk "NR==2{print \\$2\\" GB RAM\\"}"`,
+    `awk '$3>5 {print $1}' /proc/meminfo`,
+    `grep -o '"total_size":[0-9]*' /srv/x/model.safetensors.index.json; python3 -c "print(190.3*1.05)"`,
+    `python3 -c "print(round(2**30/1e9, 2))"`,
+  ];
+  for (const c of ok) assert(isReadonly(c), c);
+  const loop =
+    `for h in 192.168.1.36 192.168.1.93; do echo "-- $h"; ssh -o BatchMode=yes admin@$h hostname; done 2>&1 | tail -8`;
+  assert(isReadonly(unrollLoops(loop)), "a loop followed by redirections unrolls");
+  const no = [
+    "timeout 25 rm -rf /x",
+    `awk '{print $1 > "out"}' f`,
+    `awk 'BEGIN{system("id")}'`,
+    `awk '{print | "sh"}' f`,
+    "awk -f prog.awk f",
+    `python3 -c "import os; os.remove('x')"`,
+    `python3 -c "open('x','w')"`,
+    `python3 -c "__import__('os')"`,
+    "systemctl set-default graphical.target",
+    `docker ps -a 2>err1.txt; cat err1.txt; rm -f err1.txt`,
+  ];
+  for (const c of no) assertFalse(isReadonly(c), c);
+});

@@ -193,12 +193,66 @@ export function refuseInRun(cmd: string): string | null {
   if (advice) return `ssh with root: ${advice}`;
   const cmds = commands(cmd);
   if (cmds.some((w) => w[0] === "sudo") || escalates(cmd)) {
-    return "running as root inside run (sudo, doas, su or pkexec, also inside xargs, find -exec, sh -c or ssh host '...'): use the sudo tool, with the command without the word sudo, so the user approves it; for another machine, connect with the ssh tool first. (Inspection rarely needs root: try it without first.)";
+    return "running as root inside run (sudo, doas, su or pkexec, also inside xargs, find -exec, sh -c or ssh host '...'): use the sudo tool, with the command without the word sudo, so the user approves it; for another machine, connect with the ssh tool first. (Inspection rarely needs root: try it without first.)" +
+      splitAdvice(cmd);
   }
   if (cmds.some(startsServer)) {
     return "this starts a model server, which would block until it times out. Write the command into a start script instead: for the model ai-bootstrap should use, start-full.sh in the startup scripts folder, started with start_full_model. For another server, start-<name>.sh in that machine's startup scripts folder, run in the background with its output to a log: nohup sh <script> > <name>.log 2>&1 &";
   }
   return null;
+}
+
+/**
+ * The items of a command list (split at ; && || and newlines outside quotes),
+ * as written.
+ */
+export function listItems(cmd: string): string[] {
+  const out: string[] = [];
+  let cur = "", q = "";
+  for (let i = 0; i < cmd.length; i++) {
+    const c = cmd[i];
+    if (q) {
+      if (c === "\\" && q === '"') {
+        cur += c + (cmd[++i] ?? "");
+        continue;
+      }
+      if (c === q) q = "";
+      cur += c;
+      continue;
+    }
+    if (c === "'" || c === '"') q = c;
+    else if (
+      c === ";" || c === "\n" || (c === "&" && cmd[i + 1] === "&") ||
+      (c === "|" && cmd[i + 1] === "|")
+    ) {
+      if (c !== ";" && c !== "\n") i++;
+      if (cur.trim()) out.push(cur.trim());
+      cur = "";
+      continue;
+    } else if (c === "\\") {
+      cur += c + (cmd[++i] ?? "");
+      continue;
+    }
+    cur += c;
+  }
+  if (cur.trim()) out.push(cur.trim());
+  return out;
+}
+
+/**
+ * For a line that mixes `sudo …` items with others: the split to make, the
+ * root part for the sudo tool and the rest for run. "" when it does not
+ * split that simply.
+ */
+function splitAdvice(cmd: string): string {
+  const items = listItems(cmd);
+  const root = items.filter((t) => /^sudo\s/.test(t));
+  const rest = items.filter((t) => !/^sudo\s/.test(t));
+  if (!root.length || root.some((t) => /^sudo\s+-/.test(t)) || items.length < 2) return "";
+  const asRoot = root.map((t) => t.replace(/^sudo\s+/, "")).join("; ");
+  return ` Split this one: the sudo tool with \`${asRoot}\`${
+    rest.length ? `, then run with \`${rest.join("; ")}\`` : ""
+  }.`;
 }
 
 /** ssh options that take a value (the next word, or the rest of the same word). */

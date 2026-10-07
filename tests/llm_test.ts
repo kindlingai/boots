@@ -317,3 +317,15 @@ Deno.test("/thinking off asks the template not to think; a server that refuses i
     await server.shutdown();
   }
 });
+
+Deno.test("streamed text: think blocks hidden, cut at a tool call, partial tags held back", async () => {
+  const { visibleSoFar } = await import("../src/llm.ts");
+  assertEquals(visibleSoFar("<think>hmm</think>Checking the sparks"), "Checking the sparks");
+  assertEquals(visibleSoFar("<think>still thinking"), "");
+  assertEquals(visibleSoFar("Checking <tool"), "Checking ", "a tag may be arriving");
+  assertEquals(
+    visibleSoFar('Checking <tool_call>{"name":"run"}</tool_call> then more'),
+    "Checking ",
+  );
+  assertEquals(visibleSoFar("a < b"), "a < b", "a lone < that is not a tag start stays");
+});

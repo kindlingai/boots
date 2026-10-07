@@ -265,8 +265,16 @@ const SUBCOMMANDS: Record<string, Set<string>> = {
     "is-failed",
     "list-units",
     "list-unit-files",
+    "list-timers",
+    "list-sockets",
+    "list-dependencies",
+    "list-jobs",
+    "get-default",
+    "is-system-running",
+    "show-environment",
     "show",
     "cat",
+    "--version",
   ]),
   journalctl: new Set(["*"]),
   kubectl: new Set(["get", "describe", "logs", "version", "cluster-info", "top", "api-resources"]),
@@ -379,6 +387,24 @@ export function stageReadonly(toks: string[]): boolean {
   }
   if (!head) return false;
   const seg = toks.join(" ");
+  // timeout [-s SIG] [-k DUR] DUR cmd...: as read-only as the command it limits.
+  if (head === "timeout") {
+    let i = 1;
+    while (i < toks.length && toks[i].startsWith("-")) {
+      i += /^-(s|k|-signal|-kill-after)$/.test(toks[i]) ? 2 : 1;
+    }
+    return i + 1 < toks.length && /^\d+(\.\d+)?[smhd]?$/.test(toks[i]) &&
+      stageReadonly(toks.slice(i + 1));
+  }
+  // awk that only reads and prints: no system(), no output to a file or a
+  // command, no program file and no in-place editing.
+  if (/^[gm]?awk$/.test(head)) {
+    return !toks.slice(1).some((t) =>
+      /system\s*\(|print[^;}]*>|\||^-f|^--file|inplace|^-i$/.test(t)
+    );
+  }
+  // python3 -c with nothing but arithmetic: print(190.3*1.05).
+  if (/^python(3(\.\d+)?)?$/.test(head)) return pythonArithmetic(toks);
   if (head === "docker" && toks[1] === "compose") {
     const a = toks.slice(2).find((t) => !t.startsWith("-")) ?? "";
     return SUBCOMMANDS["docker compose"].has(a);
@@ -454,6 +480,22 @@ export function stageReadonly(toks: string[]): boolean {
     return subs.has(a) || subs.has(`${a} ${toks[2] ?? ""}`.trim());
   }
   return READONLY.has(head);
+}
+
+/** Names an arithmetic python -c may use. */
+const PY_MATH = new Set(
+  "print round int float abs min max sum pow divmod len hex bin oct".split(" "),
+);
+
+/**
+ * python -c "<arithmetic>": numbers, operators, brackets and a few math
+ * builtins; no quotes, names, attributes, assignments or imports.
+ */
+function pythonArithmetic(toks: string[]): boolean {
+  if (toks.length !== 3 || toks[1] !== "-c") return false;
+  const code = toks[2];
+  if (!/^[\w\s.+\-*/%(),]*$/.test(code) || code.includes("__")) return false;
+  return (code.match(/[A-Za-z_]\w*/g) ?? []).every((w) => PY_MATH.has(w) || /^e\d*$/.test(w));
 }
 
 /**
@@ -639,8 +681,9 @@ function substitute(body: string, v: string, value: string): string | null {
   return q ? null : out;
 }
 
+// A loop may be followed by redirections of its own output (done 2>&1 | tail).
 const FOR_LOOP =
-  /(^|[;&|(\n]\s*)for\s+([A-Za-z_][A-Za-z0-9_]*)\s+in\s+([^;\n]*?)\s*[;\n]\s*do\s+([\s\S]*?)\s*[;\n]\s*done(?=\s*(?:$|[;&|)\n]))/;
+  /(^|[;&|(\n]\s*)for\s+([A-Za-z_][A-Za-z0-9_]*)\s+in\s+([^;\n]*?)\s*[;\n]\s*do\s+([\s\S]*?)\s*[;\n]\s*done(?=(?:\s*(?:\d*>&\d+|\d*>\s*\/dev\/null|<\s*\/dev\/null))*\s*(?:$|[;&|)\n]))/;
 
 /** Words that make a loop body more than straight-line commands. */
 const BODY_KEYWORDS =

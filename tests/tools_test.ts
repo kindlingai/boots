@@ -479,3 +479,21 @@ Deno.test("sudo bash -c '<reads>' runs under always-allow read-only, like the re
     await Deno.remove(dir, { recursive: true });
   }
 });
+
+Deno.test("sudo inside run: refused, with the exact split into the sudo tool and run", async () => {
+  const { refuseInRun, listItems } = await import("../src/tools.ts");
+  const cmd =
+    `sudo docker ps --format '{{.Names}} {{.Status}}' | head; ls ~/glm/compose/ 2>/dev/null && ls ~/glm/ | head`;
+  assertEquals(listItems(cmd), [
+    "sudo docker ps --format '{{.Names}} {{.Status}}' | head",
+    "ls ~/glm/compose/ 2>/dev/null",
+    "ls ~/glm/ | head",
+  ]);
+  const r = refuseInRun(cmd)!;
+  assertStringIncludes(
+    r,
+    "the sudo tool with `docker ps --format '{{.Names}} {{.Status}}' | head`",
+  );
+  assertStringIncludes(r, "then run with `ls ~/glm/compose/ 2>/dev/null; ls ~/glm/ | head`");
+  assert(!refuseInRun("sudo -u bob ls; ls")!.includes("Split"), "sudo with options: no guess");
+});

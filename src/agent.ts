@@ -7,13 +7,19 @@ import { BASE_TOOLS, describe, renderGoal, type Session, TOOLS } from "./tools.t
 import { currentTier, loadTemplates, systemPrompt, type Templates, tierOf } from "./prompts.ts";
 import { secrets } from "./secrets.ts";
 import { ask, bold, dim, Interrupted, plain, red, say, spinner, warn } from "./ui.ts";
-import { emit, EscInterrupted } from "./frontend.ts";
+import { emit, EscInterrupted, tidy } from "./frontend.ts";
 import { clipTools, compact, isContextError, SUMMARY_PROMPT } from "./compact.ts";
 import { Backoff } from "./backoff.ts";
 import { activeGoals, type Goal, normalizeGoals, parseGoals } from "./memory.ts";
 
 /** A restart restores 6 turns, or as many as fill this share of the context. */
 const RESTORE_SHARE = 0.3;
+
+/** Progress updates: after this long without a word, over at most this many steps. */
+const UPDATE_AFTER_MS = 60_000;
+const UPDATE_STEPS = 8;
+export const UPDATE_PROMPT =
+  `You are watching an AI agent work on a user's machines (it sets up AI models and infrastructure). From its latest thinking, tool calls and their results, write 2 to 4 short sentences for the user, in the first person as the agent: what you are doing, what you have found, anything you are worried about (only if there is something), and where you are going next. Plain sentences: no preamble, no lists, no markdown.`;
 
 /** update_status: how many model steps a status stays on screen, and how many stay in context. */
 const STATUS_SHOWN_STEPS = 5;
@@ -62,8 +68,9 @@ export function fit(history: Message[], budget: number, statuses: string[] = [])
       }
       : m
   );
-  const size = (ms: Message[]) =>
-    ms.reduce((n, m) => n + m.content.length + JSON.stringify(m.tool_calls ?? "").length, 0);
+  // Measured as sent (JSON: quotes and newlines escaped, field names), so the
+  // room left for the reply is room the server sees too.
+  const size = (ms: Message[]) => ms.reduce((n, m) => n + JSON.stringify(m).length, 0);
   const lastUser = msgs.findLastIndex((m) => m.role === "user");
   if (lastUser > 0 && size(msgs) > budget) {
     // Drop from the front a step at a time (a message, with an assistant's
@@ -183,6 +190,7 @@ export class Agent {
     const ctx = (this.s.router.smart ?? this.s.router.current()).contextChars;
     const r = await this.s.transcript?.restore(turns, Math.floor(ctx * share));
     if (!r) return 0;
+    this.turnsSinceRestore = 0;
     this.history = r.messages;
     this.restoredAt = r.at;
     // Only a remote location matters: that connection did not survive the restart.
@@ -249,6 +257,71 @@ export class Agent {
     return `\n\n(Reminder: your active goals, from goals.json. Keep working toward them; mark one done, or move "active" to the next, as things progress.\n${
       lines.join("\n")
     })`;
+  }
+
+  /** When the model last said something the user could read (or the turn began). */
+  private quietSince = 0;
+  /** The current turn's latest steps, for the progress updates. */
+  private recent: { reasoning: string; said: string; calls: string[]; results: string[] }[] = [];
+  /** What the user asked this turn. */
+  private asked = "";
+  /** Steps since the last progress update or visible words. */
+  private stepsSinceUpdate = 0;
+
+  /**
+   * After a minute of working without a word to the user, and at least two
+   * steps since the last update: the model, thinking off and with no tools,
+   * sums up its recent steps in a few sentences, shown as an update and
+   * kept as a status line (it survives trimming of the history).
+   */
+  private async maybeUpdate(): Promise<void> {
+    if (Deno.env.get("AIBOOT_UPDATES") === "0") return;
+    if (tierOf(this.s.router.current()) === "base") return;
+    const after = Number(Deno.env.get("AIBOOT_UPDATE_AFTER_MS") ?? UPDATE_AFTER_MS);
+    if (Date.now() - this.quietSince < after || this.stepsSinceUpdate < 2) return;
+    this.stepsSinceUpdate = 0;
+    const clip = (t: string, n: number) => t.length > n ? `…${t.slice(-n)}` : t;
+    const log = this.recent.map((r, i) =>
+      [
+        `Step ${i + 1}:`,
+        r.reasoning.trim() ? `Thinking: ${clip(r.reasoning.trim(), 1200)}` : "",
+        r.said.trim() ? `Said: ${clip(r.said.trim(), 400)}` : "",
+        ...r.calls.map((c, k) =>
+          `Called: ${clip(c, 300)}\nResult: ${clip(plain(r.results[k] ?? "(still running)"), 500)}`
+        ),
+      ].filter(Boolean).join("\n")
+    ).join("\n\n");
+    const spin = spinner("writing an update");
+    try {
+      this.s.router.thinkingOffOnce = true;
+      const r = await this.s.router.chat(
+        () => [
+          { role: "system", content: UPDATE_PROMPT },
+          {
+            role: "user",
+            content: `The user asked: ${
+              clip(this.asked, 600)
+            }\n\nThe agent's latest steps:\n\n${log}`,
+          },
+        ],
+        [],
+        {},
+        AbortSignal.timeout(45_000),
+      );
+      const text = tidy(r.content.replace(/<think>[\s\S]*?<\/think>/g, ""));
+      if (!text) return;
+      this.speak(`◇ ${text}`);
+      this.s.transcript?.append({ role: "system", content: `(progress update) ${text}` });
+      // Kept with the status lines: an anchor that survives trimming.
+      this.statuses.push({ text: clip(text, 300), step: this.stepCount });
+      if (this.statuses.length > STATUS_KEEP) this.statuses.shift();
+      this.quietSince = Date.now();
+    } catch {
+      // An update is a nicety: never in the way of the work.
+    } finally {
+      this.s.router.thinkingOffOnce = false;
+      spin.stop();
+    }
   }
 
   /** The restored turns, shown the way they looked: questions, replies, and the tools used. */
@@ -353,7 +426,15 @@ export class Agent {
         fresh,
         failure: this.s.fullFailure,
         update: this.s.update,
-        restored: this.restoredAt ? { at: this.restoredAt, location: this.restoredFrom } : null,
+        // The restored note is for picking up: the first two turns. Its "you are
+        // local now" part holds only while that is so: once the model has
+        // moved, it would tell it the wrong place.
+        restored: this.restoredAt && this.turnsSinceRestore < 2
+          ? {
+            at: this.restoredAt,
+            location: this.s.where() === "local" ? this.restoredFrom : null,
+          }
+          : null,
       });
   }
 
@@ -380,8 +461,12 @@ export class Agent {
       await this.steps(userText);
     } finally {
       this.busy = false;
+      this.turnsSinceRestore++;
     }
   }
+
+  /** Turns since the history was restored (the restored note fades after two). */
+  private turnsSinceRestore = 0;
 
   /** A whole assistant message at once. */
   private speak(text: string): void {
@@ -396,13 +481,21 @@ export class Agent {
     this.push({ role: "user", content: userText + remind });
     let compactions = 0;
     let nudges = 0;
+    this.quietSince = Date.now();
+    this.recent = [];
+    this.stepsSinceUpdate = 0;
+    this.asked = userText;
     for (let step = 0; step < MAX_STEPS; step++) {
       this.stepCount++;
       this.expireStatus();
+      await this.maybeUpdate();
       this.abort = new AbortController();
       let reply: Reply | undefined;
       let printed = false;
       let lead = "";
+      // What reached the screen as it streamed (text after a text-form tool
+      // call does not: it is shown when the reply is complete).
+      let streamed = "";
       const current = this.s.router.current();
       emit({
         type: "status",
@@ -434,6 +527,7 @@ export class Agent {
               emit({ type: "assistant", phase: "start" });
             }
             printed = true;
+            streamed += t;
             emit({ type: "assistant", phase: "delta", text: t });
           },
           reasoning: (t) => {
@@ -483,8 +577,16 @@ export class Agent {
       // model try again (twice), instead of ending the turn in silence.
       const broken = !reply.toolCalls.length && BROKEN_CALL.test(reply.content);
       const empty = !reply.toolCalls.length && !reply.content.trim();
-      if (printed) emit({ type: "assistant", phase: "end" });
-      else if (reply.content.trim() && !broken) this.speak(reply.content.trim());
+      if (printed) {
+        emit({ type: "assistant", phase: "end" });
+        // Words after a tool call that did not stream (pre-, inter- and
+        // post-tool text is all the user sees of the model's commentary).
+        const said = streamed.trim(), all = reply.content.trim();
+        if (!broken && all.length > said.length && all.startsWith(said)) {
+          const rest = all.slice(said.length).trim();
+          if (rest) this.speak(rest);
+        }
+      } else if (reply.content.trim() && !broken) this.speak(reply.content.trim());
       this.push({
         role: "assistant",
         content: reply.content,
@@ -500,7 +602,11 @@ export class Agent {
           : thoughtOut
           ? `an empty reply: it ${
             reply.reasoning ? `thought (${tokenCount(tokens)})` : "ran"
-          } until it ran out of output tokens (asking again with thinking off, handing back where its thinking got to)`
+          } until it hit the output limit (${
+            reply.maxTokens
+              ? `${tokenCount(reply.maxTokens)} asked for`
+              : "the server's own: the context had no room to ask for more"
+          }); asking again with thinking off, handing back where its thinking got to`
           : "an empty reply";
         if (nudges < 2) {
           nudges++;
@@ -527,6 +633,19 @@ export class Agent {
       }
       // A reply that worked: only empty or broken ones in a row count.
       nudges = 0;
+      // For the progress updates: what this step thought, said and called.
+      this.stepsSinceUpdate++;
+      if (reply.content.trim()) {
+        this.quietSince = Date.now();
+        this.stepsSinceUpdate = 0;
+      }
+      this.recent.push({
+        reasoning: reply.reasoning,
+        said: reply.content,
+        calls: reply.toolCalls.map((c) => `${c.function.name}(${c.function.arguments})`),
+        results: [],
+      });
+      if (this.recent.length > UPDATE_STEPS) this.recent.shift();
       if (!reply.toolCalls.length) return;
       let replied = false;
       // Only what the answering model was offered (the base model is on rails).
@@ -609,6 +728,7 @@ export class Agent {
         this.toolCalls++;
         if (this.toolCalls % REMIND_EVERY_TOOLS === 0) result += await this.goalReminder();
         this.push({ role: "tool", tool_call_id: tc.id, content: result });
+        this.recent.at(-1)?.results.push(result);
       }
       // reply hands the turn back to the user.
       if (replied) return;

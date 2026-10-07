@@ -99,6 +99,8 @@ export interface Reply {
   reasoning: string;
   toolCalls: ToolCall[];
   finish: string;
+  /** The max_tokens the request asked for; 0 when it left the server's default. */
+  maxTokens?: number;
 }
 
 export interface StreamSink {
@@ -106,6 +108,28 @@ export interface StreamSink {
   reasoning?: (s: string) => void;
   /** Each streamed chunk (text, thinking or tool-call arguments): about one token. */
   token?: () => void;
+}
+
+/**
+ * The part of streamed content that is text for the user: <think> blocks
+ * removed (an unclosed one hides the rest), cut at the first <tool_call>,
+ * and without a trailing "<" that could be the start of either tag.
+ */
+export function visibleSoFar(content: string): string {
+  let t = content.replace(/<think>[\s\S]*?<\/think>/g, "");
+  const open = t.indexOf("<think>");
+  if (open >= 0) t = t.slice(0, open);
+  const call = t.indexOf("<tool_call>");
+  if (call >= 0) t = t.slice(0, call);
+  for (const tag of ["<tool_call>", "<think>"]) {
+    for (let k = tag.length - 1; k > 0; k--) {
+      if (t.endsWith(tag.slice(0, k))) {
+        t = t.slice(0, -k);
+        break;
+      }
+    }
+  }
+  return t;
 }
 
 // A text tool call, closed or cut off at the end of the reply.
@@ -359,7 +383,7 @@ export async function chat(
     finish = j.choices?.[0]?.finish_reason ?? "";
     if (content) sink.content?.(content);
   } else {
-    let inThink = false;
+    let shown = 0;
     const lines = r.body!.pipeThrough(new TextDecoderStream()).pipeThrough(new TextLineStream());
     for await (const raw of lines) {
       const line = raw.trim();
@@ -387,16 +411,13 @@ export async function chat(
       }
       if (typeof d.content === "string" && d.content) {
         content += d.content;
-        // Stream visible text, hiding inline <think> and <tool_call> blocks.
-        let piece = d.content;
-        if (piece.includes("<think>")) inThink = true;
-        if (inThink) {
-          if (piece.includes("</think>")) {
-            inThink = false;
-            piece = piece.slice(piece.indexOf("</think>") + 8);
-          } else piece = "";
+        // Stream what is surely visible text: outside <think> blocks, before
+        // any <tool_call>, holding back a tag that may still be arriving.
+        const visible = visibleSoFar(content);
+        if (visible.length > shown) {
+          sink.content?.(visible.slice(shown));
+          shown = visible.length;
         }
-        if (piece && !content.includes("<tool_call>")) sink.content?.(piece);
       }
       for (const tc of d.tool_calls ?? []) {
         const i = tc.index ?? calls.length;
@@ -409,7 +430,13 @@ export async function chat(
   }
   const n = normalize(content, calls.filter(Boolean), reasoning);
   n.calls.forEach((c, i) => (c.id ||= `call_${i}`));
-  return { content: n.content, reasoning: reasoning + n.reasoning, toolCalls: n.calls, finish };
+  return {
+    content: n.content,
+    reasoning: reasoning + n.reasoning,
+    toolCalls: n.calls,
+    finish,
+    maxTokens: typeof sampling.max_tokens === "number" ? sampling.max_tokens : 0,
+  };
 }
 
 /** A cheap liveness check: list models. */

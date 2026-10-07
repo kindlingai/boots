@@ -558,3 +558,76 @@ Deno.test("a full history leaves room in the context for the reply", async () =>
     await done();
   }
 });
+
+Deno.test("text before and after a text-form tool call both reach the screen", async () => {
+  const { setFrontend } = await import("../src/frontend.ts");
+  const said: string[] = [];
+  let cur = "";
+  setFrontend({
+    emit(e) {
+      if (e.type !== "assistant") return;
+      if (e.phase === "start") cur = "";
+      else if (e.phase === "delta") cur += e.text ?? "";
+      else said.push(cur);
+    },
+    readLine: () => Promise.resolve(null),
+    close() {},
+  });
+  const { agent, done } = await session("gpt-oss-120b", [
+    {
+      content:
+        'Checking the plan first. <tool_call>{"name": "update_status", "arguments": {"status": "x"}}</tool_call> Then I will look at the sparks.',
+    },
+    { content: "Done." },
+  ]);
+  try {
+    await agent.turn("go");
+    assertEquals(said.map((x) => x.trim()), [
+      "Checking the plan first.",
+      "Then I will look at the sparks.",
+      "Done.",
+    ]);
+  } finally {
+    await done();
+  }
+});
+
+Deno.test("after a quiet stretch, the model sums up its recent steps (thinking off, no tools) as an update", async () => {
+  const { setFrontend } = await import("../src/frontend.ts");
+  const { UPDATE_PROMPT } = await import("../src/agent.ts");
+  const said: string[] = [];
+  let cur = "";
+  setFrontend({
+    emit(e) {
+      if (e.type !== "assistant") return;
+      if (e.phase === "start") cur = "";
+      else if (e.phase === "delta") cur += e.text ?? "";
+      else said.push(cur);
+    },
+    readLine: () => Promise.resolve(null),
+    close() {},
+  });
+  Deno.env.set("AIBOOT_UPDATE_AFTER_MS", "0");
+  Deno.env.set("AIBOOT_BACKOFF", "0");
+  const step = { calls: [{ name: "update_status", args: { status: "checking rank 2" } }] };
+  const { m, agent, done } = await session("gpt-oss-120b", [step, step, step, {
+    content: "Done.",
+  }]);
+  try {
+    await agent.turn("bring up TP4");
+    const asks = m.seen.filter((b) => b.messages?.[0]?.content === UPDATE_PROMPT);
+    assertEquals(asks.length, 1, "one update after two quiet steps");
+    assertEquals(asks[0].tools, undefined, "no tools");
+    assertEquals(asks[0].chat_template_kwargs, { enable_thinking: false, thinking: false });
+    assertStringIncludes(asks[0].messages[1].content, "The user asked: bring up TP4");
+    assertStringIncludes(asks[0].messages[1].content, "update_status");
+    // The mock answers "ok": shown as an update block, and the work carried on.
+    assertEquals(said, ["◇ ok", "Done."]);
+    const work = m.seen.filter((b) => b.tools);
+    assertEquals(work.at(-1).chat_template_kwargs, undefined, "thinking back on for the work");
+  } finally {
+    Deno.env.delete("AIBOOT_UPDATE_AFTER_MS");
+    Deno.env.delete("AIBOOT_BACKOFF");
+    await done();
+  }
+});

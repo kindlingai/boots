@@ -221,3 +221,45 @@ Deno.test("with nothing set up, the prompt points the full model at the Docker g
   const base = systemPrompt(t, new Router(ep("qwen3-4b")), vars);
   assert(!base.includes("Nothing is set up yet"), "the base model is on rails");
 });
+
+Deno.test("the restored note fades: its 'you are local now' only while that is so, and gone after two turns", async () => {
+  const { Agent } = await import("../src/agent.ts");
+  const fake: any = {
+    where: () => "local",
+    router: new Router(ep("gpt-oss-120b")),
+    memory: {
+      index: () => Promise.resolve(""),
+      fleet: () => Promise.resolve(""),
+      goals: () => Promise.resolve(""),
+      docNames: () => Promise.resolve([]),
+      list: () => Promise.resolve([]),
+      remote: () => Promise.resolve(null),
+      isEmpty: () => Promise.resolve(false),
+    },
+    here: {
+      info: {
+        osName: "Linux",
+        arch: "x86_64",
+        os: "linux",
+        shell: "sh",
+        models: "/m",
+        scripts: "/s",
+        freePort: 1,
+        hardware: "",
+      },
+    },
+    plan: [],
+  };
+  const a = new Agent(fake, () => "");
+  (a as any).restoredAt = "2026-10-07T12:00:00Z";
+  (a as any).restoredFrom = "local > admin@192.168.1.70";
+  let sys = (await a.system())();
+  assertStringIncludes(sys, "Restored conversation");
+  assertStringIncludes(sys, "you are on the local machine now");
+  fake.where = () => "local > admin@192.168.1.70";
+  sys = (await a.system())();
+  assertStringIncludes(sys, "Restored conversation");
+  assert(!sys.includes("you are on the local machine now"), "not once it has moved");
+  (a as any).turnsSinceRestore = 2;
+  assert(!(await a.system())().includes("Restored conversation"), "gone after two turns");
+});
