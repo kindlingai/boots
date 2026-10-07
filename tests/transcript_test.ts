@@ -2,7 +2,7 @@
 import { join } from "@std/path";
 import { assert, assertEquals } from "@std/assert";
 import type { Message } from "../src/llm.ts";
-import { lastTurns, splitTurns, Transcript, wellFormed } from "../src/transcript.ts";
+import { lastTurns, searchTerms, splitTurns, Transcript, wellFormed } from "../src/transcript.ts";
 import { compact, isContextError } from "../src/compact.ts";
 import { LLMError } from "../src/llm.ts";
 import { secrets } from "../src/secrets.ts";
@@ -87,4 +87,41 @@ Deno.test("compaction keeps the last 2 turns verbatim; without a summary it drop
   const failed = await compact(h, () => Promise.reject(new Error("down")));
   assert(failed!.history[0].content.includes("dropped"));
   assertEquals(await compact(h.slice(0, 4), () => Promise.resolve("x")), null, "only 2 turns");
+});
+
+Deno.test("history search ranks partial matches instead of needing every word", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    const t = new Transcript(join(dir, "t.jsonl"));
+    t.append({ role: "user", content: "start the exl3 worker on spark with tp4" });
+    t.append({
+      role: "assistant",
+      content: "",
+      tool_calls: [{
+        id: "c1",
+        type: "function",
+        function: { name: "run", arguments: '{"command":"sh ~/scripts/exl3up-run.sh --tp 4"}' },
+      }],
+    });
+    t.append({ role: "user", content: "unrelated: what's the weather" });
+    t.append({ role: "assistant", content: "stopping the worker and reclaiming the GPU" });
+    const hits = await t.search("exl3up-run.sh tp4 head workers");
+    assert(hits.length >= 2, hits.join("\n"));
+    assert(hits.some((h) => h.includes("exl3up-run.sh")));
+    assert(hits.some((h) => h.includes("tp4")));
+    assert(!hits.some((h) => h.includes("weather")));
+    // Lines matching more terms come first.
+    const ranked = await t.search("worker stop reclaim");
+    assert(ranked[0].includes("reclaiming"), ranked[0]);
+    assert(!ranked[0].includes("words)"), "a full match is not marked partial");
+    assert(ranked.slice(1).every((h) => h.includes("/3 words)")));
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("search terms: compounds, stems, stopwords", () => {
+  assertEquals(searchTerms("exl3up-run.sh"), [["exl3up-run.sh", "exl3up", "run"]]);
+  assertEquals(searchTerms("Workers the"), [["workers", "worker"]]);
+  assertEquals(searchTerms("stopping"), [["stopping", "stopp", "stop"]]);
 });

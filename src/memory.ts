@@ -89,7 +89,7 @@ export function jsonMemory(name: string): JsonMemory | null {
   return JSON_MEMORIES.find((m) => m.file === n) ?? null;
 }
 
-const STOPWORDS = new Set([
+export const STOPWORDS = new Set([
   "a",
   "an",
   "and",

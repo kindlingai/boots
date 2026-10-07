@@ -383,7 +383,7 @@ export const TOOLS: ToolDef[] = [
   ),
   fn(
     "history_search",
-    "Search the conversation log of this and earlier sessions (what the user asked, what you ran and what came back). Every word must match. Newest first.",
+    "Search the conversation log of this and earlier sessions (what the user asked, what you ran and what came back). Lines matching any of the words, best first: rare words (names, paths, hosts) count most, and lines missing some words say how many they matched. Newest first among equals.",
     {
       query: str("a few keywords, e.g. 'vllm port' or 'gx10 ssh'"),
       limit: { type: "number", description: "most lines to return (default 20)" },
@@ -1006,7 +1006,7 @@ export class Session {
         if (!this.transcript) return "no conversation log in this session";
         const limit = Math.max(1, Math.min(100, Number(args.limit) || 20));
         const hits = await this.transcript.search(String(args.query ?? ""), limit);
-        return hits.length ? hits.join("\n") : "no matches; try fewer or different words";
+        return hits.length ? hits.join("\n") : "no matches; try other words (names, paths, hosts)";
       }
       case "memory_sync": {
         const url = args.remote_url ? String(args.remote_url) : undefined;

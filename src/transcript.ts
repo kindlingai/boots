@@ -12,6 +12,7 @@ import { dirname, join } from "@std/path";
 import type { Message } from "./llm.ts";
 import { dataDir } from "./platform.ts";
 import { secrets } from "./secrets.ts";
+import { STOPWORDS } from "./memory.ts";
 
 export interface TraceLine extends Message {
   ts: string;
@@ -138,25 +139,67 @@ export class Transcript {
   }
 
   /**
-   * Lines matching every word of the query (case-insensitive), newest first,
-   * each as "time role: text" clipped around the first match.
+   * Lines matching any of the query's terms, best first. A term also matches
+   * its parts and its stem ("workers" finds "worker", "exl3up-run.sh" finds
+   * "exl3up"). Rare terms weigh more than common ones, so a line with the
+   * one distinctive name beats one with two everyday words; ties go to the
+   * newest. Each is "time role: text" clipped around the first match, marked
+   * with how many terms it matched when not all.
    */
   async search(query: string, limit = 20): Promise<string[]> {
-    const words = query.toLowerCase().split(/\s+/).filter(Boolean);
-    if (!words.length) return [];
-    const hits: string[] = [];
-    for (const l of (await this.lines()).reverse()) {
+    const terms = searchTerms(query);
+    if (!terms.length) return [];
+    const matched: { hit: boolean[]; first: number; text: string; l: TraceLine; n: number }[] = [];
+    const df = terms.map(() => 0);
+    const lines = (await this.lines()).reverse();
+    lines.forEach((l, n) => {
       const calls = (l.tool_calls ?? []).map((c) => `${c.function.name}(${c.function.arguments})`)
         .join(" ");
       const text = `${l.content ?? ""} ${calls}`.replace(/\s+/g, " ").trim();
       const low = text.toLowerCase();
-      if (!words.every((w) => low.includes(w))) continue;
-      const at = Math.max(0, low.indexOf(words[0]) - 100);
+      let first = -1;
+      const hit = terms.map((forms, k) => {
+        const at = forms.map((f) => low.indexOf(f)).filter((i) => i >= 0);
+        if (!at.length) return false;
+        df[k]++;
+        const i = Math.min(...at);
+        if (first < 0 || i < first) first = i;
+        return true;
+      });
+      if (first >= 0) matched.push({ hit, first, text, l, n });
+    });
+    const weight = df.map((d) => Math.log(1 + lines.length / Math.max(1, d)));
+    const scored = matched.map((m) => ({
+      ...m,
+      count: m.hit.filter(Boolean).length,
+      score: m.hit.reduce((s, h, k) => s + (h ? weight[k] : 0), 0),
+    }));
+    scored.sort((a, b) => b.score - a.score || a.n - b.n);
+    return scored.slice(0, limit).map(({ first, text, l, count }) => {
+      const at = Math.max(0, first - 100);
       const clip = (at > 0 ? "…" : "") + text.slice(at, at + 300) +
         (text.length > at + 300 ? "…" : "");
-      hits.push(`${l.ts.slice(0, 16).replace("T", " ")} ${l.role}: ${clip}`);
-      if (hits.length >= limit) break;
-    }
-    return hits;
+      const partial = count < terms.length ? ` (${count}/${terms.length} words)` : "";
+      return `${l.ts.slice(0, 16).replace("T", " ")} ${l.role}${partial}: ${clip}`;
+    });
   }
+}
+
+/**
+ * The query's terms, each with the forms that count as a match: the word,
+ * the parts of a compound (exl3up-run.sh: exl3up, run), and a plain stem
+ * (workers: worker, stopping: stopp/stop).
+ */
+export function searchTerms(query: string): string[][] {
+  const words = [...new Set(query.toLowerCase().split(/\s+/))]
+    .map((w) => w.replace(/^[^a-z0-9]+|[^a-z0-9]+$/g, ""))
+    .filter((w) => w.length > 1 && !STOPWORDS.has(w));
+  return words.map((w) => {
+    const forms = new Set([w]);
+    for (const p of w.split(/[^a-z0-9]+/)) if (p.length > 2 && !STOPWORDS.has(p)) forms.add(p);
+    const stem = w.replace(/(ing|ed|es|s)$/, "");
+    if (stem.length > 2 && stem !== w) forms.add(stem);
+    if (/(.)\1$/.test(stem) && stem.length > 3) forms.add(stem.slice(0, -1));
+    return [...forms];
+  });
 }
