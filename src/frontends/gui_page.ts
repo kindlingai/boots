@@ -89,6 +89,7 @@ export function page(title: string, token: string): string {
     display: flex; flex-direction: column; justify-content: flex-end; white-space: pre-wrap; }
   #bubble::before { content: ""; position: absolute; left: -9px; top: 50%; margin-top: -8px;
     border: 8px solid transparent; border-right-color: var(--cyan); border-left: 0; }
+  #bubble.head { justify-content: flex-start; }
   #log { flex: 1; overflow-y: auto; padding: 8px 12px; white-space: pre-wrap;
     overflow-wrap: anywhere; }
   #log div { min-height: 1.45em; }
@@ -185,6 +186,8 @@ function drawBot() {
     ? (state.activity || state.busy.label + "...")
     : (state.speech || "")) || "...";
   if ($("bubble").textContent !== said) $("bubble").textContent = said;
+  // Speech as it streams shows its end; a status or summary its start.
+  $("bubble").classList.toggle("head", !!(state.busy && !state.streaming));
   const spin = '<span class="spin">' + FRAMES[frame % FRAMES.length] + "</span> ";
   const p = state.progress[state.progress.length - 1];
   const esc = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;");

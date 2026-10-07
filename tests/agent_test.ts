@@ -137,6 +137,36 @@ Deno.test("a restored session and its log", async () => {
   }
 });
 
+Deno.test("fit drops the oldest steps of a turn too long to fit, keeping its latest", async () => {
+  const { fit } = await import("../src/agent.ts");
+  const history: any[] = [{ role: "user", content: "bring up TP4" }];
+  for (let i = 0; i < 60; i++) {
+    const call = {
+      id: `c${i}`,
+      type: "function",
+      function: { name: "run", arguments: `{"command":"step ${i} ${"y".repeat(300)}"}` },
+    };
+    history.push({
+      role: "assistant",
+      content: `thinking about step ${i} ${"z".repeat(300)}`,
+      tool_calls: [call],
+    });
+    history.push({ role: "tool", tool_call_id: `c${i}`, content: `out ${i} ${"x".repeat(300)}` });
+  }
+  const out = fit(history, 12_000, ["rebooting .93"]);
+  const size = out.reduce((n, m) => n + JSON.stringify(m).length, 0);
+  assert(size <= 12_000, `fits: ${size}`);
+  assertEquals(out[0].role, "user");
+  assertStringIncludes(out[0].content, "bring up TP4");
+  assertStringIncludes(out[0].content, "oldest steps of this turn were dropped");
+  assertStringIncludes(out[0].content, "rebooting .93");
+  assertEquals(out[1].role, "assistant", "a step starts after the note");
+  assertStringIncludes(out.at(-1)!.content, "out 59", "the latest step stays");
+  // Every tool result still has its call.
+  const ids = new Set(out.flatMap((m: any) => (m.tool_calls ?? []).map((c: any) => c.id)));
+  assert(out.every((m: any) => m.role !== "tool" || ids.has(m.tool_call_id)));
+});
+
 Deno.test("fit keeps the latest user message, shortening tool output instead", async () => {
   const { fit } = await import("../src/agent.ts");
   const call = { id: "c1", type: "function" as const, function: { name: "run", arguments: "{}" } };
@@ -622,7 +652,7 @@ Deno.test("after a quiet stretch, the model sums up its recent steps (thinking o
     assertStringIncludes(asks[0].messages[1].content, "The user asked: bring up TP4");
     assertStringIncludes(asks[0].messages[1].content, "update_status");
     // The mock answers "ok": shown as an update block, and the work carried on.
-    assertEquals(said, ["◇ ok", "Done."]);
+    assertEquals(said, ["ok", "Done."]);
     const work = m.seen.filter((b) => b.tools);
     assertEquals(work.at(-1).chat_template_kwargs, undefined, "thinking back on for the work");
   } finally {

@@ -27,6 +27,8 @@ export const UPDATE_PROMPT =
 
 /** update_status: how many model steps a status stays on screen, and how many stay in context. */
 const STATUS_SHOWN_STEPS = 5;
+/** A summary stays in the bubble at least this long before a status replaces it. */
+const SUMMARY_HOLD_MS = 30_000;
 const STATUS_KEEP = 4;
 
 /** How often the model is reminded of its active goals. */
@@ -141,6 +143,31 @@ export function fit(history: Message[], budget: number, statuses: string[] = [])
       } chars cut to fit the context]...\n${c.slice(-tail)}`,
     };
   }
+  // Still too long: a turn so long its own steps do not fit (a run of
+  // "continue"). Its oldest steps go, an assistant with its tool results at a
+  // time, keeping the user message, a note, and at least the last 4 steps.
+  const u = msgs.findLastIndex((m) => m.role === "user");
+  if (u >= 0 && size(msgs) > budget) {
+    const head = msgs.slice(0, u + 1);
+    let steps = msgs.slice(u + 1);
+    const note =
+      `(The oldest steps of this turn were dropped to fit the context; history_search can look through them.${
+        statuses.length
+          ? ` Your latest status updates, oldest first:\n${
+            statuses.map((t) => `- ${t}`).join("\n")
+          }`
+          : ""
+      } Carry on from the steps below.)`;
+    // The note joins the user message (some templates insist that roles alternate).
+    const noted = [...head.slice(0, -1), { ...head[u], content: `${head[u].content}\n\n${note}` }];
+    const starts = () => steps.flatMap((m, i) => m.role === "tool" ? [] : [i]);
+    let dropped = false;
+    while (starts().length > 4 && size([...noted, ...steps]) > budget) {
+      steps = steps.slice(starts()[1]);
+      dropped = true;
+    }
+    if (dropped) msgs = [...noted, ...steps];
+  }
   return msgs;
 }
 
@@ -208,6 +235,8 @@ export class Agent {
   private statuses: { text: string; step: number }[] = [];
   private stepCount = 0;
   private activityShown = false;
+  /** Until when a summary holds the bubble against short statuses. */
+  private summaryUntil = 0;
 
   /** Records an update_status and shows it. */
   private setStatus(text: string): void {
@@ -215,6 +244,8 @@ export class Agent {
     if (!t) return;
     this.statuses.push({ text: t, step: this.stepCount });
     if (this.statuses.length > STATUS_KEEP) this.statuses.shift();
+    // A fresh summary keeps the bubble a while (the status is still kept).
+    if (Date.now() < this.summaryUntil) return;
     this.activityShown = true;
     emit({ type: "activity", text: t });
   }
@@ -222,7 +253,10 @@ export class Agent {
   /** A status not renewed for STATUS_SHOWN_STEPS steps leaves the screen (not the context). */
   private expireStatus(): void {
     const last = this.statuses.at(-1);
-    if (this.activityShown && (!last || this.stepCount - last.step >= STATUS_SHOWN_STEPS)) {
+    if (
+      this.activityShown && Date.now() >= this.summaryUntil &&
+      (!last || this.stepCount - last.step >= STATUS_SHOWN_STEPS)
+    ) {
       this.activityShown = false;
       emit({ type: "activity", text: null });
     }
@@ -341,7 +375,11 @@ export class Agent {
       );
       const text = tidy(r.content.replace(/<think>[\s\S]*?<\/think>/g, ""));
       if (!text) return null;
-      this.speak(`◇ ${text}`);
+      this.speak(text);
+      // And in the bubble, over the thinking, until it is stale.
+      this.activityShown = true;
+      this.summaryUntil = Date.now() + SUMMARY_HOLD_MS;
+      emit({ type: "activity", text });
       this.s.transcript?.append({ role: "system", content: `(${kind}) ${text}` });
       // Kept with the status lines: an anchor that survives trimming.
       this.statuses.push({ text: clip(text, 300), step: this.stepCount });

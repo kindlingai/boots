@@ -618,11 +618,15 @@ export class TuiFrontend implements Frontend {
     const mood = this.currentMood();
     const art = paintBot(bot(mood, this.frame, Date.now() < this.blinkUntil));
     const bw = Math.max(10, w - 16);
-    const said = tidy(
-      this.busy && !this.streaming ? this.activity ?? `${this.busy.label}...` : this.speech,
-    ) || "...";
+    const doing = this.busy && !this.streaming;
+    const said = tidy(doing ? this.activity ?? `${this.busy!.label}...` : this.speech) || "...";
     const words = wrap(said, bw - 4);
-    const shown = words.length > 3 ? ["…" + words.at(-3)!.slice(1), ...words.slice(-2)] : words;
+    // Speech as it streams shows its end; a status or summary its start.
+    const shown = words.length <= 3
+      ? words
+      : doing
+      ? [...words.slice(0, 2), words[2].slice(0, -1) + "…"]
+      : ["…" + words.at(-3)!.slice(1), ...words.slice(-2)];
     while (shown.length < 3) shown.push("");
     const bubble = [
       "",
