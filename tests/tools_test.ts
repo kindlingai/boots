@@ -145,3 +145,43 @@ Deno.test("a second ssh by hand to the same machine is refused, pointing at the 
     await Deno.remove(dir, { recursive: true });
   }
 });
+
+Deno.test("after ^C, a command that will not stop is let go within a few seconds", async () => {
+  const { Router } = await import("../src/llm.ts");
+  const { Memory } = await import("../src/memory.ts");
+  const { McpManager } = await import("../src/mcp.ts");
+  const { Session } = await import("../src/tools.ts");
+  const dir = await Deno.makeTempDir();
+  try {
+    const s = new Session(
+      new Router({ label: "m", baseUrl: "http://127.0.0.1:9/v1", model: "m", contextChars: 1e4 }),
+      new Memory(`${dir}/mem`),
+      new McpManager(`${dir}/mcp.json`),
+      () => Promise.resolve(null),
+    );
+    await s.init();
+    (s as any).always = { has: () => true, add() {} };
+    (s as any).check = () => Promise.resolve({ verdict: "writes", checked: true });
+    // A host whose command ignores the cancel (a root process we cannot signal).
+    const never = Promise.withResolvers<unknown>();
+    const cancels: string[] = [];
+    (s.host as any).handle = (op: string, a: any) => {
+      if (op === "cancel") {
+        cancels.push(a.token);
+        return Promise.resolve(true);
+      }
+      return never.promise;
+    };
+    const ac = new AbortController();
+    const t0 = Date.now();
+    setTimeout(() => ac.abort(), 200);
+    const out = await s.exec("run", { command: "sudo-ish build" }, ac.signal);
+    const took = Date.now() - t0;
+    assert(took < 5000, `let go after ${took} ms`);
+    assertEquals(cancels.length, 1, "the cancel was still sent");
+    assertStringIncludes(out, "may still be running");
+    never.resolve({ code: 0, stdout: "", stderr: "" });
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});

@@ -155,6 +155,9 @@ const sshHost = (t: string) => t.slice(t.lastIndexOf("@") + 1);
 /** The same command again within this window is not run (the model is going in circles). */
 const REPEAT_WINDOW_MS = 60_000;
 
+/** After ^C, how long to wait for a command to stop before giving control back. */
+const STOP_WAIT_MS = 3000;
+
 /** Lines of each command's output shown to the user (the model gets more). */
 const SHOWN_LINES = 5;
 
@@ -619,7 +622,29 @@ export class Session {
       const what = `running ${short.length > 50 ? `${short.slice(0, 47)}...` : short}`;
       const s = spin = spinner(what);
       this.lineListeners.set(token, (line) => s.update(`${what}  │ ${line.slice(0, 120)}`));
-      const r = await this.host.handle(op, { cmd, token, timeoutMs }, via) as ExecResult;
+      const running = this.host.handle(op, { cmd, token, timeoutMs }, via) as Promise<ExecResult>;
+      // After ^C, give the command a few seconds to stop, then stop waiting
+      // for it: the user gets control back even if it ignores the signal.
+      let late: ReturnType<typeof setTimeout> | undefined;
+      const r = await Promise.race([
+        running,
+        new Promise<ExecResult>((ok) => {
+          const giveUp = () =>
+            late = setTimeout(() =>
+              ok({
+                code: 130,
+                stdout: "",
+                stderr: `(stopped by the user; it did not exit within ${
+                  STOP_WAIT_MS / 1000
+                }s and may still be running on ${this.where()})`,
+                cancelled: true,
+              }), STOP_WAIT_MS);
+          if (signal?.aborted) giveUp();
+          else signal?.addEventListener("abort", giveUp, { once: true });
+        }),
+      ]);
+      clearTimeout(late);
+      running.catch(() => {});
       return { ...r, cmd };
     } finally {
       this.lineListeners.delete(token);

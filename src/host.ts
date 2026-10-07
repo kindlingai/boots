@@ -258,7 +258,17 @@ export class Host {
           }).outputSync();
         } else Deno.kill(-p.pid, sig);
       } catch {
-        // gone
+        // Gone, or not ours to signal: a command run with sudo is root's
+        // (EPERM), so ask sudo to signal it, with the credentials it cached
+        // when it started (-n: never prompt).
+        if (!isWindows && argv[0] === "sudo") {
+          new Deno.Command("sudo", {
+            args: ["-n", "kill", "-s", sig.replace(/^SIG/, ""), "--", `-${p.pid}`],
+            stdin: "null",
+            stdout: "null",
+            stderr: "null",
+          }).output().catch(() => {});
+        }
       }
     };
     let hard: ReturnType<typeof setTimeout> | undefined;
