@@ -336,6 +336,12 @@ export const TOOLS: ToolDef[] = [
   ),
   fn("ssh_exit", "Leave the current remote host and return to the previous one.", {}),
   fn(
+    "update_status",
+    "Say in a few words what you are doing now and what is next, e.g. 'TP4 up on 3 of 4 sparks; checking rank 2'. Shown to the user while you work, and kept in your context even when older steps are dropped, so it anchors where you are. Call it often: every few tool calls, and whenever the picture changes.",
+    { status: str("one short line, under 100 characters") },
+    ["status"],
+  ),
+  fn(
     "plan",
     "Record or update the plan. Pass the whole list each time. Include, as notes on steps, what could go wrong and how you will detect and handle it.",
     {

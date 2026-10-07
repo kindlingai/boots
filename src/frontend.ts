@@ -30,6 +30,8 @@ export type EngineEvent =
    * full model (rather than the bootstrap) is answering.
    */
   | { type: "status"; model?: string; location?: string; full?: boolean }
+  /** The model's latest update_status, for the speech bubble while it works; null clears it. */
+  | { type: "activity"; text: string | null }
   /** The active goals' titles (never their details), for showing under the status line. */
   | { type: "goals"; titles: string[] };
 

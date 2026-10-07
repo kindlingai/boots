@@ -124,7 +124,9 @@ function mood() {
 function drawBot() {
   $("bot").innerHTML = paint(bot(mood(), frame, Date.now() < blinkUntil));
   if (!state) return;
-  const said = state.busy && !state.streaming ? state.busy.label + "..." : (state.speech || "...");
+  const said = state.busy && !state.streaming
+    ? (state.activity || state.busy.label + "...")
+    : (state.speech || "...");
   if ($("bubble").textContent !== said) $("bubble").textContent = said;
   const spin = '<span class="spin">' + FRAMES[frame % FRAMES.length] + "</span> ";
   const p = state.progress[state.progress.length - 1];

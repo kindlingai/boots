@@ -107,6 +107,8 @@ export class TuiFrontend implements Frontend {
   private progress = new Map<string, ProgressEv>();
   /** Active goals' titles, shown under the status line. */
   private goals: string[] = [];
+  /** The model's latest update_status, in the bubble while it works. */
+  private activity: string | null = null;
   private status: { model?: string; location?: string; full?: boolean } = {};
   private flash: { mood: Mood; until: number } | null = null;
   private talkedAt = 0;
@@ -195,6 +197,9 @@ export class TuiFrontend implements Frontend {
         break;
       case "goals":
         this.goals = e.titles;
+        break;
+      case "activity":
+        this.activity = e.text;
         break;
       case "progress":
         this.progress.set(e.id, e);
@@ -487,7 +492,9 @@ export class TuiFrontend implements Frontend {
     const mood = this.currentMood();
     const art = paintBot(bot(mood, this.frame, Date.now() < this.blinkUntil));
     const bw = Math.max(10, w - 16);
-    const said = this.busy && !this.streaming ? `${this.busy.label}...` : this.speech || "...";
+    const said = this.busy && !this.streaming
+      ? this.activity ?? `${this.busy.label}...`
+      : this.speech || "...";
     const words = wrap(said.trim(), bw - 4);
     const shown = words.length > 3 ? ["…" + words.at(-3)!.slice(1), ...words.slice(-2)] : words;
     while (shown.length < 3) shown.push("");

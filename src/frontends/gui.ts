@@ -45,6 +45,8 @@ export interface GuiState {
   streaming: boolean;
   /** Active goals' titles. */
   goals: string[];
+  /** The model's latest update_status, shown in the bubble while it works. */
+  activity: string | null;
 }
 
 /** Messages to the page. */
@@ -74,6 +76,7 @@ export class GuiFrontend implements Frontend {
   private flash: GuiState["flash"] = null;
   private talkedAt = 0;
   private goals: string[] = [];
+  private activity: string | null = null;
   private pending: Pending | null = null;
   private queue: Pending[] = [];
   private nextId = 1;
@@ -242,6 +245,9 @@ export class GuiFrontend implements Frontend {
       case "goals":
         this.goals = e.titles;
         break;
+      case "activity":
+        this.activity = e.text;
+        break;
       case "status": {
         const handedOver = e.full !== undefined && !!e.full !== !!this.status.full;
         this.status = { ...this.status, ...e };
@@ -331,6 +337,7 @@ export class GuiFrontend implements Frontend {
       talkedAt: this.talkedAt,
       streaming: !!this.streamingEntry,
       goals: this.goals,
+      activity: this.activity,
     };
   }
 

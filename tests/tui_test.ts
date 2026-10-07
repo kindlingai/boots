@@ -33,3 +33,14 @@ Deno.test("active goals show under the status line, titles only, at most two", (
   t.emit({ type: "goals", titles: [] });
   assert(!frame(t).some((r) => r?.includes("◆")));
 });
+
+Deno.test('update_status replaces "thinking..." in the bubble while working', () => {
+  const t = new TuiFrontend({ title: "test", onInterrupt() {} });
+  t.emit({ type: "busy", label: "thinking" });
+  t.emit({ type: "activity", text: "rank 2 restarting" });
+  const top = frame(t).slice(0, 8).join("\n");
+  assert(top.includes("rank 2 restarting"));
+  assert(!top.includes("thinking..."));
+  t.emit({ type: "activity", text: null });
+  assert(frame(t).slice(0, 8).join("\n").includes("thinking..."));
+});

@@ -12,6 +12,10 @@ import { clipTools, compact, isContextError, SUMMARY_PROMPT } from "./compact.ts
 import { Backoff } from "./backoff.ts";
 import { activeGoals, normalizeGoals, parseGoals } from "./memory.ts";
 
+/** update_status: how many model steps a status stays on screen, and how many stay in context. */
+const STATUS_SHOWN_STEPS = 5;
+const STATUS_KEEP = 4;
+
 /** How often the model is reminded of its active goals. */
 const REMIND_EVERY_TURNS = 3;
 const REMIND_EVERY_TOOLS = 10;
@@ -45,7 +49,7 @@ function shape(ep: Endpoint): ChatShape {
  * shortened until it does. A request must keep a user message: servers
  * reject one without ("No user query found in messages").
  */
-export function fit(history: Message[], budget: number): Message[] {
+export function fit(history: Message[], budget: number, statuses: string[] = []): Message[] {
   const recent = 6;
   let msgs = history.map((m, i) =>
     m.role === "tool" && i < history.length - recent && m.content.length > 600
@@ -68,19 +72,29 @@ export function fit(history: Message[], budget: number): Message[] {
       if (msgs[i].role === "assistant") { while (j < lastUser && msgs[j].role === "tool") j++; }
       return j;
     };
-    const note = (asked: string): Message => ({
-      role: "user",
-      content:
-        `(Earlier steps were dropped to fit the context; history_search can look through them. The work below began with the user asking: ${
-          asked.length > 600 ? asked.slice(0, 600) + "…" : asked
-        })`,
-    });
+    // Your latest update_status lines survive any drop: they say where you are.
+    const anchor = statuses.length
+      ? ` Your latest status updates, oldest first:\n${statuses.map((t) => `- ${t}`).join("\n")}`
+      : "";
+    const note = (asked: string | null) =>
+      `(Earlier steps were dropped to fit the context; history_search can look through them.${
+        asked === null
+          ? ""
+          : ` The work below began with the user asking: ${
+            asked.length > 600 ? asked.slice(0, 600) + "…" : asked
+          }`
+      }${anchor})`;
     let from = 0;
     let asked: string | null = null;
-    const withNote = () => {
+    const withNote = (): Message[] => {
       const kept = msgs.slice(from);
-      // Only when part of that turn is kept: a whole turn dropped needs no note.
-      return asked !== null && kept[0]?.role !== "user" ? [note(asked), ...kept] : kept;
+      if (!from) return kept;
+      // Part of a turn kept: say what it was for. A whole turn dropped needs
+      // that only for the status anchor, folded into the next user message
+      // (some templates insist that roles alternate).
+      if (kept[0]?.role !== "user") return [{ role: "user", content: note(asked) }, ...kept];
+      if (!anchor) return kept;
+      return [{ ...kept[0], content: `${note(null)}\n\n${kept[0].content}` }, ...kept.slice(1)];
     };
     while (from < lastUser && size(withNote()) > budget) {
       if (msgs[from].role === "user") asked = msgs[from].content;
@@ -155,6 +169,29 @@ export class Agent {
 
   private userTurns = 0;
   private toolCalls = 0;
+  /** The model's latest update_status lines, with the step each came at. */
+  private statuses: { text: string; step: number }[] = [];
+  private stepCount = 0;
+  private activityShown = false;
+
+  /** Records an update_status and shows it. */
+  private setStatus(text: string): void {
+    const t = text.replace(/\s+/g, " ").trim().slice(0, 140);
+    if (!t) return;
+    this.statuses.push({ text: t, step: this.stepCount });
+    if (this.statuses.length > STATUS_KEEP) this.statuses.shift();
+    this.activityShown = true;
+    emit({ type: "activity", text: t });
+  }
+
+  /** A status not renewed for STATUS_SHOWN_STEPS steps leaves the screen (not the context). */
+  private expireStatus(): void {
+    const last = this.statuses.at(-1);
+    if (this.activityShown && (!last || this.stepCount - last.step >= STATUS_SHOWN_STEPS)) {
+      this.activityShown = false;
+      emit({ type: "activity", text: null });
+    }
+  }
   private goalTitles = "";
 
   /**
@@ -300,7 +337,10 @@ export class Agent {
     return () => {
       const content = sys();
       const budget = this.s.router.current().contextChars - content.length;
-      return [{ role: "system", content }, ...fit(this.history, Math.max(budget, 4000))];
+      return [
+        { role: "system", content },
+        ...fit(this.history, Math.max(budget, 4000), this.statuses.map((x) => x.text)),
+      ];
     };
   }
 
@@ -327,6 +367,8 @@ export class Agent {
     let compactions = 0;
     let nudges = 0;
     for (let step = 0; step < MAX_STEPS; step++) {
+      this.stepCount++;
+      this.expireStatus();
       this.abort = new AbortController();
       let reply: Reply | undefined;
       let printed = false;
@@ -442,6 +484,17 @@ export class Agent {
               [...offered].join(", ")
             }.`,
           });
+          continue;
+        }
+        if (tc.function.name === "update_status") {
+          let text = "";
+          try {
+            text = String(JSON.parse(tc.function.arguments || "{}").status ?? "");
+          } catch {
+            text = tc.function.arguments;
+          }
+          this.setStatus(text);
+          this.push({ role: "tool", tool_call_id: tc.id, content: "ok" });
           continue;
         }
         if (tc.function.name === "reply") {

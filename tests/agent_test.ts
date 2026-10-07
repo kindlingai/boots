@@ -398,3 +398,65 @@ Deno.test('fit: after a long turn, "continue" keeps that turn\'s latest steps an
   );
   assert(size <= 12_000, `fits: ${size}`);
 });
+
+Deno.test("update_status: shown while working, gone after 5 steps, kept in context through fit", async () => {
+  const { setFrontend } = await import("../src/frontend.ts");
+  const shown: (string | null)[] = [];
+  setFrontend({
+    emit(e) {
+      if (e.type === "activity") shown.push(e.text);
+    },
+    readLine: () => Promise.resolve(null),
+    close() {},
+  });
+  Deno.env.set("AIBOOT_BACKOFF", "0");
+  const { m, agent, done } = await session("gpt-oss-120b", [
+    { calls: [{ name: "update_status", args: { status: "vLLM up on spark-1; starting rank 2" } }] },
+    ...Array.from({ length: 5 }, () => ({ calls: [{ name: "plan", args: {} }] })),
+    { content: "done" },
+  ]);
+  try {
+    await agent.turn("go");
+    assertEquals(shown, ["vLLM up on spark-1; starting rank 2", null], "shown, then expired");
+    // Not a tool the server sees run: answered "ok" in place.
+    const last = m.seen.at(-1).messages;
+    assertEquals(last.find((x: any) => x.role === "tool").content, "ok");
+  } finally {
+    Deno.env.delete("AIBOOT_BACKOFF");
+    await done();
+  }
+});
+
+Deno.test("fit: the latest statuses survive dropped steps", async () => {
+  const { fit } = await import("../src/agent.ts");
+  const call = (id: string) => ({
+    id,
+    type: "function" as const,
+    function: { name: "run", arguments: "{}" },
+  });
+  const history: any[] = [{ role: "user", content: "bring up TP4" }];
+  for (let i = 0; i < 40; i++) {
+    history.push({ role: "assistant", content: "", tool_calls: [call(`c${i}`)] });
+    history.push({ role: "tool", tool_call_id: `c${i}`, content: "z".repeat(500) });
+  }
+  history.push({ role: "user", content: "continue" });
+  const statuses = ["ranks 0-1 up", "rank 2 fails: NCCL timeout"];
+  const out = fit(history, 8000, statuses);
+  assertStringIncludes(out[0].content, "- ranks 0-1 up\n- rank 2 fails: NCCL timeout");
+  assertStringIncludes(out[0].content, "bring up TP4");
+  // A whole turn dropped: the anchor rides on the next user message (roles alternate).
+  const whole = fit(
+    [
+      { role: "user", content: "a" },
+      { role: "assistant", content: "x".repeat(9000) },
+      { role: "user", content: "next" },
+    ],
+    2000,
+    statuses,
+  );
+  assertEquals(whole.length, 1);
+  assertStringIncludes(whole[0].content, "rank 2 fails");
+  assert(whole[0].content.endsWith("next"));
+  // Nothing dropped: nothing added.
+  assertEquals(fit(history.slice(0, 3), 1e6, statuses).length, 3);
+});
