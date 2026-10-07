@@ -6,7 +6,7 @@ import type { Transcript } from "./transcript.ts";
 import { join } from "@std/path";
 import { b64, DEFAULT_TIMEOUT_MS, type ExecResult, Host, type HostInfo } from "./host.ts";
 import { chat, type Endpoint, reachable, type Router, type ToolDef } from "./llm.ts";
-import { JSON_MEMORIES, jsonMemory, type Memory } from "./memory.ts";
+import { type Goal, JSON_MEMORIES, jsonMemory, type Memory } from "./memory.ts";
 import type { McpManager } from "./mcp.ts";
 import { isReadonly, stages, unrollLoops } from "./readonly.ts";
 import {
@@ -267,12 +267,6 @@ export interface Location {
   info: HostInfo;
 }
 
-export interface PlanStep {
-  step: string;
-  status: "pending" | "in_progress" | "done" | "failed" | "skipped";
-  note?: string;
-}
-
 const fn = (
   name: string,
   description: string,
@@ -343,8 +337,12 @@ export const TOOLS: ToolDef[] = [
   ),
   fn(
     "plan",
-    "Record or update the plan. Pass the whole list each time. Include, as notes on steps, what could go wrong and how you will detect and handle it.",
+    "Record or update the plan: the steps of a goal, saved in goals.json (they become the goal's children, and the goal becomes the active one). Pass the whole list each time. Include, as notes on steps, what could go wrong and how you will detect and handle it, and the outcome once known.",
     {
+      goal: str(
+        "the goal these steps are for (its title); default: the active goal. A new title adds the goal.",
+      ),
+      details: str("optional: the goal's details (for you only; never shown to the user)"),
       steps: {
         type: "array",
         items: {
@@ -533,7 +531,6 @@ TOOLS.push(fn(
 export class Session {
   readonly host: Host;
   stack: Location[] = [];
-  plan: PlanStep[] = [];
   private always = new Set<string>();
   /** The full model's start script failed at boot (cleared once it starts). */
   fullFailure: FullFailure | null = null;
@@ -965,13 +962,23 @@ export class Session {
         return `left ${leaving.label}; location is ${this.where()}`;
       }
       case "plan": {
-        this.plan = (args.steps ?? []).map((s: any) => ({
-          step: String(s.step),
-          status: s.status ?? "pending",
-          note: s.note,
-        }));
-        say(renderPlan(this.plan));
-        return "plan recorded";
+        if (!Array.isArray(args.steps)) return "error: steps is required: the whole list of steps";
+        const steps = args.steps.map((x: any) => ({
+          step: String(x?.step ?? "").trim(),
+          status: x?.status ? String(x.status) : undefined,
+          note: x?.note === undefined ? undefined : String(x.note),
+        })).filter((x: { step: string }) => x.step);
+        try {
+          const { result, goal } = await this.memory.setPlan(
+            steps,
+            args.goal ? String(args.goal) : undefined,
+            args.details === undefined ? undefined : String(args.details),
+          );
+          say(renderGoal(goal));
+          return `plan recorded under the goal "${goal.title}" in goals.json (${result})`;
+        } catch (e) {
+          return `plan not recorded: ${(e as Error).message}`;
+        }
       }
       case "memory_read":
         return this.clip(await this.memory.read(String(args.name)));
@@ -1285,18 +1292,18 @@ export function describe(i: HostInfo): string {
   return `${i.osName} (${i.os}/${i.arch}), ${i.user}@${i.hostname}, home ${i.home}, shell ${i.shell}, cwd ${i.cwd}`;
 }
 
-export function renderPlan(plan: PlanStep[]): string {
-  const mark = {
-    pending: "○",
-    in_progress: yellow("◐"),
-    done: green("●"),
-    failed: red("✗"),
-    skipped: dim("–"),
-  };
-  return plan.map((s, i) =>
-    `  ${mark[s.status] ?? "○"} ${i + 1}. ${s.step}${s.note ? dim(` — ${s.note}`) : ""}`
-  ).join("\n") ||
-    dim("  (no plan)");
+/** A goal and its steps, as the plan tool and /plan show them (details stay hidden). */
+export function renderGoal(g: Goal): string {
+  const mark = (x: Goal) =>
+    x.done
+      ? green("●")
+      : x.active
+      ? yellow("◐")
+      : x.details?.startsWith("(failed)")
+      ? red("✗")
+      : "○";
+  const steps = (g.children ?? []).map((c, i) => `  ${mark(c)} ${i + 1}. ${c.title}`);
+  return [`${bold(g.title)}`, ...(steps.length ? steps : [dim("  (no steps yet)")])].join("\n");
 }
 
 const modelsPath = () => join(dataDir(), "models.json");

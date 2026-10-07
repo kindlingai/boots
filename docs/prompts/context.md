@@ -32,7 +32,3 @@ Goals (memory goals.json):
 ```json
 {{goals}}
 ```
-
-## Plan
-
-{{plan}}

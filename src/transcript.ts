@@ -57,14 +57,29 @@ export function wellFormed(history: Message[]): Message[] {
 }
 
 /** The last `n` turns, as plain chat messages. */
-export function lastTurns(lines: Message[], n: number): Message[] {
+/**
+ * The last `n` turns, or more while they fit in `maxChars` (whichever gives
+ * more): a restart picks up enough of the conversation to carry on.
+ */
+export function lastTurns(lines: Message[], n: number, maxChars = 0): Message[] {
   const msgs = lines.map(({ role, content, tool_calls, tool_call_id }) => {
     const m: Message = { role, content: content ?? "" };
     if (tool_calls?.length) m.tool_calls = tool_calls;
     if (tool_call_id) m.tool_call_id = tool_call_id;
     return m;
   }).filter((m) => m.role !== "system");
-  return wellFormed(splitTurns(wellFormed(msgs)).slice(-n).flat());
+  const turns = splitTurns(wellFormed(msgs));
+  const size = (t: Message[]) =>
+    t.reduce((a, m) => a + m.content.length + JSON.stringify(m.tool_calls ?? "").length, 0);
+  let take = Math.min(n, turns.length);
+  let used = turns.slice(turns.length - take).reduce((a, t) => a + size(t), 0);
+  while (take < turns.length) {
+    const next = size(turns[turns.length - take - 1]);
+    if (used + next > maxChars) break;
+    used += next;
+    take++;
+  }
+  return wellFormed(turns.slice(turns.length - take).flat());
 }
 
 function scrub(text: string): string {
@@ -125,14 +140,16 @@ export class Transcript {
   }
 
   /**
-   * The last `turns` turns of earlier sessions, when the last of them
+   * The last `turns` turns of earlier sessions (more while they fit in
+   * `maxChars`), when the last of them
    * happened, and where the agent was then (a hop that is gone now).
    */
   async restore(
     turns = 6,
+    maxChars = 0,
   ): Promise<{ messages: Message[]; at: string; location?: string } | null> {
     const earlier = (await this.lines()).filter((l) => l.session !== this.session);
-    const messages = lastTurns(earlier, turns);
+    const messages = lastTurns(earlier, turns, maxChars);
     if (!messages.length) return null;
     const last = earlier.at(-1)!;
     return { messages, at: last.ts, location: last.location };

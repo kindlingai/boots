@@ -33,7 +33,6 @@ const vars: PromptVars = {
   other_sources: "",
   index: "# Memory index",
   fleet: "",
-  plan: "(none yet)",
   fresh: false,
 };
 

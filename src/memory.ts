@@ -110,6 +110,14 @@ export function activeGoals(goals: Goal[]): Goal[] {
   return out;
 }
 
+/** Every goal's title, children included. */
+export function goalTitles(goals: Goal[]): string[] {
+  return goals.flatMap((g) => [g.title, ...goalTitles(g.children ?? [])]);
+}
+
+/** Earlier versions kept of each JSON memory. */
+const BACKUPS_KEPT = 30;
+
 /** goals.json text as goals; [] when empty or not readable. */
 export function parseGoals(text: string): Goal[] {
   try {
@@ -350,7 +358,12 @@ export class Memory {
   }
 
   /** Replaces a JSON memory, after checking it; it is stored pretty-printed. */
-  private async writeJson(m: JsonMemory, content: string, append: boolean): Promise<string> {
+  private async writeJson(
+    m: JsonMemory,
+    content: string,
+    append: boolean,
+    opts: { clear?: boolean } = {},
+  ): Promise<string> {
     if (append) {
       throw new Error(
         `${m.file} cannot be appended to: read it, change it, and write the whole document (or use json_eval)`,
@@ -372,8 +385,139 @@ export class Memory {
     if (bytes > m.limit) {
       throw new Error(`${m.file} would be ${bytes} bytes; the limit is ${m.limit}. ${m.tooBig}`);
     }
+    const before = await this.json(m.file);
+    let removed = "";
+    if (m.file === GOALS) {
+      const was = goalTitles(parseGoals(before));
+      const now = new Set(goalTitles(doc as Goal[]));
+      const gone = was.filter((t) => !now.has(t));
+      if (was.length && !now.size && !opts.clear) {
+        throw new Error(
+          `goals.json was not changed: this would remove every goal (${
+            was.slice(0, 5).join("; ")
+          }). Mark finished goals done instead of deleting them, and keep the rest. Only the user can clear the whole list (/goals clear).`,
+        );
+      }
+      if (gone.length) {
+        removed = `; removed ${gone.length} goal${gone.length > 1 ? "s" : ""}: ${
+          gone.slice(0, 5).join("; ")
+        }${gone.length > 5 ? "; …" : ""} (the previous version is backed up: /goals restore)`;
+      }
+    }
+    if (before && before !== text) await this.backup(m.file, before);
     await Deno.writeTextFile(join(this.dir, m.file), text);
-    return `wrote ${m.file} (${bytes} bytes)`;
+    return `wrote ${m.file} (${bytes} bytes)${removed}`;
+  }
+
+  /** Where earlier versions of the JSON memories are kept (outside the synced folder). */
+  backupDir(): string {
+    return `${this.dir}-backups`;
+  }
+
+  /** Keeps `text` as an earlier version of `file`; the newest BACKUPS_KEPT stay. */
+  private async backup(file: string, text: string): Promise<void> {
+    const dir = this.backupDir();
+    await ensureDir(dir);
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    await Deno.writeTextFile(join(dir, `${file}.${stamp}`), text);
+    for (const old of (await this.backups(file)).slice(BACKUPS_KEPT)) {
+      await Deno.remove(join(dir, old)).catch(() => {});
+    }
+  }
+
+  /** Backups of `file`, newest first. */
+  async backups(file: string): Promise<string[]> {
+    const out: string[] = [];
+    try {
+      for await (const e of Deno.readDir(this.backupDir())) {
+        if (e.isFile && e.name.startsWith(`${file}.`)) out.push(e.name);
+      }
+    } catch {
+      // none yet
+    }
+    return out.sort().reverse();
+  }
+
+  /** Empties goals.json at the user's request (backed up first). */
+  async clearGoals(): Promise<string> {
+    return await this.writeJson(jsonMemory(GOALS)!, "[]", false, { clear: true });
+  }
+
+  /**
+   * The plan tool: `steps` become the children of a goal in goals.json, the
+   * one saved state. The goal is the one titled `goal` (added when there is
+   * none), else the active one, else a new one; it becomes the active goal,
+   * and the step in progress its active child. Done and skipped steps are
+   * done; notes go into details (a step without a new note keeps its old one).
+   */
+  async setPlan(
+    steps: { step: string; status?: string; note?: string }[],
+    goal?: string,
+    details?: string,
+  ): Promise<{ result: string; goal: Goal }> {
+    const goals = parseGoals(await this.json(GOALS));
+    normalizeGoals(goals);
+    const find = (list: Goal[]): Goal | undefined => {
+      for (const g of list) {
+        if (goal && g.title.trim().toLowerCase() === goal.trim().toLowerCase()) return g;
+        const c = find(g.children ?? []);
+        if (c) return c;
+      }
+    };
+    let target = goal ? find(goals) : activeGoals(goals).find((g) => goals.includes(g)) ??
+      activeGoals(goals)[0];
+    if (!target) {
+      target = { title: goal?.trim() || steps[0]?.step || "Current work" };
+      goals.push(target);
+    }
+    if (details !== undefined) target.details = details;
+    const old = new Map((target.children ?? []).map((c) => [c.title, c]));
+    target.children = steps.map((st) => {
+      const prev = old.get(st.step);
+      const status = st.status ?? "pending";
+      const mark = status === "failed" ? "(failed) " : status === "skipped" ? "(skipped) " : "";
+      const note = st.note ?? prev?.details?.replace(/^\((failed|skipped)\) /, "");
+      const child: Goal = { ...prev, title: st.step };
+      delete child.active;
+      delete child.done;
+      if (note || mark) child.details = `${mark}${note ?? ""}`.trim();
+      else delete child.details;
+      if (status === "done" || status === "skipped") child.done = true;
+      if (status === "in_progress") child.active = true;
+      return child;
+    });
+    // Working on this goal now: the others step back.
+    const clear = (list: Goal[]) => {
+      for (const g of list) {
+        if (g !== target && !target!.children!.includes(g)) delete g.active;
+        clear(g.children ?? []);
+      }
+    };
+    clear(goals);
+    target.active = true;
+    // Every step done finishes the goal; an open step reopens it.
+    if (target.children.length) {
+      if (target.children.every((c) => c.done)) target.done = true;
+      else delete target.done;
+    }
+    const result = await this.writeJson(jsonMemory(GOALS)!, JSON.stringify(goals), false);
+    return { result, goal: target };
+  }
+
+  /**
+   * Puts back the newest backup of goals.json that has goals in it, keeping
+   * the current version as a backup too. Null when there is none.
+   */
+  async restoreGoals(): Promise<{ titles: string[]; from: string } | null> {
+    const current = await this.json(GOALS);
+    for (const b of await this.backups(GOALS)) {
+      const text = await Deno.readTextFile(join(this.backupDir(), b)).catch(() => "");
+      const goals = parseGoals(text);
+      if (!goals.length || text === current) continue;
+      await this.writeJson(jsonMemory(GOALS)!, text, false, { clear: true });
+      return { titles: goals.map((g) => g.title), from: b.slice(GOALS.length + 1) };
+    }
+    return null;
   }
 
   /**

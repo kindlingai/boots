@@ -163,7 +163,7 @@ async function interactive(mode: UiMode): Promise<number> {
         `restored the last ${restored} turn${restored === 1 ? "" : "s"} of the previous session:`,
       ),
     );
-    agent.showRestored();
+    await agent.showRestored();
     if (agent.restoredFrom) {
       warn(
         `the previous session was connected to ${agent.restoredFrom}; that connection was interrupted, so this one starts on the local machine`,

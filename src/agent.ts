@@ -3,14 +3,17 @@
 
 import type { Message, Reply } from "./llm.ts";
 import { type ChatShape, type Endpoint, LLMError } from "./llm.ts";
-import { BASE_TOOLS, describe, renderPlan, type Session, TOOLS } from "./tools.ts";
+import { BASE_TOOLS, describe, renderGoal, type Session, TOOLS } from "./tools.ts";
 import { currentTier, loadTemplates, systemPrompt, type Templates, tierOf } from "./prompts.ts";
 import { secrets } from "./secrets.ts";
 import { ask, bold, dim, Interrupted, plain, red, say, spinner, warn } from "./ui.ts";
 import { emit, EscInterrupted } from "./frontend.ts";
 import { clipTools, compact, isContextError, SUMMARY_PROMPT } from "./compact.ts";
 import { Backoff } from "./backoff.ts";
-import { activeGoals, normalizeGoals, parseGoals } from "./memory.ts";
+import { activeGoals, type Goal, normalizeGoals, parseGoals } from "./memory.ts";
+
+/** A restart restores 6 turns, or as many as fill this share of the context. */
+const RESTORE_SHARE = 0.3;
 
 /** update_status: how many model steps a status stays on screen, and how many stay in context. */
 const STATUS_SHOWN_STEPS = 5;
@@ -157,8 +160,10 @@ export class Agent {
   }
 
   /** Picks up the last turns of the previous session from the log. */
-  async restore(turns = 6): Promise<number> {
-    const r = await this.s.transcript?.restore(turns);
+  async restore(turns = 6, share = RESTORE_SHARE): Promise<number> {
+    // The model that will do the work: the full one when set, else what answers now.
+    const ctx = (this.s.router.smart ?? this.s.router.current()).contextChars;
+    const r = await this.s.transcript?.restore(turns, Math.floor(ctx * share));
     if (!r) return 0;
     this.history = r.messages;
     this.restoredAt = r.at;
@@ -229,7 +234,7 @@ export class Agent {
   }
 
   /** The restored turns, shown the way they looked: questions, replies, and the tools used. */
-  showRestored(): void {
+  async showRestored(): Promise<void> {
     for (const m of this.history) {
       if (m.role === "user") {
         const text = m.content.replace(REMINDER, "").trim();
@@ -241,6 +246,9 @@ export class Agent {
         }
       }
     }
+    // Where the work stood: the active goal and its steps (goals.json is kept across restarts).
+    const g = activeGoals(normalizeGoals(parseGoals(await this.s.memory.goals()))).at(0);
+    if (g) say(dim(plain(renderGoal(g))));
   }
 
   /**
@@ -324,7 +332,6 @@ export class Agent {
         index,
         fleet,
         goals: shownGoals,
-        plan: this.s.plan.length ? plain(renderPlan(this.s.plan)) : "(none yet)",
         fresh,
         failure: this.s.fullFailure,
         update: this.s.update,
@@ -563,7 +570,9 @@ export class Agent {
 const HELP = `commands:
   /where        current location (hop stack)
   /model        models in use
-  /plan         show the plan
+  /plan         show the active goal and its steps
+  /goals [clear|restore]  show the goals (titles); clear them all, or put
+                back the last version that had goals
   /memory       show the memory INDEX
   /secrets      list remembered secrets (names only)
   /forget [k]   forget remembered secrets (all, or a location prefix)
@@ -649,6 +658,33 @@ export async function repl(agent: Agent): Promise<void> {
           );
           break;
         }
+        case "/goals": {
+          const sub = rest[0];
+          if (sub === "clear") {
+            say(await s.memory.clearGoals(), "dim");
+          } else if (sub === "restore") {
+            const r = await s.memory.restoreGoals();
+            say(
+              r
+                ? `restored ${r.titles.length} goal${
+                  r.titles.length > 1 ? "s" : ""
+                } from ${r.from}: ${r.titles.join("; ")}`
+                : "no earlier goals to restore",
+            );
+          } else if (sub) {
+            say("usage: /goals [clear | restore]");
+            break;
+          }
+          {
+            const goals = normalizeGoals(parseGoals(await s.memory.goals()));
+            const line = (g: Goal, d: number): string[] => [
+              `${"  ".repeat(d)}${g.done ? "✓" : g.active ? "◆" : "·"} ${g.title}`,
+              ...(g.children ?? []).flatMap((c) => line(c, d + 1)),
+            ];
+            say(goals.length ? goals.flatMap((g) => line(g, 0)).join("\n") : "(no goals)");
+          }
+          break;
+        }
         case "/thinking": {
           const want = rest[0];
           if (want === "off" || want === "on") s.router.thinkingOff = want === "off";
@@ -668,9 +704,13 @@ export async function repl(agent: Agent): Promise<void> {
           );
           break;
         }
-        case "/plan":
-          say(renderPlan(s.plan));
+        case "/plan": {
+          // The plan is the active goal's steps.
+          const goals = normalizeGoals(parseGoals(await s.memory.goals()));
+          const g = activeGoals(goals).find((x) => goals.includes(x)) ?? activeGoals(goals)[0];
+          say(g ? renderGoal(g) : dim("  (no plan: no active goal)"));
           break;
+        }
         case "/memory":
           say(await s.memory.index());
           break;

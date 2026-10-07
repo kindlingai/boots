@@ -73,7 +73,6 @@ export interface PromptVars {
   fleet: string;
   /** memory goals.json as stored, "" when there is none. */
   goals?: string;
-  plan: string;
   /** Memory holds nothing about the user yet: onboard them. */
   fresh: boolean;
   /** The full model's start script failed at boot: diagnose that first. */
@@ -150,7 +149,6 @@ function basePrompt(t: Templates, router: Router, v: PromptVars): string {
     index: v.index.trim(),
     fleet: v.fleet.trim() || "{} (empty: nothing recorded yet)",
     goals: v.goals?.trim().replace(/^\[\s*\]$/, "") || "[] (empty: no goals recorded yet)",
-    plan: v.plan,
   });
   const base = tierOf(ep) === "base";
   const block = (l: string[], empty: string) => l.join("\n") || empty;

@@ -179,3 +179,78 @@ Deno.test("goals: details for the model, active cleared when done, first open on
   });
   assertEquals(normalizeGoals([{ title: "X", done: true }]), [{ title: "X", done: true }]);
 });
+
+Deno.test("plan steps are saved as the active goal's children in goals.json", async () => {
+  const { activeGoals, parseGoals } = await import("../src/memory.ts");
+  const dir = await Deno.makeTempDir();
+  try {
+    const m = new Memory(join(dir, "mem"));
+    await m.init();
+    // No goals yet: the plan's goal is added and made active.
+    const r = await m.setPlan(
+      [
+        { step: "Check the sparks", status: "done" },
+        { step: "Start TP4", status: "in_progress", note: "rank 2 needs NCCL_IB_HCA" },
+        { step: "Benchmark" },
+      ],
+      "Serve GLM-5.3 TP4",
+      "4x GX10 at .70 .77 .36 .93",
+    );
+    assertStringIncludes(r.result, "wrote goals.json");
+    let goals = parseGoals(await m.goals());
+    assertEquals(goals[0].title, "Serve GLM-5.3 TP4");
+    assertEquals(goals[0].details, "4x GX10 at .70 .77 .36 .93");
+    assertEquals(activeGoals(goals).map((g) => g.title), ["Serve GLM-5.3 TP4", "Start TP4"]);
+    assertEquals(goals[0].children![0].done, true);
+    assertEquals(goals[0].children![1].details, "rank 2 needs NCCL_IB_HCA");
+    // An update without the goal goes to the active one; a step keeps its old note.
+    await m.setPlan([
+      { step: "Check the sparks", status: "done" },
+      { step: "Start TP4", status: "failed" },
+      { step: "Benchmark", status: "skipped" },
+    ]);
+    goals = parseGoals(await m.goals());
+    assertEquals(goals.length, 1);
+    assertEquals(goals[0].children![1].details, "(failed) rank 2 needs NCCL_IB_HCA");
+    assertEquals(goals[0].children![2].done, true);
+    assert(!goals[0].done, "a failed step leaves the goal open");
+    // A plan for another goal adds it and makes it the active one.
+    await m.setPlan([{ step: "Pull the image", status: "in_progress" }], "Mentat router");
+    goals = parseGoals(await m.goals());
+    assertEquals(activeGoals(goals).map((g) => g.title), ["Mentat router", "Pull the image"]);
+    // Every step done finishes the goal.
+    await m.setPlan([{ step: "Pull the image", status: "done" }], "Mentat router");
+    goals = parseGoals(await m.goals());
+    assertEquals(goals[1].done, true);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("goals.json: emptying is refused, every change is backed up, /goals restore brings them back", async () => {
+  const { parseGoals } = await import("../src/memory.ts");
+  const dir = await Deno.makeTempDir();
+  try {
+    const m = new Memory(join(dir, "mem"));
+    await m.init();
+    await m.write("goals.json", JSON.stringify([{ title: "A" }, { title: "B" }]));
+    await assertRejects(() => m.write("goals.json", "[]"), Error, "would remove every goal (A; B)");
+    assertEquals(parseGoals(await m.goals()).length, 2);
+    // Removing some is allowed, and says so.
+    assertStringIncludes(
+      await m.write("goals.json", JSON.stringify([{ title: "A" }])),
+      "removed 1 goal: B",
+    );
+    assertEquals((await m.backups("goals.json")).length, 1);
+    // The user can clear them; restore brings back the last version with goals.
+    await m.clearGoals();
+    assertEquals(parseGoals(await m.goals()), []);
+    const r = await m.restoreGoals();
+    assertEquals(r!.titles, ["A"]);
+    assertEquals(parseGoals(await m.goals())[0].title, "A");
+    // Backups live outside the synced memory folder.
+    assert(m.backupDir().endsWith("mem-backups"));
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});

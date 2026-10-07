@@ -111,7 +111,10 @@ Deno.test("a restored session and its log", async () => {
     const { s, agent, done } = await session("gpt-oss-120b", [{ content: "Hi again." }]);
     try {
       s.transcript = new Transcript(path);
-      assertEquals(await agent.restore(6), 6);
+      // Short turns: all 8 fit in 30% of the context.
+      assertEquals(await agent.restore(6), 8);
+      // With no room to spare, still the last 6.
+      assertEquals(await agent.restore(6, 0), 6);
       assertEquals(agent.history[0].content, "question 3");
       assertEquals(agent.history.length, 12);
       assert(agent.restoredAt);
@@ -215,7 +218,7 @@ Deno.test("restored turns are shown, and an ssh hop left open is called interrup
       s.transcript = new Transcript(path);
       assertEquals(await agent.restore(6), 1);
       assertEquals(agent.restoredFrom, "local > admin@gx10");
-      agent.showRestored();
+      await agent.showRestored();
       const plain = lines.map((l) =>
         l.replace(new RegExp(String.fromCharCode(27) + "\\[[0-9;]*m", "g"), "")
       );

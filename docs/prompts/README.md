@@ -10,7 +10,7 @@ its behaviour without touching code. They are compiled into the binary along wit
 | `main.md`       | a capable model is answering (registered with `use_model`, or a large bootstrap such as an API model). The full harness behaviour.                                         |
 | `diagnose.md`   | the full model's startup script (`start-full.sh`) failed at boot and a capable model is answering (the base model gets a short version inside base.md). Hands it the end of the log and the error lines, and asks it to diagnose and fix.|
 | `onboarding.md` | inserted into either while memory is empty (nothing recorded but the automatic `local-setup`): find out what AI hardware the user has access to and record it.             |
-| `context.md`    | appended to main.md and diagnose.md (base.md lists only the OS and hardware): where the agent is, the OS, the knowledge base, memory, the plan.                                                                                      |
+| `context.md`    | appended to main.md and diagnose.md (base.md lists only the OS and hardware): where the agent is, the OS, the knowledge base, memory and goals (the plan lives in goals.json).                                                                                      |
 
 A model reached with an API key (`OPENROUTER_API_KEY`, `OPENAI_API_KEY`, or a key typed into
 `use_model`) always gets `main.md`. `AIBOOT_TIER=base` or `AIBOOT_TIER=full` forces the choice
@@ -53,4 +53,3 @@ would you like to do?" prompt, so the model can ask its opening question.
 | `index`             | memory INDEX.md (4 kB at most)                                                                        |
 | `fleet` | memory fleet.json (8 kB at most), or a note that it is empty |
 | `goals` | memory goals.json as stored (a list of {title, details?, done?, active?, children?}; finished goals inactive, the first open one active when none is), or a note that it is empty|
-| `plan`              | the current plan, or `(none yet)`                                                                     |

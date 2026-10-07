@@ -125,3 +125,18 @@ Deno.test("search terms: compounds, stems, stopwords", () => {
   assertEquals(searchTerms("Workers the"), [["workers", "worker"]]);
   assertEquals(searchTerms("stopping"), [["stopping", "stopp", "stop"]]);
 });
+
+Deno.test("restore: 6 turns, or as many as fit in the share of the context, whichever is more", () => {
+  const lines: Message[] = [];
+  for (let i = 0; i < 20; i++) {
+    lines.push({ role: "user", content: `q${i}` });
+    lines.push({ role: "assistant", content: "a".repeat(98) });
+  }
+  // Each turn is 100 characters.
+  const users = (m: Message[]) => m.filter((x) => x.role === "user").length;
+  assertEquals(users(lastTurns(lines, 6)), 6);
+  assertEquals(users(lastTurns(lines, 6, 300)), 6, "6 even when they take more than the share");
+  assertEquals(users(lastTurns(lines, 6, 1050)), 10, "more while they fit");
+  assertEquals(users(lastTurns(lines, 6, 1e9)), 20, "never more than there is");
+  assertEquals(lastTurns(lines, 6, 1050)[0].content, "q10");
+});
