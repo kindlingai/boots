@@ -1,5 +1,5 @@
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
-import { chat, type Endpoint, normalize, Router } from "../src/llm.ts";
+import { chat, type Endpoint, normalize, parseTextCall, Router } from "../src/llm.ts";
 import { sizeFromName } from "../src/discover.ts";
 import { serveMock } from "./fixtures/mock_llm.ts";
 
@@ -251,4 +251,30 @@ Deno.test("a template that wants tool-call arguments as a mapping gets objects f
   } finally {
     await server.shutdown();
   }
+});
+
+Deno.test("recovers XML-style, unclosed and in-thinking tool calls", () => {
+  const xml = normalize(
+    "<tool_call>\n<function=run>\n<parameter=command>\nfind . -name '*.sh'\n</parameter>\n<parameter=limit>\n5\n</parameter>\n</function>\n</tool_call>",
+    [],
+  );
+  assertEquals(xml.content, "");
+  assertEquals(xml.calls[0].function.name, "run");
+  assertEquals(JSON.parse(xml.calls[0].function.arguments), {
+    command: "find . -name '*.sh'",
+    limit: 5,
+  });
+  // Cut off before the closing tags.
+  const cut = normalize('<tool_call>{"name": "history_search", "arguments": {"query": "x"}}', []);
+  assertEquals(cut.calls[0].function.name, "history_search");
+  // Called before </think>: the server put it all in the reasoning.
+  const inThink = normalize(
+    "",
+    [],
+    'let me look\n<tool_call>{"name": "run", "arguments": {}}</tool_call>',
+  );
+  assertEquals(inThink.calls[0].function.name, "run");
+  // Reasoning is left alone when the reply has text.
+  assertEquals(normalize("done", [], '<tool_call>{"name":"run"}</tool_call>').calls, []);
+  assertEquals(parseTextCall("{broken"), null);
 });

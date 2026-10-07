@@ -77,38 +77,84 @@ export interface StreamSink {
   reasoning?: (s: string) => void;
 }
 
-const TOOL_TAG = /<tool_call>\s*(\{[\s\S]*?\})\s*<\/tool_call>/g;
+// A text tool call, closed or cut off at the end of the reply.
+const TOOL_TAG = /<tool_call>([\s\S]*?)(?:<\/tool_call>|$)/g;
 
-/** Splits <think> blocks out of content and recovers Qwen-style text tool calls. */
+/**
+ * One text tool call: the JSON form ({"name", "arguments"}) or the XML form
+ * Qwen3-Coder and Qwen3.5+ templates use
+ * (<function=run><parameter=command>ls</parameter></function>).
+ */
+export function parseTextCall(body: string): { name: string; arguments: string } | null {
+  const t = body.trim();
+  const json = t.match(/^\{[\s\S]*\}/);
+  if (json) {
+    try {
+      const o = JSON.parse(json[0]);
+      if (!o.name) return null;
+      return {
+        name: String(o.name),
+        arguments: typeof o.arguments === "string"
+          ? o.arguments
+          : JSON.stringify(o.arguments ?? o.parameters ?? {}),
+      };
+    } catch {
+      return null;
+    }
+  }
+  const fn = t.match(/<function=([^>\s]+)>([\s\S]*?)(?:<\/function>|$)/);
+  if (!fn) return null;
+  const args: Record<string, unknown> = {};
+  for (
+    const p of fn[2].matchAll(
+      /<parameter=([^>\s]+)>\n?([\s\S]*?)\n?(?:<\/parameter>|(?=<parameter=)|$)/g,
+    )
+  ) {
+    const v = p[2];
+    // Numbers, booleans and objects come as JSON; anything else is text.
+    let val: unknown = v;
+    if (/^\s*(-?\d+(\.\d+)?|true|false|null|[{[][\s\S]*)\s*$/.test(v)) {
+      try {
+        val = JSON.parse(v);
+      } catch {
+        // text after all
+      }
+    }
+    args[p[1]] = val;
+  }
+  return { name: fn[1], arguments: JSON.stringify(args) };
+}
+
+function textCalls(text: string, calls: ToolCall[]): string {
+  return text.replace(TOOL_TAG, (all, body) => {
+    const c = parseTextCall(body);
+    if (!c) return all;
+    calls.push({ id: `call_text_${calls.length}`, type: "function", function: c });
+    return "";
+  });
+}
+
+/**
+ * Splits <think> blocks out of content and recovers Qwen-style text tool
+ * calls, from the content or, when the model called a tool before closing
+ * its thinking, from the reasoning.
+ */
 export function normalize(
   content: string,
   calls: ToolCall[],
+  reasoningIn = "",
 ): { content: string; reasoning: string; calls: ToolCall[] } {
   let reasoning = "";
   content = content.replace(/<think>([\s\S]*?)(<\/think>|$)/g, (_, r) => {
     reasoning += r;
     return "";
   });
-  if (!calls.length && content.includes("<tool_call>")) {
-    let i = 0;
-    content = content.replace(TOOL_TAG, (_, json) => {
-      try {
-        const o = JSON.parse(json);
-        calls.push({
-          id: `call_text_${i++}`,
-          type: "function",
-          function: {
-            name: String(o.name),
-            arguments: typeof o.arguments === "string"
-              ? o.arguments
-              : JSON.stringify(o.arguments ?? {}),
-          },
-        });
-        return "";
-      } catch {
-        return _;
-      }
-    });
+  if (!calls.length && content.includes("<tool_call>")) content = textCalls(content, calls);
+  if (!calls.length && !content.trim()) {
+    for (const r of [reasoningIn, reasoning]) {
+      if (r.includes("<tool_call>")) textCalls(r, calls);
+      if (calls.length) break;
+    }
   }
   return { content: content.trim(), reasoning: reasoning.trim(), calls };
 }
@@ -266,7 +312,7 @@ export async function chat(
       }
     }
   }
-  const n = normalize(content, calls.filter(Boolean));
+  const n = normalize(content, calls.filter(Boolean), reasoning);
   n.calls.forEach((c, i) => (c.id ||= `call_${i}`));
   return { content: n.content, reasoning: reasoning + n.reasoning, toolCalls: n.calls, finish };
 }

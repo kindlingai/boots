@@ -11,6 +11,9 @@ import { emit, EscInterrupted } from "./frontend.ts";
 import { clipTools, compact, isContextError, SUMMARY_PROMPT } from "./compact.ts";
 import { Backoff } from "./backoff.ts";
 
+/** Tool-call markup left in a reply: the call was malformed. */
+const BROKEN_CALL = /<tool_call>|<function=|<\|tool_call/;
+
 const MAX_STEPS = 60;
 
 /**
@@ -252,6 +255,7 @@ export class Agent {
   private async steps(userText: string): Promise<void> {
     this.push({ role: "user", content: userText });
     let compactions = 0;
+    let nudges = 0;
     for (let step = 0; step < MAX_STEPS; step++) {
       this.abort = new AbortController();
       let reply: Reply | undefined;
@@ -323,13 +327,37 @@ export class Agent {
         continue;
       }
       if (!reply) return;
+      // A tool call we could not read, or nothing at all: say so and let the
+      // model try again (twice), instead of ending the turn in silence.
+      const broken = !reply.toolCalls.length && BROKEN_CALL.test(reply.content);
+      const empty = !reply.toolCalls.length && !reply.content.trim();
       if (printed) emit({ type: "assistant", phase: "end" });
-      else if (reply.content.trim()) this.speak(reply.content.trim());
+      else if (reply.content.trim() && !broken) this.speak(reply.content.trim());
       this.push({
         role: "assistant",
         content: reply.content,
         tool_calls: reply.toolCalls.length ? reply.toolCalls : undefined,
       });
+      if (broken || empty) {
+        const why = broken
+          ? "a tool call that could not be read"
+          : reply.finish === "length"
+          ? "an empty reply (it ran out of output tokens)"
+          : "an empty reply";
+        if (nudges < 2) {
+          nudges++;
+          say(`the model sent ${why}; asking it to try again`, "dim");
+          this.push({
+            role: "user",
+            content: broken
+              ? "(Your last tool call could not be parsed. Call the tool again through the tool-calling interface with valid JSON arguments, or answer in plain text.)"
+              : "(Your last reply was empty. Continue: call a tool or answer the user.)",
+          });
+          continue;
+        }
+        say(`the model sent ${why} again; stopping here`, "warn");
+        return;
+      }
       if (!reply.toolCalls.length) return;
       let replied = false;
       // Only what the answering model was offered (the base model is on rails).

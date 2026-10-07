@@ -275,3 +275,38 @@ Deno.test("whitespace before a tool call opens no empty reply; quiet tools say w
     await done();
   }
 });
+
+Deno.test("an empty reply or an unreadable tool call is retried, not a silent stop", async () => {
+  const { m, agent, done } = await session("gpt-oss-120b", [
+    { content: "" },
+    { content: "<tool_call>\n<function=run>\n<parameter=command>\nls" },
+    { content: "<tool_call>{broken" },
+    { content: "Here you go." },
+  ]);
+  try {
+    await agent.turn("go");
+    const asks = m.seen.filter((b) => b.tools);
+    // The XML call was recovered and run; the broken one got a nudge.
+    assertEquals(asks.length, 4);
+    assertStringIncludes(asks[1].messages.at(-1).content, "Your last reply was empty");
+    assertEquals(asks[2].messages.at(-1).role, "tool");
+    assertStringIncludes(asks[3].messages.at(-1).content, "could not be parsed");
+  } finally {
+    await done();
+  }
+});
+
+Deno.test("two nudges, then the turn stops with a warning", async () => {
+  const { m, agent, done } = await session("gpt-oss-120b", [
+    { content: "" },
+    { content: "" },
+    { content: "" },
+    { content: "never reached" },
+  ]);
+  try {
+    await agent.turn("go");
+    assertEquals(m.seen.filter((b) => b.tools).length, 3);
+  } finally {
+    await done();
+  }
+});
