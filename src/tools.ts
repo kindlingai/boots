@@ -572,7 +572,11 @@ export const TOOLS: ToolDef[] = [
     },
     ["destination"],
   ),
-  fn("ssh_exit", "Leave the current remote host and return to the previous one.", {}),
+  fn(
+    "ssh_exit",
+    "Leave the current remote host and return to the previous one. Each ssh is a fresh login, so after adding the user to a group there (usermod -aG docker), ssh_exit and ssh again to get it; or run the command as sg docker -c '...'.",
+    {},
+  ),
   fn(
     "probe_model",
     "Probe the model you are running on (at most 30 seconds): whether it thinks, how to turn thinking off, which reasoning levels it takes and how long each takes, then pick the settings ai-bootstrap uses for thinking and for not thinking. Cached per endpoint; pass again: true to probe anew (after the server or its flags change).",
@@ -1459,6 +1463,15 @@ export class Session {
         ) {
           hints.push(
             "sudo on the other machine wanted a password, which cannot be typed through ssh inside run. Use sudo -n there to fail fast, or do it machine by machine with the ssh tool and then the sudo tool (which handle the password).",
+          );
+        }
+        if (
+          /permission denied while trying to connect to the docker/i.test(
+            `${r.stdout}\n${r.stderr}`,
+          )
+        ) {
+          hints.push(
+            "docker refused this login. Check `getent group docker` and `id -nG`: if the user is in the group but this login is not, the login predates it: ssh_exit and ssh again (a fresh login), or run it as sg docker -c '<command>'. If they are not in it, adding them (usermod -aG docker <user>, with the sudo tool) is the user's call.",
           );
         }
         const hinted = hints.map((h) => `\n[hint: ${h}]`).join("");

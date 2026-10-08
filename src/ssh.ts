@@ -63,6 +63,27 @@ function sshBase(port?: string, identity?: string): string[] {
   return a;
 }
 
+/**
+ * Stops the shared connection to `dest` (ControlMaster), if there is one. A
+ * login's groups are fixed when it authenticates, and every session through
+ * the master inherits them: without this, leaving and connecting again
+ * within ControlPersist reuses the old login (a group added since, such as
+ * docker, stays missing), and a master left over a dropped network hangs on.
+ */
+export async function stopMaster(dest: string, base: string[]): Promise<void> {
+  if (isWindows) return;
+  try {
+    await new Deno.Command("ssh", {
+      args: [...base, "-O", "exit", dest],
+      stdin: "null",
+      stdout: "null",
+      stderr: "null",
+    }).output();
+  } catch {
+    // no ssh, or nothing to stop
+  }
+}
+
 async function sshRun(
   dest: string,
   base: string[],
@@ -270,6 +291,8 @@ export async function openSsh(
     await ensureDir(controlDir());
     await Deno.chmod(controlDir(), 0o700);
   }
+  // A new hop is a new login: not one left from before (see stopMaster).
+  await stopMaster(dest, base);
   const askpass = await startAskpass(ask);
   try {
     const env = askpass.env;
@@ -361,6 +384,7 @@ export async function openSsh(
             // gone
           }
         }
+        await stopMaster(dest, base);
       },
     };
   } finally {

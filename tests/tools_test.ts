@@ -183,6 +183,18 @@ Deno.test("ssh by hand: reads as often as needed; changes a third time point at 
       await s.exec("run", { command: "ssh a@b sudo ls; ssh a@c sudo ls" }),
       "[hint: sudo on the other machine wanted a password",
     );
+    // docker refusing a login that predates the group: how to get a fresh one.
+    (s as any).command = (_op: string, cmd: string) =>
+      Promise.resolve({
+        code: 1,
+        stdout: "",
+        stderr:
+          "permission denied while trying to connect to the docker API at unix:///var/run/docker.sock\n",
+        cmd,
+      });
+    const docker = await s.exec("run", { command: "docker ps" });
+    assert(docker.includes("[hint: docker refused this login"), docker);
+    assert(docker.includes("ssh_exit and ssh again"), docker);
     // Root here inside run still goes to the sudo tool.
     assertStringIncludes(await s.exec("run", { command: "sudo ls /root" }), "Not run");
   } finally {
