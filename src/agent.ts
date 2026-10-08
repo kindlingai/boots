@@ -690,7 +690,11 @@ export class Agent {
             reply.maxTokens
               ? `${tokenCount(reply.maxTokens)} asked for`
               : "the server's own: the context had no room to ask for more"
-          }); asking again with thinking off, handing back where its thinking got to`
+          }); asking again with ${
+            this.s.router.current().alwaysThinks
+              ? "its least thinking (it cannot turn thinking off)"
+              : "thinking off"
+          }, handing back where its thinking got to`
           : "an empty reply";
         if (nudges < 2) {
           nudges++;
@@ -976,7 +980,9 @@ export async function repl(agent: Agent): Promise<void> {
           say(
             s.router.thinkingOff
               ? `thinking: off. Models are asked not to think before answering (faster, shallower).${
-                ep.noTemplateKwargs
+                ep.alwaysThinks
+                  ? ` ${ep.label} always thinks: it gets its least thinking instead.`
+                  : ep.noTemplateKwargs
                   ? ` ${ep.label} does not accept the setting, so it may still think.`
                   : ""
               } /thinking on turns it back on.`

@@ -50,6 +50,10 @@ export interface Endpoint {
   toolArgsAsObjects?: boolean;
   /** The server refused chat_template_kwargs (learnt from a 400): /thinking off cannot reach it. */
   noTemplateKwargs?: boolean;
+  /** The model always thinks: turning it off is refused or ignored (probed, or learnt from a 400). */
+  alwaysThinks?: boolean;
+  /** The reasoning levels the server takes, when it said (from a 400 that listed them). */
+  efforts?: string[];
   /**
    * From a probe (probe.ts): the request parameters for thinking (normal
    * requests) and for not thinking (where thinking is turned off).
@@ -67,6 +71,52 @@ export interface Endpoint {
  * these to the template; a server that refuses them is asked again without.
  */
 const THINKING_OFF = { enable_thinking: false, thinking: false };
+
+/** Reasoning levels, least first. */
+export const EFFORT_ORDER = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
+
+/** A server saying its model cannot stop thinking. */
+export const ALWAYS_THINKS =
+  /(always|must) (engages? in |use |do )?think|thinking (cannot|can't|can not) be (disabled|turned off)|(cannot|can't) (disable|turn off) (thinking|reasoning)/i;
+
+/**
+ * The reasoning levels a refusal lists ("please use low, high, or max"),
+ * least first; null when it lists none.
+ */
+export function listedEfforts(text: string): string[] | null {
+  const m = text.match(
+    /\b(?:use|one of|supported|allowed|must be|valid (?:values|options)(?: are)?)\b([^.;\n]*)/i,
+  );
+  if (!m) return null;
+  const found = (m[1].toLowerCase().match(/[a-z]+/g) ?? []).filter((w) => EFFORT_ORDER.includes(w));
+  return found.length >= 2
+    ? [...new Set(found)].sort((a, b) => EFFORT_ORDER.indexOf(a) - EFFORT_ORDER.indexOf(b))
+    : null;
+}
+
+/** The allowed level nearest `want`: the next one up, else the highest below. */
+export function nearestEffort(want: string, allowed: string[]): string {
+  if (allowed.includes(want)) return want;
+  const w = EFFORT_ORDER.indexOf(want);
+  return allowed.find((a) => EFFORT_ORDER.indexOf(a) > w) ?? allowed.at(-1) ?? want;
+}
+
+/** The request with its reasoning levels moved to ones the server takes. */
+function fitEfforts(mode: Record<string, unknown>, allowed?: string[]): Record<string, unknown> {
+  if (!allowed?.length) return mode;
+  const out = { ...mode };
+  if (typeof out.reasoning_effort === "string") {
+    out.reasoning_effort = nearestEffort(out.reasoning_effort, allowed);
+  }
+  const k = out.chat_template_kwargs as Record<string, unknown> | undefined;
+  if (k && typeof k.reasoning_effort === "string") {
+    out.chat_template_kwargs = {
+      ...k,
+      reasoning_effort: nearestEffort(k.reasoning_effort, allowed),
+    };
+  }
+  return out;
+}
 
 /** A server's way of saying the request is longer than the model's context. */
 export const CONTEXT_TOO_LONG =
@@ -281,11 +331,24 @@ export async function chat(
   if (!plain && !noRoom && room && !("max_tokens" in sampling)) sampling.max_tokens = room;
   // A probed endpoint's own settings for thinking and not thinking; otherwise
   // the usual chat-template switch when thinking is turned off.
-  const mode: Record<string, unknown> = ep.profile
-    ? { ...(thinkingOff ? ep.profile.nonThinking : ep.profile.thinking) }
-    : thinkingOff
-    ? { chat_template_kwargs: THINKING_OFF }
-    : {};
+  // A model that always thinks is not asked to stop (it would be refused):
+  // without a probed setting, it thinks as it does by default.
+  const mode: Record<string, unknown> = fitEfforts(
+    ep.profile
+      ? { ...(thinkingOff ? ep.profile.nonThinking : ep.profile.thinking) }
+      : thinkingOff && !ep.alwaysThinks
+      ? { chat_template_kwargs: THINKING_OFF }
+      : {},
+    ep.efforts,
+  );
+  if (ep.alwaysThinks && mode.chat_template_kwargs) {
+    const { enable_thinking: _e, thinking: _t, ...k } = mode.chat_template_kwargs as Record<
+      string,
+      unknown
+    >;
+    if (Object.keys(k).length) mode.chat_template_kwargs = k;
+    else delete mode.chat_template_kwargs;
+  }
   if (ep.noTemplateKwargs) delete mode.chat_template_kwargs;
   const body: Record<string, unknown> = {
     ...sampling,
@@ -349,6 +412,29 @@ export async function chat(
         plain,
         thinkingOff,
       );
+    }
+    // A model that cannot stop thinking, or a reasoning level the server does
+    // not take: learnt for this endpoint, and asked again with what it takes.
+    if (r.status === 400 && (ALWAYS_THINKS.test(text) || listedEfforts(text))) {
+      const efforts = listedEfforts(text);
+      const learnt = (ALWAYS_THINKS.test(text) && !ep.alwaysThinks) ||
+        (efforts && efforts.join() !== ep.efforts?.join());
+      if (ALWAYS_THINKS.test(text)) ep.alwaysThinks = true;
+      if (efforts) ep.efforts = efforts;
+      if (learnt) {
+        return await chat(
+          ep,
+          messages,
+          tools,
+          sink,
+          signal,
+          temperature,
+          toolChoice,
+          plain,
+          thinkingOff,
+          noRoom,
+        );
+      }
     }
     // A probed setting the server no longer takes: without it.
     if (r.status === 400 && ep.profile && Object.keys(mode).length) {

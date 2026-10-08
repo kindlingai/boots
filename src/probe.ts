@@ -9,7 +9,7 @@
 
 import { join } from "@std/path";
 import { encodeHex } from "@std/encoding/hex";
-import type { Endpoint } from "./llm.ts";
+import { ALWAYS_THINKS, type Endpoint, listedEfforts } from "./llm.ts";
 import { dataDir, ensureDir } from "./platform.ts";
 
 /** Request parameters for one way of asking (merged into the request body). */
@@ -45,6 +45,10 @@ export interface ModelProfile {
     reasoningEffort: "top-level" | "template" | null;
     /** max_tokens is honoured. */
     maxTokens: boolean;
+    /** It always thinks: turning thinking off is refused or ignored. */
+    alwaysThinks?: boolean;
+    /** The reasoning levels the server takes, when a refusal listed them. */
+    efforts?: string[];
   };
   /** Used for normal requests. */
   thinking: { params: Params; latencyMs: number; reasoningTokens: number; correct: boolean };
@@ -203,6 +207,7 @@ export async function probe(
   // Reasoning levels, in the two forms servers take them.
   const efforts: Trial[] = [];
   let form: "top-level" | "template" | null = null;
+  let allowed: string[] | null = null;
   if (def.thought) {
     const low = await run("effort low", { reasoning_effort: "low" });
     if (low.accepted && low.reasoningTokens < def.reasoningTokens * 0.8) form = "top-level";
@@ -215,19 +220,26 @@ export async function probe(
       if (lowT.accepted && lowT.reasoningTokens < def.reasoningTokens * 0.8) form = "template";
     }
     if (form) {
-      efforts.push(
-        await run(
-          "effort medium",
-          form === "top-level"
-            ? { reasoning_effort: "medium" }
-            : { chat_template_kwargs: { reasoning_effort: "medium" } },
-        ),
-      );
+      const level = (e: string) =>
+        form === "top-level"
+          ? { reasoning_effort: e }
+          : { chat_template_kwargs: { reasoning_effort: e } };
+      const medium = await run("effort medium", level("medium"));
+      efforts.push(medium);
+      // Refused with the levels it takes ("please use low, high, or max"):
+      // the next one up from medium instead.
+      allowed = listedEfforts(medium.error ?? "");
+      const next = allowed?.find((e) => ["high", "xhigh", "max"].includes(e));
+      if (!medium.accepted && next) efforts.push(await run(`effort ${next}`, level(next)));
     }
   }
   const tiny = await run("max_tokens 8", OFF, 8);
 
   const offWorks = off.accepted && !off.thought && def.thought;
+  // Always thinks: asking it not to is refused, or it thinks anyway.
+  const alwaysThinks = def.thought && !offWorks &&
+    (off.accepted || ALWAYS_THINKS.test(off.error ?? "") ||
+      trials.some((t) => ALWAYS_THINKS.test(t.error ?? "")));
 
   // Thinking: the cheapest that thinks, answers right and is quick enough;
   // else the quickest right one; else the default.
@@ -237,8 +249,9 @@ export async function probe(
   const right = thinkers.filter((t) => t.correct).sort((a, b) => a.latencyMs - b.latencyMs);
   const pick = good[0] ?? right[0] ?? (def.accepted ? def : null);
   // Non-thinking: thinking off where it works; else the lightest thinker.
-  const quiet = offWorks ? off : efforts.filter((t) => t.accepted)
-    .sort((a, b) => a.reasoningTokens - b.reasoningTokens)[0] ?? off;
+  // One that always thinks: its lightest level, or as it is.
+  const quiet: Trial | null = offWorks ? off : efforts.filter((t) => t.accepted)
+    .sort((a, b) => a.reasoningTokens - b.reasoningTokens)[0] ?? (alwaysThinks ? null : off);
 
   const profile: ModelProfile = {
     endpoint: ep.baseUrl,
@@ -250,6 +263,8 @@ export async function probe(
       templateKwargsOff: offWorks,
       reasoningEffort: form,
       maxTokens: tiny.accepted && tiny.answer.length < 60,
+      ...(alwaysThinks ? { alwaysThinks } : {}),
+      ...(allowed ? { efforts: allowed } : {}),
     },
     thinking: {
       params: pick ? pick.params : {},
@@ -258,14 +273,14 @@ export async function probe(
       correct: pick?.correct ?? false,
     },
     nonThinking: {
-      params: quiet.accepted ? quiet.params : {},
-      latencyMs: quiet.latencyMs,
-      correct: quiet.correct,
+      params: quiet?.accepted ? quiet.params : {},
+      latencyMs: quiet?.latencyMs ?? def.latencyMs,
+      correct: quiet?.correct ?? def.correct,
     },
     // Generous, from what was measured: a real request is longer than the test.
     timeouts: {
       thinkingMs: Math.max(120_000, (pick?.latencyMs ?? 0) * 20),
-      nonThinkingMs: Math.max(30_000, quiet.latencyMs * 10),
+      nonThinkingMs: Math.max(30_000, (quiet?.latencyMs ?? def.latencyMs) * 10),
     },
     trials,
   };
@@ -281,11 +296,17 @@ export function describeProfile(p: ModelProfile): string {
     (p.thinking.latencyMs / 1000).toFixed(1)
   }s on the test${p.thinking.correct ? "" : ", answer wrong"}); non-thinking ${
     show(p.nonThinking.params)
-  } (${(p.nonThinking.latencyMs / 1000).toFixed(1)}s); probed in ${(p.probeMs / 1000).toFixed(1)}s`;
+  } (${(p.nonThinking.latencyMs / 1000).toFixed(1)}s)${
+    p.features?.alwaysThinks ? "; it always thinks (cannot be turned off)" : ""
+  }${
+    p.features?.efforts?.length ? `; reasoning levels ${p.features.efforts.join("/")}` : ""
+  }; probed in ${(p.probeMs / 1000).toFixed(1)}s`;
 }
 
 /** Puts a profile's settings on the endpoint; returns the profile. */
 export function applyProfile(ep: Endpoint, p: ModelProfile): ModelProfile {
+  if (p.features?.alwaysThinks) ep.alwaysThinks = true;
+  if (p.features?.efforts?.length) ep.efforts = p.features.efforts;
   ep.profile = {
     thinking: p.thinking?.params ?? {},
     nonThinking: p.nonThinking?.params ?? {},

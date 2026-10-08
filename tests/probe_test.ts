@@ -95,3 +95,120 @@ Deno.test("probe: stays within its budget and never throws on a dead server", as
   assertEquals(p.nonThinking.params, {});
   assert(p.trials.every((t) => !t.accepted));
 });
+
+/**
+ * A server like GLM-5.3-Flash: it always thinks (chat_template_kwargs is
+ * taken but ignored), takes reasoning_effort low, high or max, and refuses
+ * anything else, saying which it takes.
+ */
+function alwaysThinking() {
+  const seen: any[] = [];
+  const REFUSAL = JSON.stringify({
+    error: {
+      code: "1210",
+      message:
+        "This model always engages in thinking and cannot be disabled; please use low, high, or max",
+    },
+  });
+  const s = Deno.serve({ port: 0, onListen() {} }, async (req) => {
+    const b = await req.json();
+    seen.push(b);
+    const effort = b.reasoning_effort;
+    if (effort !== undefined && !["low", "high", "max"].includes(effort)) {
+      return new Response(REFUSAL, { status: 400 });
+    }
+    if (b.chat_template_kwargs?.enable_thinking === false && b.stream) {
+      return new Response(REFUSAL, { status: 400 });
+    }
+    const reasoning = effort === "low" ? "r".repeat(200) : "r".repeat(effort ? 1600 : 800);
+    if (b.stream) {
+      return new Response(
+        `data: ${
+          JSON.stringify({ choices: [{ delta: { content: "6:15 pm" } }] })
+        }\n\ndata: [DONE]\n\n`,
+        { headers: { "content-type": "text/event-stream" } },
+      );
+    }
+    return Response.json({
+      choices: [{ message: { content: "6:15 pm", reasoning_content: reasoning } }],
+    });
+  });
+  return { s, seen, url: `http://127.0.0.1:${(s.addr as Deno.NetAddr).port}/v1` };
+}
+
+Deno.test("probe: a model that always thinks, and takes only some reasoning levels", async () => {
+  const { s, seen, url } = alwaysThinking();
+  try {
+    const ep: Endpoint = { label: "glm", baseUrl: url, model: "glm", contextChars: 400_000 };
+    const p = await probe(ep, () => undefined);
+    assertEquals(p.features.alwaysThinks, true);
+    assertEquals(p.features.templateKwargsOff, false);
+    assertEquals(p.features.efforts, ["low", "high", "max"]);
+    assert(p.trials.some((t) => t.name === "effort high" && t.accepted), "high tried for medium");
+    assertEquals(p.nonThinking.params, { reasoning_effort: "low" }, "its least thinking");
+    applyProfile(ep, p);
+    assertEquals(ep.alwaysThinks, true);
+    // Thinking off: never the refused switch, only the lightest level.
+    seen.length = 0;
+    await chat(
+      ep,
+      [{ role: "user", content: "x" }],
+      [],
+      {},
+      undefined,
+      undefined,
+      undefined,
+      false,
+      true,
+    );
+    assertEquals(seen[0].reasoning_effort, "low");
+    assertEquals(seen[0].chat_template_kwargs, undefined);
+  } finally {
+    await s.shutdown();
+  }
+});
+
+Deno.test("chat: learns from a refusal that a model always thinks, and which levels it takes", async () => {
+  const { listedEfforts, nearestEffort } = await import("../src/llm.ts");
+  assertEquals(
+    listedEfforts("cannot be disabled; please use low, high, or max"),
+    ["low", "high", "max"],
+  );
+  assertEquals(listedEfforts("must be one of: 'minimal', 'low', 'medium', 'high'"), [
+    "minimal",
+    "low",
+    "medium",
+    "high",
+  ]);
+  assertEquals(listedEfforts("please use a different model"), null);
+  assertEquals(nearestEffort("medium", ["low", "high", "max"]), "high");
+  assertEquals(nearestEffort("xhigh", ["low", "high"]), "high");
+  const { s, seen, url } = alwaysThinking();
+  try {
+    // Not probed: /thinking off sends the usual switch, is refused, and is
+    // not sent again; a level it does not take is moved to the next one up.
+    const ep: Endpoint = { label: "glm", baseUrl: url, model: "glm", contextChars: 400_000 };
+    const r = await chat(
+      ep,
+      [{ role: "user", content: "x" }],
+      [],
+      {},
+      undefined,
+      undefined,
+      undefined,
+      false,
+      true,
+    );
+    assertEquals(r.content, "6:15 pm");
+    assertEquals(ep.alwaysThinks, true);
+    assertEquals(ep.efforts, ["low", "high", "max"]);
+    assertEquals(seen.at(-1).chat_template_kwargs, undefined);
+    ep.profile = { thinking: { reasoning_effort: "medium" }, nonThinking: {} };
+    seen.length = 0;
+    await chat(ep, [{ role: "user", content: "x" }], []);
+    assertEquals(seen.length, 1, "asked once, at a level it takes");
+    assertEquals(seen[0].reasoning_effort, "high");
+  } finally {
+    await s.shutdown();
+  }
+});
