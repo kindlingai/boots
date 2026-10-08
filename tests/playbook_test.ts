@@ -133,6 +133,19 @@ Deno.test("playbooks: written as memory, listed with what they do, searched, and
     asked.length = 1;
     assertEquals(ran[0].args.label, "playbook models/glm53flash/up");
 
+    // --allow-playbooks: runs without asking.
+    s.applyPermissions({
+      readonly: false,
+      hosts: [],
+      allHosts: false,
+      skip: false,
+      playbooks: true,
+    });
+    assertStringIncludes(await s.exec("run_playbook", { name: "models/glm53flash/up" }), "exit 0");
+    assertEquals(asked.length, 1, "not asked");
+    assertEquals(ran.length, 2);
+    ran.length = 1;
+    s.allowPlaybooks = false;
     answer = "the user declined to run this";
     assertEquals(await s.exec("run_playbook", { name: "playbook/models/glm53flash/up" }), answer);
     assertEquals(ran.length, 1);

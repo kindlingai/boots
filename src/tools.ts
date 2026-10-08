@@ -411,6 +411,7 @@ export const NO_PERMISSIONS: Permissions = Object.freeze({
   hosts: [],
   allHosts: false,
   skip: false,
+  playbooks: false,
 }) as Permissions;
 
 /** Permission flags given on the command line. */
@@ -423,6 +424,8 @@ export interface Permissions {
   allHosts: boolean;
   /** --dangerously-skip-permissions: nothing asks. */
   skip: boolean;
+  /** --allow-playbooks: run_playbook runs without asking. */
+  playbooks?: boolean;
 }
 
 /**
@@ -431,13 +434,20 @@ export interface Permissions {
  * an error.
  */
 export function parsePermissionFlags(args: string[]): { perms: Permissions; rest: string[] } {
-  const perms: Permissions = { readonly: false, hosts: [], allHosts: false, skip: false };
+  const perms: Permissions = {
+    readonly: false,
+    hosts: [],
+    allHosts: false,
+    skip: false,
+    playbooks: false,
+  };
   const rest: string[] = [];
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (a === "--allow-read-only") perms.readonly = true;
     else if (a === "--allow-all-hosts") perms.allHosts = true;
     else if (a === "--dangerously-skip-permissions") perms.skip = true;
+    else if (a === "--allow-playbooks") perms.playbooks = true;
     else if (a === "--allow-host" || a.startsWith("--allow-host=")) {
       const v = a.includes("=") ? a.slice(a.indexOf("=") + 1) : args[++i];
       if (!v || v.startsWith("--")) {
@@ -516,6 +526,11 @@ export const TOOLS: ToolDef[] = [
     "Run a shell command on the current host (see Location). Read-only commands run at once; anything else asks the user first. cd persists between calls; environment variables do not. Use the sudo tool for root, and the ssh tool to reach other machines.",
     {
       command: str("the command"),
+      force_prompt: {
+        type: "boolean",
+        description:
+          "a last resort for a command that was refused or too complex to check and cannot be split into simpler steps: no check and no refusal, the user reads it and approves it (or not), every time",
+      },
       timeout_s: {
         type: "integer",
         description:
@@ -529,6 +544,10 @@ export const TOOLS: ToolDef[] = [
     "Run a command as root on the current host. Always asks the user; handles the sudo password itself. Never put `sudo` inside `run`.",
     {
       command: str("the command, without the word sudo"),
+      force_prompt: {
+        type: "boolean",
+        description: "as for run: a last resort, the user reads and approves it as it is",
+      },
       timeout_s: { type: "integer", description: "as for run (default 30)" },
     },
     ["command"],
@@ -925,11 +944,15 @@ export class Session {
     const what = `${cyan(loc)} ${bold("playbook")} ${book}${
       argv.length ? ` ${argv.join(" ")}` : ""
     }`;
-    const no = await this.gate(
-      `${what}\n${preview}`,
-      `${loc}\0playbook\0${book}\0${JSON.stringify(argv)}\0${script}`,
-    );
-    if (no) return no;
+    if (this.allowPlaybooks) {
+      say(`${what}${dim("  (allowed: --allow-playbooks)")}`);
+    } else {
+      const no = await this.gate(
+        `${what}\n${preview}`,
+        `${loc}\0playbook\0${book}\0${JSON.stringify(argv)}\0${script}`,
+      );
+      if (no) return no;
+    }
     const quote = (a: string) => `'${a.replace(/'/g, `'\\''`)}'`;
     const posix = this.stack[0].info.shell !== "powershell";
     // $MEMORY_DIR: the memory folder.
@@ -1226,8 +1249,36 @@ export class Session {
     return { verdict, checked: true, culprit };
   }
 
+  /**
+   * force_prompt: a command the model could not make simpler. No refusal and
+   * no check: the user reads it and says yes or no, every time (never
+   * remembered, never run by a mode or a flag but --dangerously-skip-permissions).
+   */
+  private async forced(
+    op: "exec" | "sudo",
+    cmd: string,
+    args: any,
+    signal?: AbortSignal,
+  ): Promise<string> {
+    const loc = this.where();
+    const no = await this.gate(
+      `${commandLine(loc, op === "sudo" ? "#" : "$", cmd)}${
+        red("  (not checked: read it before you say yes)")
+      }`,
+      `${loc}\0forced\0${op}\0${cmd}`,
+      op === "sudo" ? "root" : "dangerous",
+    );
+    if (no) return no;
+    const r = await this.command(op, cmd, args, signal);
+    this.show(r);
+    this.recent.clear();
+    return this.render(r) +
+      outputHints(op === "sudo" ? "sudo" : "run", cmd, `${r.stdout}\n${r.stderr}`)
+        .map((h) => `\n[hint: ${h}]`).join("");
+  }
+
   private static TOO_COMPLEX =
-    "Not run: the safety check could not analyze this command, it is too complex. Rewrite it as smaller steps: one simple command per call, without long pipelines or command lists, loops (a for loop over a fixed list of words is fine), inline programs (python -c, perl -e; bash -c with a plain quoted script is fine, it is checked as that script), eval, here-documents or nested substitutions. To create or edit a file, use write_file.";
+    "Not run: the safety check could not analyze this command, it is too complex. Rewrite it as smaller steps: one simple command per call, without long pipelines or command lists, loops (a for loop over a fixed list of words is fine), inline programs (python -c, perl -e; bash -c with a plain quoted script is fine, it is checked as that script), eval, here-documents or nested substitutions. To create or edit a file, use write_file. Only if it truly cannot be made simpler, call it again with force_prompt: true, and the user reads and approves it as it is.";
 
   private static label(verdict: Verdict | null, checked: boolean, culprit?: string): string {
     if (!checked) return "";
@@ -1254,6 +1305,8 @@ export class Session {
   allowedHosts = new Set<string>();
   /** --allow-all-hosts: every ssh hop connects without asking. */
   allowAllHosts = false;
+  /** --allow-playbooks: playbooks run without asking. */
+  allowPlaybooks = false;
 
   /** The command-line permission flags, applied to this session. */
   applyPermissions(p: Permissions): void {
@@ -1261,6 +1314,7 @@ export class Session {
     for (const h of p.hosts) this.allowedHosts.add(h);
     if (p.allHosts) this.allowAllHosts = true;
     if (p.skip) this.skipPermissions = true;
+    if (p.playbooks) this.allowPlaybooks = true;
   }
 
   /** ssh to `dest` (user@host) was allowed on the command line. */
@@ -1358,6 +1412,7 @@ export class Session {
     switch (name) {
       case "run": {
         const cmd = String(args.command ?? "");
+        if (args.force_prompt === true) return await this.forced("exec", cmd, args, signal);
         const loc = this.where();
         const again = this.repeated(`${loc}\0${cmd}`);
         if (again) {
@@ -1478,6 +1533,7 @@ export class Session {
         // judged as the path it is.
         const cmd = String(args.command ?? "").replace(/^\s*sudo\s+/, "")
           .replace(/\$\{?BOOTS_SCRATCH\}?/g, this.here.info.scratch ?? "$BOOTS_SCRATCH");
+        if (args.force_prompt === true) return await this.forced("sudo", cmd, args, signal);
         // ssh from the sudo tool: root's identity, or root on the far side by
         // a route the user cannot see. Point at ssh first, then sudo there.
         if (commands(cmd).some((w) => w[0] === "ssh")) {

@@ -326,7 +326,7 @@ async function main(argv: string[]): Promise<number> {
       return await interactive(uiMode(args[0]), perms);
     default:
       console.log(
-        "usage: ai-bootstrap [--gui | --tui | --repl] [--allow-read-only] [--allow-host HOST]... [--allow-all-hosts] [--dangerously-skip-permissions]\n                    [--openai-url URL [--openai-model NAME]]\n       ai-bootstrap upgrade [VERSION] [--force] | --version | --paths | --docs | --search WORDS",
+        "usage: ai-bootstrap [--gui | --tui | --repl] [--allow-read-only] [--allow-host HOST]... [--allow-all-hosts] [--allow-playbooks] [--dangerously-skip-permissions]\n                    [--openai-url URL [--openai-model NAME]]\n       ai-bootstrap upgrade [VERSION] [--force] | --version | --paths | --docs | --search WORDS",
       );
       return 2;
   }

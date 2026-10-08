@@ -712,6 +712,7 @@ Deno.test("permission flags: parsed anywhere on the command line", async () => {
     "admin@gx10",
     "--allow-host=192.168.1.70,192.168.1.77",
     "--dangerously-skip-permissions",
+    "--allow-playbooks",
   ]);
   assertEquals(r.rest, ["--tui"]);
   assertEquals(r.perms, {
@@ -719,7 +720,9 @@ Deno.test("permission flags: parsed anywhere on the command line", async () => {
     hosts: ["admin@gx10", "192.168.1.70", "192.168.1.77"],
     allHosts: false,
     skip: true,
+    playbooks: true,
   });
+  assertEquals(parsePermissionFlags(["--tui"]).perms.playbooks, false);
   assertEquals(parsePermissionFlags(["--allow-all-hosts"]).perms.allHosts, true);
   let err = "";
   try {
