@@ -113,7 +113,11 @@ Deno.test("playbooks: written as memory, listed with what they do, searched, and
     assertStringIncludes(asked[0].what, "Bring GLM-5.3 Flash up");
     assertEquals(asked[0].kind, undefined, "a plain yes / no / always");
     assertStringIncludes(asked[0].key, script, "always holds only while the script is unchanged");
-    assertEquals(ran[0].cmd, `set -- 'a' 'b'\\''c'\n${script}`);
+    // Arguments as $1 $2 where the shell is POSIX (PowerShell hosts take the script as it is).
+    assertEquals(
+      ran[0].cmd,
+      Deno.build.os === "windows" ? script : `set -- 'a' 'b'\\''c'\n${script}`,
+    );
     assertEquals(ran[0].args.timeout_s, 600);
     assertEquals(ran[0].args.label, "playbook models/glm53flash/up");
 
