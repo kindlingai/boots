@@ -57,6 +57,7 @@ import {
   selectLines,
 } from "./readask.ts";
 import { isContextError } from "./compact.ts";
+import { outputHints } from "./hints.ts";
 import {
   applyProfile,
   describeProfile,
@@ -939,11 +940,8 @@ export class Session {
     );
     this.show(r);
     this.recent.clear();
-    const hint = /a terminal is required|a password is required|no tty present|askpass/i.test(
-        `${r.stdout}\n${r.stderr}`,
-      )
-      ? "\n[hint: sudo in the playbook wanted a password, which a playbook cannot type. Use sudo -n with a NOPASSWD rule for that command, or take the root step out and do it with the sudo tool.]"
-      : "";
+    const hint = outputHints("run_playbook", script, `${r.stdout}\n${r.stderr}`)
+      .map((h) => `\n[hint: ${h}]`).join("");
     return `playbook ${book}: ${this.render(r)}${hint}`;
   }
 
@@ -1455,25 +1453,8 @@ export class Session {
         this.show(r);
         // Only a read is pointless to repeat; anything else may have changed
         // what the next command sees.
-        if (
-          remote &&
-          /a terminal is required|a password is required|no tty present|askpass/i.test(
-            `${r.stdout}\n${r.stderr}`,
-          )
-        ) {
-          hints.push(
-            "sudo on the other machine wanted a password, which cannot be typed through ssh inside run. Use sudo -n there to fail fast, or do it machine by machine with the ssh tool and then the sudo tool (which handle the password).",
-          );
-        }
-        if (
-          /permission denied while trying to connect to the docker/i.test(
-            `${r.stdout}\n${r.stderr}`,
-          )
-        ) {
-          hints.push(
-            "docker refused this login. Check `getent group docker` and `id -nG`: if the user is in the group but this login is not, the login predates it: ssh_exit and ssh again (a fresh login), or run it as sg docker -c '<command>'. If they are not in it, adding them (usermod -aG docker <user>, with the sudo tool) is the user's call.",
-          );
-        }
+        // Hints by what came out (hints.json).
+        hints.push(...outputHints("run", cmd, `${r.stdout}\n${r.stderr}`));
         const hinted = hints.map((h) => `\n[hint: ${h}]`).join("");
         if (r.cancelled) return this.render(r) + hinted;
         if (verdict !== "readonly" || accepted || remote) {
@@ -1537,7 +1518,9 @@ export class Session {
         const r = await this.command("sudo", cmd, args, signal);
         this.show(r);
         if (!safeRead) this.recent.clear();
-        return this.render(r);
+        return this.render(r) +
+          outputHints("sudo", cmd, `${r.stdout}\n${r.stderr}`).map((h) => `\n[hint: ${h}]`)
+            .join("");
       }
       case "read_file":
         return await this.readFile(args, signal);

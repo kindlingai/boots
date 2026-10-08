@@ -1,0 +1,32 @@
+{
+  "$comment": "Hints that come back with a command's result when its output matches. Edit freely: each entry needs output (a regular expression, case-insensitive, matched against stdout and stderr) and hint (what the model is told, as [hint: ...]). Optional: tools (which tools it applies to: run, sudo, run_playbook; default all three) and command (a regular expression the command must match too). Checked by tests/hints_test.ts.",
+  "hints": [
+    {
+      "tools": ["run"],
+      "command": "\\bssh\\b[\\s\\S]*\\b(sudo|doas)\\b",
+      "output": "a terminal is required|a password is required|no tty present|askpass",
+      "hint": "sudo on the other machine wanted a password, which cannot be typed through ssh inside run. Use sudo -n there to fail fast, or do it machine by machine with the ssh tool and then the sudo tool (which handle the password)."
+    },
+    {
+      "tools": ["run_playbook"],
+      "output": "a terminal is required|a password is required|no tty present|askpass",
+      "hint": "sudo in the playbook wanted a password, which a playbook cannot type. Use sudo -n with a NOPASSWD rule for that command, or take the root step out and do it with the sudo tool."
+    },
+    {
+      "output": "permission denied while trying to connect to the docker",
+      "hint": "docker refused this login. Check `getent group docker` and `id -nG`: if the user is in the group but this login is not, the login predates it: ssh_exit and ssh again (a fresh login), or run it as sg docker -c '<command>'. If they are not in it, adding them (usermod -aG docker <user>, with the sudo tool) is the user's call."
+    },
+    {
+      "output": "address already in use|bind\\(\\) to .* failed|port is already allocated",
+      "hint": "the port is taken. See what holds it (ss -ltnp or lsof -i :<port>) before stopping anything; if it is one of the user's servers, ask first, or pick the free port listed under Where you are."
+    },
+    {
+      "output": "no space left on device",
+      "hint": "the disk is full. Look at what is using it (df -h, du -sh on the models folder and caches) and ask the user what may go; remove_downloads cleans up ai-bootstrap's own model downloads."
+    },
+    {
+      "output": "CUDA out of memory|cudaMalloc failed|out of memory allocating|failed to allocate .* (on device|buffer)",
+      "hint": "the GPU ran out of memory. Check what else holds it (nvidia-smi), then use a smaller quantization, a shorter context, fewer layers on the GPU, or a lower --gpu-memory-utilization."
+    }
+  ]
+}
