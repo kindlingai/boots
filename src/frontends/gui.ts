@@ -75,9 +75,16 @@ export type FromPage =
   | { t: "answer"; id: number; text: string }
   | { t: "steer"; text: string }
   | { t: "stop" }
-  | { t: "quit" }
+  /** `via: "key"` is ⌘Q/^Q, which asks twice while the model works. */
+  | { t: "quit"; via?: "key" }
   /** The picture asked for: a PNG in base64, or why there is none. */
   | { t: "shot"; id: number; data?: string; error?: string };
+
+/** How long a ⌘Q/^Q asked while busy stays answerable. Matches the Esc Esc window. */
+const QUIT_AGAIN_MS = 2000;
+
+/** What to call the quit key when asking again. */
+const QUIT_KEY = Deno.build.os === "darwin" ? "⌘Q" : "^Q";
 
 const ANSI = new RegExp(String.fromCharCode(27) + "\\[[0-9;?]*[A-Za-z]", "g");
 const plain = (s: string) => s.replace(ANSI, "");
@@ -101,6 +108,8 @@ export class GuiFrontend implements Frontend {
   private server: Deno.HttpServer | null = null;
   private window: Deno.ChildProcess | null = null;
   private closed = false;
+  /** When ⌘Q/^Q last asked to quit while busy; a second press inside the window ends it. */
+  private quitAskedAt = 0;
   private stateTimer: ReturnType<typeof setTimeout> | undefined;
   /** Pictures asked of the page (/screenshot), by id. */
   private shots = new Map<number, (r: { data?: string; error?: string }) => void>();
@@ -226,8 +235,14 @@ export class GuiFrontend implements Frontend {
         this.push("dim", "stopped");
         this.finish(null, new EscInterrupted());
       } else interruptNow("esc");
-    } else if (m.t === "quit") this.quit();
-    else if (m.t === "shot") this.shots.get(m.id)?.(m);
+    } else if (m.t === "quit") {
+      // ⌘Q sits next to ⌘W, so while the model works it asks once first, the
+      // way a browser does. The Quit button is a deliberate click: it does not.
+      if (m.via === "key" && this.busy && Date.now() - this.quitAskedAt > QUIT_AGAIN_MS) {
+        this.quitAskedAt = Date.now();
+        this.push("dim", `${QUIT_KEY} again to quit`);
+      } else this.quit();
+    } else if (m.t === "shot") this.shots.get(m.id)?.(m);
   }
 
   /**

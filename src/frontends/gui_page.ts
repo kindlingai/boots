@@ -425,6 +425,8 @@ $("input").addEventListener("keydown", (e) => {
   }
 });
 $("stop").onclick = stop;
+// The shortcut is worth knowing about; the button itself never asks twice.
+$("quit").title = /Mac/i.test(navigator.platform) ? "Quit (⌘Q)" : "Quit (Ctrl+Q)";
 $("quit").onclick = () => {
   $("quit").disabled = true;
   $("quit").textContent = "Quitting…";
@@ -473,6 +475,13 @@ document.addEventListener("keydown", (e) => {
     if (Date.now() < guardUntil) { e.preventDefault(); return; }
     const c = pr.choices.find((x) => x.key.toLowerCase() === e.key.toLowerCase());
     if (c) { e.preventDefault(); answer(c.key); return; }
+  }
+  // ⌘Q on macOS (where this window has no app menu to deliver it) and ^Q
+  // elsewhere. The host ends the run; while the model works it asks twice.
+  if ((e.metaKey || e.ctrlKey) && !e.altKey && /^q$/i.test(e.key)) {
+    e.preventDefault();
+    send({ t: "quit", via: "key" });
+    return;
   }
   if (e.metaKey && typeof window.__aibPaste === "function" && /^[vcxa]$/i.test(e.key)) {
     editKey(e);

@@ -117,4 +117,71 @@ Deno.test("the page's script parses, and handles ⌘V/⌘C/⌘X/⌘A when the ma
   // A stray escape in the template (a "\n" that became a newline) breaks it all.
   new Function(script);
   assert(script.includes("__aibPaste") && script.includes("__aibCopy"));
+  // ⌘Q/^Q reaches the host as a keyed quit, so it can ask twice while busy.
+  assertStringIncludes(script, `send({ t: "quit", via: "key" })`);
+});
+
+/** Waits for onQuit, or gives up so the assert says what happened. */
+async function quitted(seen: () => number): Promise<boolean> {
+  for (let i = 0; i < 40 && seen() === 0; i++) await new Promise((ok) => setTimeout(ok, 25));
+  return seen() > 0;
+}
+
+Deno.test("gui: ⌘Q quits at once when the model is not working", async () => {
+  let quit = 0;
+  const g = new GuiFrontend({ title: "t", onQuit: () => quit++ });
+  g.serve();
+  try {
+    const c = await connect(g);
+    await c.next("init");
+    c.send({ t: "quit", via: "key" });
+    assert(await quitted(() => quit), "nothing is running, so one press is enough");
+    assertEquals(quit, 1);
+    c.ws.close();
+  } finally {
+    g.close();
+  }
+});
+
+Deno.test("gui: while the model works, ⌘Q asks once and the next press quits", async () => {
+  let quit = 0;
+  const g = new GuiFrontend({ title: "t", onQuit: () => quit++ });
+  g.serve();
+  try {
+    const c = await connect(g);
+    await c.next("init");
+    g.emit({ type: "busy", label: "thinking" });
+    await c.next("state", (m) => m.state.busy);
+
+    c.send({ t: "quit", via: "key" });
+    const asked = await c.next("entry", (m) => /again to quit/.test(m.text));
+    assertEquals(asked.kind, "dim");
+    assertEquals(quit, 0, "one press while busy only asks");
+
+    c.send({ t: "quit", via: "key" });
+    assert(await quitted(() => quit), "the second press inside the window quits");
+    assertEquals(quit, 1);
+    c.ws.close();
+  } finally {
+    g.close();
+  }
+});
+
+Deno.test("gui: the Quit button is a deliberate click, so it never asks twice", async () => {
+  let quit = 0;
+  const g = new GuiFrontend({ title: "t", onQuit: () => quit++ });
+  g.serve();
+  try {
+    const c = await connect(g);
+    await c.next("init");
+    g.emit({ type: "busy", label: "thinking" });
+    await c.next("state", (m) => m.state.busy);
+
+    c.send({ t: "quit" });
+    assert(await quitted(() => quit), "the button quits even while busy");
+    assertEquals(quit, 1);
+    c.ws.close();
+  } finally {
+    g.close();
+  }
 });
