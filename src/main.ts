@@ -195,17 +195,36 @@ async function interactive(mode: UiMode, perms: Permissions = NO_PERMISSIONS): P
     }
   }
 
-  // ^C stops a model reply; outside one it quits. (At the prompt the
-  // terminal is raw, and the line reader sees ^C itself.)
-  const onSigint = () => {
-    if (!agent.interrupt()) {
-      llama?.stop();
+  // ^C stops a model reply; outside one it quits, and so does a second ^C
+  // within a few seconds (a turn that will not stop), or any ^C once the
+  // GUI's window is closed. (At the prompt the terminal is raw, and the
+  // line reader sees ^C itself.)
+  let lastSigint = 0;
+  let windowClosed = false;
+  const exitNow = (code: number) => {
+    llama?.stop();
+    try {
       frontend().close();
-      Deno.exit(130);
+    } catch {
+      // already closed
     }
+    Deno.exit(code);
+  };
+  const onSigint = () => {
+    const again = Date.now() - lastSigint < 3000;
+    lastSigint = Date.now();
+    if (windowClosed || again || !agent.interrupt()) exitNow(130);
+    else if (mode === "gui") console.error("stopping; ^C again to quit");
   };
   onInterrupt = onSigint;
-  onQuit = () => void agent.interrupt();
+  // The GUI's window closed (or Quit): stop what runs and end; if that
+  // does not happen in a few seconds, end anyway.
+  onQuit = () => {
+    windowClosed = true;
+    agent.interrupt();
+    // Unref'd: a clean end is not held up by it.
+    Deno.unrefTimer(setTimeout(() => exitNow(0), 10_000));
+  };
   setInterruptHandler((kind) => kind === "esc" ? void agent.interrupt() : onSigint());
   emit({
     type: "status",

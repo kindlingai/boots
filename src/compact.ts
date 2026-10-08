@@ -1,6 +1,7 @@
 // Compaction: when the conversation no longer fits the model, summarise the
 // older turns with the model itself and keep the last two turns verbatim.
 
+import { clipLines } from "./clip.ts";
 import { CONTEXT_TOO_LONG, LLMError, type Message } from "./llm.ts";
 import { splitTurns } from "./transcript.ts";
 
@@ -25,16 +26,11 @@ export function asText(msgs: Message[], perTool = 1500): string {
   }).join("\n");
 }
 
-/** Clips long tool output, the last resort when even recent turns do not fit. */
+/** Clips long tool output (by whole lines), the last resort when even recent turns do not fit. */
 export function clipTools(msgs: Message[], max = 3000): Message[] {
   return msgs.map((m) =>
     m.role === "tool" && m.content.length > max
-      ? {
-        ...m,
-        content: `${m.content.slice(0, max * 0.6)}\n...[output cut to fit the context]...\n${
-          m.content.slice(-max * 0.3)
-        }`,
-      }
+      ? { ...m, content: clipLines(m.content, max, 0.65, "cut to fit the context") }
       : m
   );
 }

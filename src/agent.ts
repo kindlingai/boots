@@ -21,6 +21,7 @@ import {
   tidy,
 } from "./frontend.ts";
 import { clipTools, compact, isContextError, SUMMARY_PROMPT } from "./compact.ts";
+import { clipLines } from "./clip.ts";
 import { Backoff } from "./backoff.ts";
 import { activeGoals, type Goal, normalizeGoals, parseGoals } from "./memory.ts";
 
@@ -82,12 +83,17 @@ let playbooks: { name: string; about: string }[] = [];
  */
 export function fit(history: Message[], budget: number, statuses: string[] = []): Message[] {
   const recent = 6;
+  // What each tool result answered: reads stay whole (they were read to be
+  // worked from) until the budget below has to drop them.
+  const calledAs = new Map<string, string>();
+  for (const m of history) {
+    for (const c of m.tool_calls ?? []) calledAs.set(c.id, c.function.name);
+  }
+  const READS = new Set(["read_file", "memory_read"]);
   let msgs = history.map((m, i) =>
-    m.role === "tool" && i < history.length - recent && m.content.length > 600
-      ? {
-        ...m,
-        content: `${m.content.slice(0, 300)}\n...[older output cut]...\n${m.content.slice(-200)}`,
-      }
+    m.role === "tool" && i < history.length - recent && m.content.length > 600 &&
+      !READS.has(calledAs.get(m.tool_call_id ?? "") ?? "")
+      ? { ...m, content: clipLines(m.content, 500, 0.6, "older output cut") }
       : m
   );
   // Measured as sent (JSON: quotes and newlines escaped, field names), so the
@@ -387,7 +393,10 @@ export class Agent {
         ],
         [],
         {},
-        AbortSignal.timeout(this.s.router.current().profile?.timeouts?.nonThinkingMs ?? 45_000),
+        AbortSignal.any([
+          (this.abort = new AbortController()).signal,
+          AbortSignal.timeout(this.s.router.current().profile?.timeouts?.nonThinkingMs ?? 45_000),
+        ]),
       );
       const text = tidy(r.content.replace(/<think>[\s\S]*?<\/think>/g, ""));
       if (!text) return null;
@@ -406,6 +415,7 @@ export class Agent {
       // A summary is a nicety: never in the way of the work.
       return null;
     } finally {
+      this.abort = null;
       this.s.router.thinkingOffOnce = false;
       spin.stop();
     }
@@ -476,10 +486,27 @@ export class Agent {
     say("[interrupted]", "dim");
   }
 
-  /** Stops a model reply or a running tool. False when no turn is running. */
+  /**
+   * Stops a model reply or a running tool, and the turn at its next step
+   * (whatever runs between steps: a summary, a check). False when no turn
+   * is running.
+   */
   interrupt(): boolean {
+    if (this.busy) this.stopRequested = true;
     this.abort?.abort();
     return this.busy;
+  }
+
+  /** Stop was asked for while this turn runs. */
+  private stopRequested = false;
+
+  /** Ends the turn where it stands after a stop between steps. */
+  private stoppedBetweenSteps(): boolean {
+    if (!this.stopRequested) return false;
+    this.interrupted = true;
+    say("[interrupted]", "dim");
+    this.push({ role: "user", content: "(the user stopped you)" });
+    return true;
   }
 
   /** The system prompt as it stands now (it depends on which model is answering). */
@@ -556,6 +583,7 @@ export class Agent {
   async turn(userText: string): Promise<void> {
     this.busy = true;
     this.interrupted = false;
+    this.stopRequested = false;
     try {
       await this.steps(userText);
     } finally {
@@ -588,7 +616,9 @@ export class Agent {
     for (let step = 0; step < maxSteps; step++) {
       this.stepCount++;
       this.expireStatus();
+      if (this.stoppedBetweenSteps()) return;
       await this.maybeUpdate();
+      if (this.stoppedBetweenSteps()) return;
       // What the user typed while the model worked: after the last tool results.
       if (step > 0) this.absorbSteering();
       this.abort = new AbortController();
@@ -634,6 +664,12 @@ export class Agent {
           },
           reasoning: (t) => {
             if (Deno.env.get("AIBOOT_SHOW_THINKING")) say(t, "dim");
+          },
+          // What it is writing, while it writes it: shown in the status and bubble.
+          tool: (name) => {
+            if (name !== "update_status" && name !== "reply") {
+              spin.update(`writing ${toolLabel(name)}`);
+            }
           },
         }, this.abort.signal);
       } catch (e) {
@@ -863,6 +899,22 @@ export class Agent {
       }
     }
   }
+}
+
+/** How a tool being written is named on screen ("writing a command"). */
+export function toolLabel(name: string): string {
+  const words: Record<string, string> = {
+    run: "a command",
+    sudo: "a root command",
+    write_file: "a file",
+    read_file: "a file read",
+    ssh: "an ssh connection",
+    plan: "the plan",
+    memory_write: "a memory",
+    run_playbook: "a playbook run",
+    json_eval: "a memory edit",
+  };
+  return words[name] ?? `a ${name.replace(/_/g, " ")} call`;
 }
 
 /** Tools that switch the model in use. */

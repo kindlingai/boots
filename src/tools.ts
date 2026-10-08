@@ -58,6 +58,7 @@ import {
 } from "./readask.ts";
 import { isContextError } from "./compact.ts";
 import { outputHints } from "./hints.ts";
+import { clipLines } from "./clip.ts";
 import {
   applyProfile,
   describeProfile,
@@ -1102,9 +1103,7 @@ export class Session {
   }
 
   private clip(s: string): string {
-    const n = this.limit();
-    if (s.length <= n) return s;
-    return `${s.slice(0, n / 2)}\n...[${s.length - n} chars cut]...\n${s.slice(-n / 2)}`;
+    return clipLines(s, this.limit());
   }
 
   private render(r: ExecResult): string {
@@ -1255,6 +1254,7 @@ export class Session {
   private async check(
     cmd: string,
     root = false,
+    signal?: AbortSignal,
   ): Promise<{ verdict: Verdict | null; checked: boolean; culprit?: string }> {
     // bash -c '...' is checked as its script, and a loop over literal words
     // as the commands it runs.
@@ -1265,9 +1265,10 @@ export class Session {
     const rootWrite = root && !!scratch && unrolled.includes(scratch);
     if (!rootWrite && isReadonly(unrolled)) return { verdict: "readonly", checked: false };
     const spin = spinner("checking the command");
-    const verdict = await this.classifier.classify(unrolled, this.here.info.osName, root).finally(
-      () => spin.stop(),
-    );
+    const verdict = await this.classifier.classify(unrolled, this.here.info.osName, root, signal)
+      .finally(
+        () => spin.stop(),
+      );
     if (verdict === "complex") {
       const n = (this.complexTries.get(cmd) ?? 0) + 1;
       this.complexTries.set(cmd, n);
@@ -1477,7 +1478,8 @@ export class Session {
         ];
         const single = new Set(targets.map(sshHost)).size === 1;
         const sshKey = single ? `${loc}\0${sshHost(targets[0])}` : "";
-        const { verdict, checked, culprit } = await this.check(cmd);
+        const { verdict, checked, culprit } = await this.check(cmd, false, signal);
+        if (signal?.aborted) return "not run: the user interrupted";
         // Hints that come back with the result: they steer, they do not refuse.
         const hints: string[] = elsewhere ? [elsewhere] : [];
         if (sshKey && verdict !== "readonly" && (this.manualSsh.get(sshKey) ?? 0) >= MANUAL_SSH) {
@@ -1578,7 +1580,8 @@ export class Session {
         }
         // Root always asks; the check (told it runs as root) still catches the
         // complex and the dangerous.
-        const { verdict, checked, culprit } = await this.check(cmd, true);
+        const { verdict, checked, culprit } = await this.check(cmd, true, signal);
+        if (signal?.aborted) return "not run: the user interrupted";
         let accepted = false;
         if (verdict === "complex") {
           say(commandLine(this.where(), "#", cmd) + yellow("  (too complex to check)"));

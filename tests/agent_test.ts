@@ -753,3 +753,54 @@ Deno.test("a model switch runs only as the reply's only call", async () => {
     await done();
   }
 });
+
+Deno.test("older output is cut by whole lines, but reads stay whole", async () => {
+  const { fit } = await import("../src/agent.ts");
+  const file = Array.from({ length: 60 }, (_, i) => `line ${i + 1}: ${"x".repeat(40)}`).join("\n");
+  const history: any[] = [
+    { role: "user", content: "go" },
+    {
+      role: "assistant",
+      content: "",
+      tool_calls: [
+        { id: "r1", type: "function", function: { name: "read_file", arguments: "{}" } },
+        { id: "r2", type: "function", function: { name: "run", arguments: "{}" } },
+      ],
+    },
+    { role: "tool", tool_call_id: "r1", content: file },
+    { role: "tool", tool_call_id: "r2", content: file },
+    ...Array.from(
+      { length: 8 },
+      (_, i) => ({ role: i % 2 ? "assistant" : "user", content: `m${i}` }),
+    ),
+  ];
+  const out = fit(history, 1e6);
+  assertEquals(out[2].content, file, "the read, whole");
+  const run = out[3].content as string;
+  assertStringIncludes(run, "older output cut]...");
+  for (const l of run.split("\n")) {
+    assert(l.startsWith("line ") || l.startsWith("...["), `a whole line: ${l}`);
+  }
+});
+
+Deno.test("while the model writes a tool call, the status says what it is writing", async () => {
+  const { setFrontend } = await import("../src/frontend.ts");
+  const labels: string[] = [];
+  setFrontend({
+    emit(e) {
+      if (e.type === "busy" && e.label) labels.push(e.label);
+    },
+    readLine: () => Promise.resolve(null),
+    close() {},
+  });
+  const { agent, done } = await session("gpt-oss-120b", [
+    { calls: [{ name: "memory_read", args: { name: "fleet.json" } }] },
+    { content: "ok" },
+  ]);
+  try {
+    await agent.turn("look");
+    assert(labels.includes("writing a memory read call"), labels.join(" | "));
+  } finally {
+    await done();
+  }
+});

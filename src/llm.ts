@@ -167,6 +167,8 @@ export interface StreamSink {
   reasoning?: (s: string) => void;
   /** Each streamed chunk (text, thinking or tool-call arguments): about one token. */
   token?: () => void;
+  /** A tool call has begun streaming (its name, as soon as it is known). */
+  tool?: (name: string) => void;
 }
 
 /**
@@ -502,6 +504,7 @@ export async function chat(
     if (content) sink.content?.(content);
   } else {
     let shown = 0;
+    let textTool = "";
     const lines = r.body!.pipeThrough(new TextDecoderStream()).pipeThrough(new TextLineStream());
     for await (const raw of lines) {
       const line = raw.trim();
@@ -536,12 +539,24 @@ export async function chat(
           sink.content?.(visible.slice(shown));
           shown = visible.length;
         }
+        // A tool call written as text (<tool_call>{"name": ...): named once it is.
+        if (!calls.length && !textTool && content.includes("<tool_call>")) {
+          const m = content.slice(content.indexOf("<tool_call>")).match(/"name"\s*:\s*"([\w.-]+)"/);
+          if (m) {
+            textTool = m[1];
+            sink.tool?.(m[1]);
+          }
+        }
       }
       for (const tc of d.tool_calls ?? []) {
         const i = tc.index ?? calls.length;
         calls[i] ??= { id: "", type: "function", function: { name: "", arguments: "" } };
         if (tc.id) calls[i].id = tc.id;
-        if (tc.function?.name) calls[i].function.name += tc.function.name;
+        if (tc.function?.name) {
+          const first = !calls[i].function.name;
+          calls[i].function.name += tc.function.name;
+          if (first) sink.tool?.(calls[i].function.name);
+        }
         if (tc.function?.arguments) calls[i].function.arguments += tc.function.arguments;
       }
     }

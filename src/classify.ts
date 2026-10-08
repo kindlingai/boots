@@ -228,7 +228,13 @@ export class Classifier {
    * worst stage. A line that cannot be split safely (substitution, a
    * here-document, a redirect into a file) is asked about whole.
    */
-  async classify(cmd: string, os: string, root = false): Promise<Verdict | null> {
+  /** `signal`: stops the check (Stop, ^C), which then judges nothing (null). */
+  async classify(
+    cmd: string,
+    os: string,
+    root = false,
+    signal?: AbortSignal,
+  ): Promise<Verdict | null> {
     if (Deno.env.get("AIBOOT_CHECK") === "0") return null;
     this.culprits.delete(cmd);
     const st = stages(cmd);
@@ -236,7 +242,7 @@ export class Classifier {
     if (st && st.length === 1 && runsScript(st[0])) return "unknown";
     if (!st || st.length < 2 || st.some((t) => SHELL_KEYWORDS.has(t[0]))) {
       if (cmd.length > MAX_LEN) return "complex";
-      return await this.ask(cmd, os, null, root);
+      return await this.ask(cmd, os, null, root, signal);
     }
     if (pipesDownloadIntoShell(st)) return "dangerous";
     if (st.length > MAX_STAGES || cmd.length > MAX_LEN * 3) return "complex";
@@ -249,7 +255,7 @@ export class Classifier {
       const seg = toks.map(shellQuote).join(" ");
       if (runsScript(toks)) return { v: "unknown", seg };
       if (seg.length > MAX_LEN) return "complex";
-      return { v: await this.ask(seg, os, cmd, root), seg };
+      return { v: await this.ask(seg, os, cmd, root, signal), seg };
     }));
     if (judged.includes("complex")) return "complex";
     let worst: Verdict = "readonly";
@@ -278,7 +284,9 @@ export class Classifier {
     os: string,
     whole: string | null,
     root = false,
+    signal?: AbortSignal,
   ): Promise<Verdict | null> {
+    if (signal?.aborted) return null;
     await this.load();
     const ep = this.model();
     const key = `${ep.model}\0${PROMPT_ID}\0${os}\0${root ? "root\0" : ""}${cmd}`;
@@ -291,7 +299,7 @@ export class Classifier {
     }
     const pending = this.asking.get(key);
     if (pending) return await pending;
-    const p = this.question(ep, key, cmd, os, whole, root);
+    const p = this.question(ep, key, cmd, os, whole, root, signal);
     this.asking.set(key, p);
     try {
       return await p;
@@ -307,6 +315,7 @@ export class Classifier {
     os: string,
     whole: string | null,
     root: boolean,
+    signal?: AbortSignal,
   ): Promise<Verdict | null> {
     const context = whole
       ? `\nIt is one stage of this command line (judge only the stage; the other stages are checked separately):\n\`\`\`\n${whole}\n\`\`\``
@@ -327,7 +336,9 @@ export class Classifier {
         ],
         [],
         {},
-        AbortSignal.timeout(30_000),
+        signal
+          ? AbortSignal.any([signal, AbortSignal.timeout(30_000)])
+          : AbortSignal.timeout(30_000),
         0,
       );
       const v = parseVerdict(r.content);
