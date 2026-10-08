@@ -813,3 +813,74 @@ Deno.test("the ssh tool connects with a named key (ssh -i)", async () => {
     await Deno.remove(dir, { recursive: true });
   }
 });
+
+Deno.test("scratch is per machine: a stale long path is moved here; a file written elsewhere is pointed out", async () => {
+  const { Router } = await import("../src/llm.ts");
+  const { Memory } = await import("../src/memory.ts");
+  const { McpManager } = await import("../src/mcp.ts");
+  const { Session, remapScratch } = await import("../src/tools.ts");
+  assertEquals(
+    remapScratch("/tmp/boots-scratch-old1/mesh.sh", "/tmp/boots-scratch-new2"),
+    "/tmp/boots-scratch-new2/mesh.sh",
+  );
+  assertEquals(remapScratch("/tmp/boots-scratch-new2/mesh.sh", "/tmp/boots-scratch-new2"), null);
+  assertEquals(remapScratch("/tmp/boots-scratch-old1/../etc/x", "/tmp/boots-scratch-new2"), null);
+  assertEquals(remapScratch("/etc/hosts", "/tmp/boots-scratch-new2"), null);
+  const dir = await Deno.makeTempDir();
+  try {
+    const s = new Session(
+      new Router({ label: "m", baseUrl: "http://127.0.0.1:9/v1", model: "m", contextChars: 1e4 }),
+      new Memory(`${dir}/mem`),
+      new McpManager(`${dir}/mcp.json`),
+      () => Promise.resolve(null),
+    );
+    await s.init();
+    const scratch = s.here.info.scratch!;
+    const ran: string[] = [];
+    (s as any).command = (_op: string, cmd: string) => {
+      ran.push(cmd);
+      return Promise.resolve({ code: 0, stdout: "ok\n", stderr: "", cmd });
+    };
+    (s as any).always = { has: () => true, add() {} };
+    (s as any).check = () => Promise.resolve({ verdict: "writes", checked: true });
+    // The long name of an earlier connection's scratch: written into this one, unasked.
+    const w = await s.exec("write_file", {
+      path: "/tmp/boots-scratch-0ldc0nnect10n/mesh-check2.sh",
+      content: "hostname\n",
+    });
+    assertStringIncludes(w, `${scratch}/mesh-check2.sh`);
+    assertStringIncludes(w, "not this machine's scratch");
+    assertEquals(await Deno.readTextFile(`${scratch}/mesh-check2.sh`), "hostname\n");
+    // Running a stale long path: not run, with the path here.
+    const stale = await s.exec("run", { command: "bash /tmp/boots-scratch-0ldc0nnect10n/x.sh" });
+    assertStringIncludes(stale, "Not run");
+    assertStringIncludes(stale, `$BOOTS_SCRATCH is ${scratch}`);
+    // A file written here runs here.
+    await s.exec("write_file", { path: "$BOOTS_SCRATCH/deploy-key.sh", content: "true\n" });
+    assertStringIncludes(
+      await s.exec("run", { command: "bash $BOOTS_SCRATCH/deploy-key.sh" }),
+      "exit 0",
+    );
+    // On another machine (here: the same one, reached anew), it is not there.
+    (s as any).stack.push({
+      label: "admin@gx10-efcd",
+      via: ["1"],
+      info: { ...s.here.info, scratch: "/tmp/boots-scratch-efcd" },
+    });
+    const there = await s.exec("run", { command: "bash $BOOTS_SCRATCH/deploy-key.sh" });
+    assertStringIncludes(there, "Not run");
+    assertStringIncludes(there, "deploy-key.sh was written to the scratch directory on local");
+    assertStringIncludes(there, "write_file it here first");
+    // Made by the command itself: fine.
+    assertStringIncludes(
+      await s.exec("run", { command: "ls > $BOOTS_SCRATCH/deploy-key.sh; cat $BOOTS_SCRATCH/out" }),
+      "exit 0",
+    );
+    assertEquals(ran, [
+      "bash $BOOTS_SCRATCH/deploy-key.sh",
+      "ls > $BOOTS_SCRATCH/deploy-key.sh; cat $BOOTS_SCRATCH/out",
+    ]);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});

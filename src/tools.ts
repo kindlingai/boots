@@ -341,6 +341,22 @@ const QUIET_TOOLS: Record<string, (a: any) => string> = {
  * A path in the scratch directory: $BOOTS_SCRATCH/..., or under its real
  * path, and without "..". (The host checks again, symlinks resolved.)
  */
+/** A scratch path written out: $BOOTS_SCRATCH/x, or a boots-scratch-… directory's x. */
+const SCRATCH_REF =
+  /(\$\{?BOOTS_SCRATCH\}?|(?:\/private)?\/tmp\/boots-scratch-[A-Za-z0-9_]+)\/([\w.\-]+(?:\/[\w.\-]+)*)/g;
+
+/**
+ * A path under some boots-scratch directory that is not `scratch` (another
+ * machine's, or an earlier connection's): the same name under `scratch`.
+ */
+export function remapScratch(path: string, scratch?: string): string | null {
+  if (!scratch) return null;
+  const m = path.match(/^(?:\/private)?(\/tmp\/boots-scratch-[A-Za-z0-9_]+)\/(.+)$/);
+  if (!m || scratch.replace(/[\\/]$/, "").endsWith(m[1])) return null;
+  if (/(^|[\\/])\.\.([\\/]|$)/.test(m[2])) return null;
+  return `${scratch.replace(/[\\/]$/, "")}/${m[2]}`;
+}
+
 export function inScratch(path: string, scratch?: string): boolean {
   if (/(^|[\\/])\.\.([\\/]|$)/.test(path)) return false;
   if (/^\$\{?BOOTS_SCRATCH\}?\/[^/]/.test(path)) return true;
@@ -886,6 +902,52 @@ export class Session {
   /** Machines already reached with ssh inside run, per location: the next one is refused. */
   /** Commands by hand (ssh inside run) to each machine, from each location. */
   private manualSsh = new Map<string, number>();
+  /** Files written into a scratch directory: the name, and where it was written. */
+  private scratchFiles = new Map<string, Set<string>>();
+
+  private noteScratch(path: string): void {
+    const name = path.replace(/^.*?(\$\{?BOOTS_SCRATCH\}?|boots-scratch-[A-Za-z0-9_]+)\//, "");
+    const where = this.scratchFiles.get(name) ?? new Set();
+    // A connection is a new scratch: keyed by its directory, not only the place.
+    where.add(`${this.where()}\0${this.here.info.scratch ?? ""}`);
+    this.scratchFiles.set(name, where);
+  }
+
+  /**
+   * A command that uses a scratch file that is not here: a path into another
+   * machine's (or an earlier connection's) scratch directory, or a file
+   * written into the scratch of another machine only. Null when fine.
+   */
+  private scratchElsewhere(cmd: string): string | null {
+    const here = this.here.info.scratch?.replace(/[\\/]$/, "");
+    const key = `${this.where()}\0${here ?? ""}`;
+    for (const m of cmd.matchAll(SCRATCH_REF)) {
+      const [whole, dir, name] = m;
+      // Made by this very command (cmd > $BOOTS_SCRATCH/x): not looked for.
+      const at = m.index ?? 0;
+      if (
+        />{1,2}\s*["']?$/.test(cmd.slice(0, at)) || /\btee\s+(-a\s+)?["']?$/.test(cmd.slice(0, at))
+      ) {
+        continue;
+      }
+      if (!dir.startsWith("$") && here && !here.endsWith(dir.replace(/^\/private/, ""))) {
+        return `${dir} is not the scratch directory here: it is another machine's, or an earlier connection's (each connection gets a new one, removed when it ends). On ${this.where()}, $BOOTS_SCRATCH is ${here}. Use $BOOTS_SCRATCH/${name}, and write the file there first if it is not there yet.`;
+      }
+      const written = this.scratchFiles.get(name);
+      if (written && !written.has(key)) {
+        const places = [...written].map((w) => w.split("\0")[0]);
+        return `${name} was written to the scratch directory on ${
+          [...new Set(places)].join(", ")
+        }, not here: every machine (and every connection) has its own $BOOTS_SCRATCH. On ${this.where()} it is ${
+          here ?? "$BOOTS_SCRATCH"
+        }, and ${
+          whole.replace(dir, "$BOOTS_SCRATCH")
+        } is not there. write_file it here first, then run it.`;
+      }
+    }
+    return null;
+  }
+
   /** The root half of a split sudo-inside-run, until the sudo tool runs. */
   private pendingRoot: { loc: string; root: string } | null = null;
 
@@ -1070,6 +1132,12 @@ export class Session {
           say(yellow("    not run: the same command again"));
           return again;
         }
+        const elsewhere = this.scratchElsewhere(cmd);
+        if (elsewhere) {
+          say(commandLine(loc, "$", cmd));
+          say(yellow(`    not run: ${elsewhere.split(":")[0]}`));
+          return `Not run: ${elsewhere}`;
+        }
         const refused = refuseInRun(cmd);
         if (refused) {
           say(commandLine(loc, "$", cmd));
@@ -1221,6 +1289,10 @@ export class Session {
         const what = `${cyan(this.where())} write ${
           bold(String(args.path))
         } (${content.length} bytes${args.mode ? `, mode ${args.mode}` : ""})`;
+        // Another machine's scratch, or an earlier connection's (each is new
+        // per connection, and removed when it ends): the scratch here.
+        const moved = remapScratch(String(args.path ?? ""), this.here.info.scratch);
+        if (moved) args = { ...args, path: moved };
         // The scratch directory is the model's to write: no question (the
         // host makes sure the file really lands inside it).
         const scratch = inScratch(String(args.path ?? ""), this.here.info.scratch);
@@ -1241,7 +1313,16 @@ export class Session {
           mode: args.mode,
           scratch,
         });
-        return `wrote ${r.bytes} bytes to ${r.path}`;
+        if (scratch) this.noteScratch(String(args.path));
+        return `wrote ${r.bytes} bytes to ${r.path}${
+          moved
+            ? ` (not the path you gave: that is not this machine's scratch, so it went into the scratch here, $BOOTS_SCRATCH = ${this.here.info.scratch})`
+            : ""
+        }${
+          scratch
+            ? `. It is on ${this.where()} only: every machine has its own $BOOTS_SCRATCH.`
+            : ""
+        }`;
       }
       case "ssh": {
         const dest = String(args.destination);

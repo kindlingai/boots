@@ -186,6 +186,7 @@ Deno.test("reads reported as asking: systemctl verbs, timeout, awk, python arith
     "systemctl --no-pager --user status mentatd",
     'crontab -l 2>&1 | grep -in spark; ls ~/.config/systemd/user/ 2>/dev/null; grep -rIl spark_ed25519 ~/.config/systemd ~/.bashrc ~/.profile ~/.bash_aliases 2>/dev/null; echo "checks done"',
     "crontab -u admin -l",
+    "ssh -vv -o BatchMode=yes -o ConnectTimeout=5 admin@gx10-9722 hostname 2>&1 | grep -E 'Offering public key|send_pubkey|Authentications|publickey' | head -10",
     "ls ~; ls ~/compose-tf-batch 2>/dev/null | head; ls ~/*.sh 2>/dev/null; systemctl is-active mentatd 2>/dev/null; systemctl --user is-active mentatd 2>/dev/null",
     `timeout 25 ssh -o BatchMode=yes -o ConnectTimeout=6 admin@192.168.1.36 'hostname; ls -d /srv/models/glm-*; pgrep -c mentatd; docker ps --format "{{.Names}} {{.Status}}" 2>/dev/null | head -6'; echo ===93`,
     `free -g | awk "NR==2{print \\$2\\" GB RAM\\"}"`,

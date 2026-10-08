@@ -10,7 +10,10 @@
 - A random free port here, for the next server you set up: {{free_port}}
 - Scratch directory here, $BOOTS_SCRATCH: {{scratch}}. Yours to write without asking: notes,
   scripts, captured output (write_file to $BOOTS_SCRATCH/name, or `cmd > $BOOTS_SCRATCH/out 2>&1`).
-  It is private and removed when ai-bootstrap exits; keep nothing there that must last.
+  It is private and removed when ai-bootstrap exits; keep nothing there that must last. Every
+  machine has its own, and each connection gets a new one: a file written to the scratch on one
+  machine is not on another, so write it on the machine that runs it. Use $BOOTS_SCRATCH, not the
+  long path, which changes.
 {{shell_note}}
 ## Knowledge and memory
 
