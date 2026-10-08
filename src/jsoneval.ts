@@ -14,10 +14,18 @@ export interface EvalResult {
   error?: string;
 }
 
+/** The child's first line: loaded and waiting for the code. */
+const READY = "json-eval-ready";
+
+/** Loading the sandbox (from source, on a slow machine) may take this long. */
+const START_MS = 60_000;
+
 const PERMISSIONS = ["read", "write", "net", "env", "run", "ffi", "sys", "import"] as const;
 
 /** The child: reads {json, input, code} on stdin, writes an EvalResult on stdout. */
 export async function jsonEvalMain(): Promise<number> {
+  // Started: the caller's time limit is for the code, not for loading this.
+  Deno.stdout.writeSync(new TextEncoder().encode(`${READY}\n`));
   const req = JSON.parse(await new Response(Deno.stdin.readable).text());
   for (const name of PERMISSIONS) Deno.permissions.revokeSync({ name });
   const logs: string[] = [];
@@ -67,31 +75,55 @@ export async function jsonEval(
     return { logs: [], error: `could not start the sandbox: ${(e as Error).message}` };
   }
   // Windows reports no signal for a killed process, so remember that we killed it.
-  let timedOut = false;
-  const timer = setTimeout(() => {
-    timedOut = true;
+  let timedOut: "start" | "code" | null = null;
+  const kill = (why: "start" | "code") => {
+    timedOut = why;
     try {
       p.kill("SIGKILL");
     } catch {
       // gone
     }
-  }, timeoutMs);
+  };
+  let timer = setTimeout(() => kill("start"), START_MS);
+  const stderr = new Response(p.stderr).text();
   try {
-    const w = p.stdin.getWriter();
-    await w.write(new TextEncoder().encode(JSON.stringify({ json, input, code })));
-    await w.close();
-    const o = await p.output();
-    const text = new TextDecoder().decode(o.stdout).trim().split("\n").at(-1) ?? "";
-    if (!o.success || !text) {
+    // Wait for the child to say it is loaded; only then does the clock start.
+    const reader = p.stdout.pipeThrough(new TextDecoderStream()).getReader();
+    let out = "";
+    while (!out.includes("\n")) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      out += value;
+    }
+    if (out.split("\n")[0].trim() === READY) {
+      clearTimeout(timer);
+      timer = setTimeout(() => kill("code"), timeoutMs);
+      const w = p.stdin.getWriter();
+      await w.write(new TextEncoder().encode(JSON.stringify({ json, input, code })));
+      await w.close();
+    } else {
+      await p.stdin.close().catch(() => {});
+    }
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      out += value;
+    }
+    const status = await p.status;
+    const text = out.trim().split("\n").filter((l) => l.trim() !== READY).at(-1) ?? "";
+    if (!status.success || !text) {
       return {
         logs: [],
-        error: timedOut
+        error: timedOut === "code"
           ? `timed out after ${timeoutMs / 1000}s (an endless loop?)`
-          : `the sandbox failed: ${new TextDecoder().decode(o.stderr).trim().slice(-500)}`,
+          : timedOut === "start"
+          ? `the sandbox did not start within ${START_MS / 1000}s`
+          : `the sandbox failed: ${(await stderr).trim().slice(-500)}`,
       };
     }
     return JSON.parse(text) as EvalResult;
   } finally {
     clearTimeout(timer);
+    await stderr.catch(() => "");
   }
 }

@@ -104,3 +104,14 @@ Deno.test("json_eval edits goals.json, and its shape is enforced", async () => {
     await Deno.remove(dir, { recursive: true });
   }
 });
+
+Deno.test("json_eval: the time limit is for the code, not for loading the sandbox", async () => {
+  // Loading takes far longer than 50ms (more on a slow machine); the code does not.
+  const t0 = Date.now();
+  const r = await jsonEval({ n: 1 }, null, "json.n++", 50);
+  assertEquals(r.error, undefined);
+  assertEquals(r.json, { n: 2 });
+  assert(Date.now() - t0 > 50, "loading took longer than the limit");
+  const loop = await jsonEval({}, null, "while (true) {}", 50);
+  assertStringIncludes(loop.error ?? "", "timed out after 0.05s");
+});
