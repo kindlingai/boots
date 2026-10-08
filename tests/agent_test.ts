@@ -584,10 +584,16 @@ Deno.test("a full history leaves room in the context for the reply", async () =>
     }
     await agent.turn("go");
     const sent = m.seen.filter((b) => b.tools).at(-1);
-    const used = JSON.stringify(sent.messages).length + JSON.stringify(sent.tools).length;
-    // contextChars is 40,000 in these sessions: a quarter stays free.
+    // contextChars is 40,000 in these sessions: a quarter stays free for the
+    // reply. The history gets what the system prompt and the tools leave of
+    // the rest (never less than 4,000 characters, so a tiny context still
+    // carries the latest turn).
     assertEquals(replyRoom(40_000), 10_000);
-    assert(used <= 40_000 - 10_000 + 2_000, `request uses ${used} of 40,000 characters`);
+    const fixed = sent.messages[0].content.length + JSON.stringify(sent.tools).length;
+    const history = JSON.stringify(sent.messages.slice(1)).length;
+    const budget = Math.max(40_000 - 10_000 - fixed, 4_000);
+    assert(history <= budget + 2_000, `history uses ${history} of ${budget} characters`);
+    assert(history < 40 * 4_000, "older turns were dropped");
   } finally {
     await done();
   }

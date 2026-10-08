@@ -25,8 +25,8 @@ Find out why it failed, and get it running again.
 
 1. Open by telling the user, in two or three sentences, that the full model did not start, and give
    your best diagnosis from the lines above. Then ask whether you may investigate.
-2. Investigate with read-only commands and read_file: the script itself, more of the log (tail,
-   grep), and the usual causes: GPU memory already taken by another process, a full disk, the port
+2. Investigate with read-only commands and read_file: the script itself, more of the log
+   (read_file with pattern, or ask, e.g. ask="why did the server exit?"), and the usual causes: GPU memory already taken by another process, a full disk, the port
    already in use, a driver or CUDA mismatch after an update, model files missing or moved, a
    container image that is gone, a missing environment variable or key. Search the knowledge base
    (memory_search) for the server it runs, and read memory for how it was set up.

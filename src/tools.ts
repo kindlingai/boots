@@ -49,6 +49,15 @@ import {
 import { Classifier, type Verdict } from "./classify.ts";
 import { jsonEval } from "./jsoneval.ts";
 import {
+  type Answerer,
+  askFile,
+  numbered,
+  type Pick,
+  type Selection,
+  selectLines,
+} from "./readask.ts";
+import { isContextError } from "./compact.ts";
+import {
   applyProfile,
   describeProfile,
   loadProfile,
@@ -449,6 +458,9 @@ const fn = (
 });
 const str = (description: string) => ({ type: "string", description });
 
+/** How much of a file a narrowed read (range, pattern, ask) goes through. */
+const READ_MAX_BYTES = 16 * 1024 * 1024;
+
 export const TOOLS: ToolDef[] = [
   fn(
     "run",
@@ -472,9 +484,19 @@ export const TOOLS: ToolDef[] = [
     },
     ["command"],
   ),
-  fn("read_file", "Read a text file on the current host.", {
-    path: str("path; relative paths use the current directory"),
-  }, ["path"]),
+  fn(
+    "read_file",
+    "Read a text file on the current host. For a big one (a log), narrow it with the line range and pattern, and/or ask: a separate reading answers the question and only the answer (with line numbers) comes back.",
+    {
+      path: str("path; relative paths use the current directory"),
+      start_line: { type: "integer", description: "first line (1-based)" },
+      end_line: { type: "integer", description: "last line" },
+      pattern: str("regex: only matching lines, e.g. '(?i)error|fail'"),
+      context: { type: "integer", description: "lines kept around each match" },
+      ask: str("a question about those lines, e.g. 'why did the server stop?'"),
+    },
+    ["path"],
+  ),
   fn(
     "write_file",
     "Create or overwrite a file on the current host with exactly this content (asks the user). Parent directories are created.",
@@ -805,6 +827,93 @@ export class Session {
 
   where(): string {
     return this.stack.map((l) => l.label).join(" > ");
+  }
+
+  /**
+   * read_file: the file, or the lines picked from it (a range, a pattern),
+   * or, with `ask`, the answers of a separate reading of them (readask.ts).
+   */
+  private async readFile(args: any, signal?: AbortSignal): Promise<string> {
+    const num = (v: unknown) => (v === undefined || v === null || v === "" ? undefined : Number(v));
+    const pick: Pick = {
+      start_line: num(args.start_line),
+      end_line: num(args.end_line),
+      pattern: args.pattern ? String(args.pattern) : undefined,
+      context: num(args.context),
+    };
+    const question = String(args.ask ?? "").trim();
+    const narrowed = pick.start_line !== undefined || pick.end_line !== undefined || !!pick.pattern;
+    const bits = [
+      narrowed
+        ? [
+          pick.start_line || pick.end_line
+            ? `lines ${pick.start_line ?? 1}-${pick.end_line ?? "end"}`
+            : "",
+          pick.pattern ? `/${pick.pattern}/` : "",
+        ].filter(Boolean).join(" ")
+        : "",
+      question ? `asking: ${question}` : "",
+    ].filter(Boolean).join(", ");
+    say(`${cyan(this.where())} ${dim("read")} ${args.path}${bits ? dim(`  (${bits})`) : ""}`);
+    // A narrower read can go through more of the file than one that comes back whole.
+    const r = await this.call("read", {
+      path: String(args.path),
+      maxBytes: narrowed || question ? READ_MAX_BYTES : undefined,
+    });
+    if (r.binary) return `${r.path} is binary (${r.size} bytes)`;
+    const cut = r.truncated
+      ? `\n[file is ${r.size} bytes; only the first ${
+        narrowed || question ? `${READ_MAX_BYTES / 1024 / 1024} MB were` : "64 KB was"
+      } read${
+        narrowed || question
+          ? ""
+          : "; read further with start_line/end_line or pattern, or ask about it"
+      }]`
+      : "";
+    if (!narrowed && !question) return this.clip(r.content) + cut;
+    let sel: Selection;
+    try {
+      sel = selectLines(r.content, pick);
+    } catch (e) {
+      return `pattern is not a regular expression: ${(e as Error).message}`;
+    }
+    if (!question) {
+      if (!sel.lines.length) return `${r.path}: no lines (${sel.what})${cut}`;
+      return this.clip(`${r.path}: ${sel.what}\n${numbered(sel.lines)}`) + cut;
+    }
+    const spin = spinner(`reading ${r.path} for: ${question}`);
+    try {
+      const ep = this.router.current();
+      const answer: Answerer = async (system, user, s) => {
+        this.router.thinkingOffOnce = true;
+        const reply = await this.router.chat(
+          () => [{ role: "system", content: system }, { role: "user", content: user }],
+          [],
+          {},
+          AbortSignal.any([
+            ...(s ? [s] : []),
+            AbortSignal.timeout(Math.max(300_000, ep.profile?.timeouts?.thinkingMs ?? 0)),
+          ]),
+        );
+        return reply.content;
+      };
+      const out = await askFile({
+        path: r.path,
+        question,
+        sel,
+        contextChars: ep.contextChars,
+        answer,
+        tooLong: isContextError,
+        signal,
+        onProgress: (done, of) => {
+          if (of > 1) spin.note(`part ${Math.min(done + 1, of)} of ${of}`);
+        },
+      });
+      return this.clip(out) + cut;
+    } finally {
+      this.router.thinkingOffOnce = false;
+      spin.stop();
+    }
   }
 
   private call(op: string, args: unknown): Promise<any> {
@@ -1274,13 +1383,8 @@ export class Session {
         if (!safeRead) this.recent.clear();
         return this.render(r);
       }
-      case "read_file": {
-        say(`${cyan(this.where())} ${dim("read")} ${args.path}`);
-        const r = await this.call("read", { path: String(args.path) });
-        if (r.binary) return `${r.path} is binary (${r.size} bytes)`;
-        return this.clip(r.content) +
-          (r.truncated ? `\n[file is ${r.size} bytes; only the start was read]` : "");
-      }
+      case "read_file":
+        return await this.readFile(args, signal);
       case "write_file": {
         const content = String(args.content ?? "");
         const refused = refuseStartFull(String(args.path ?? ""), content);
