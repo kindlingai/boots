@@ -24,6 +24,7 @@ const EXPECTED = [
   "ray",
   "sglang",
   "tensorfold",
+  "themes",
   "vllm",
 ];
 

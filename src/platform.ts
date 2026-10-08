@@ -45,7 +45,7 @@ export function isCompiled(): boolean {
   return import.meta.url.includes("/deno-compile-");
 }
 
-function home(): string {
+export function home(): string {
   return Deno.env.get("HOME") ?? Deno.env.get("USERPROFILE") ?? ".";
 }
 

@@ -49,7 +49,7 @@ jobs:
         shell: bash
         run: |
           ext=""; [[ "${{ matrix.target }}" == *windows* ]] && ext=".exe"
-          deno compile -A --include docs --target ${{ matrix.target }} \
+          deno compile -A --include docs --exclude docs/screenshots --target ${{ matrix.target }} \
             -o "build/ai-bootstrap${ext}" src/main.ts
           sh scripts/package.sh ${{ matrix.target }} "build/ai-bootstrap${ext}" dist
           ls -l dist

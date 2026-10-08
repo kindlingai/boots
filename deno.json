@@ -1,12 +1,12 @@
 {
   "name": "@mmastrac/aiboot",
-  "version": "0.1.64",
+  "version": "0.1.65",
   "exports": "./src/main.ts",
   "tasks": {
     "dev": "deno run -A src/main.ts",
     "check": "deno fmt --check && deno lint && deno check src/main.ts",
     "test": "deno test -A tests/",
-    "compile": "deno compile -A --include docs -o dist/ai-bootstrap src/main.ts"
+    "compile": "deno compile -A --include docs --exclude docs/screenshots -o dist/ai-bootstrap src/main.ts"
   },
   "fmt": {
     "lineWidth": 100,

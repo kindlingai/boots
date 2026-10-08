@@ -18,21 +18,22 @@ import {
   type Style,
   takePrefill,
 } from "../frontend.ts";
+import { lineTheme } from "../theme.ts";
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
 const color = Deno.stdout.isTerminal() && !Deno.env.get("NO_COLOR");
-const sgr = (n: string) => (s: string) => color ? `\x1b[${n}m${s}\x1b[0m` : s;
-const dim = sgr("2");
-const cyan = sgr("36");
+/** In a theme role's colours (theme.ts; not its background: lines scroll). */
+const role = (r: string) => (s: string) => color ? lineTheme().paint(r, s) : s;
+const dim = role("dim");
 const STYLE: Record<Style, (s: string) => string> = {
   plain: (s) => s,
   dim,
-  info: dim,
-  warn: sgr("33"),
-  error: sgr("31"),
-  ok: sgr("32"),
-  bold: sgr("1"),
+  info: role("info"),
+  warn: role("warn"),
+  error: role("error"),
+  ok: role("ok"),
+  bold: role("bold"),
 };
 
 const FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -71,7 +72,7 @@ export class LineFrontend implements Frontend {
   emit(e: EngineEvent): void {
     switch (e.type) {
       case "line": {
-        const text = STYLE[e.style ?? "plain"](e.text);
+        const text = STYLE[e.style ?? "plain"](color ? lineTheme().remap(e.text) : e.text);
         this.print(text, e.style === "info" || e.style === "warn");
         break;
       }
@@ -79,7 +80,7 @@ export class LineFrontend implements Frontend {
         if (e.phase === "start") {
           this.clearLive();
           this.streaming = true;
-          write(cyan("● "));
+          write(role("assistant.mark")(lineTheme().content("assistant.mark", "● ")));
         } else if (e.phase === "delta") write(e.text ?? "");
         else {
           write("\n");
@@ -169,7 +170,7 @@ export class LineFrontend implements Frontend {
   private draft = "";
 
   private liveText(): string | null {
-    const f = cyan(FRAMES[this.frame % FRAMES.length]);
+    const f = role("spinner")(FRAMES[this.frame % FRAMES.length]);
     const p = [...this.progress.values()].at(-1);
     const typed = this.draft ? `  › ${this.draft}` : "";
     if (p) return `${f} ${p.label}  ${dim(progressText(p))}${typed}`;

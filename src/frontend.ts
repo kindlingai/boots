@@ -71,6 +71,8 @@ export function busyText(
 
 export interface Frontend {
   emit(e: EngineEvent): void;
+  /** A picture of the window as a PNG (the GUI; others have no window to take). */
+  screenshot?(): Promise<Uint8Array>;
   /**
    * One line of input; null at end of input. Throws Interrupted on ^C.
    * `choices`, when given, are the answers the prompt offers (the GUI shows

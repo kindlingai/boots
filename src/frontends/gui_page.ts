@@ -1,7 +1,6 @@
 // The GUI's page: the TUI's layout in HTML. The bot is drawn by the very
-// functions the TUI uses (bot.ts, shipped with toString), coloured the same
-// way: grey body, white eyes, bright blue boots, light blue sweat, and an
-// antenna that is grey as a line and dark red when it signals.
+// functions the TUI uses (bot.ts, shipped with toString), coloured by the
+// same theme roles (bot.body, bot.eyes, bot.boots, bot.sweat, bot.signal).
 
 import { bot, DROP, moodOf, sweat } from "./bot.ts";
 import { faviconHref } from "./icon.ts";
@@ -47,7 +46,8 @@ export function ansiHtml(text: string): string {
 
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 
-export function page(title: string, token: string): string {
+/** The page, in a theme (its stylesheet, from theme.ts's guiCss). */
+export function page(title: string, token: string, css = ""): string {
   // The shared functions, as the page's own (they use no outside names).
   const shared = [
     `const DROP = ${JSON.stringify(DROP)};`,
@@ -65,75 +65,57 @@ export function page(title: string, token: string): string {
 <title>${esc(title)}</title>
 <link rel="icon" type="image/svg+xml" href="${faviconHref()}">
 <style>
-  :root {
-    --bg: #121417; --panel: #1a1d22; --line: #2a2f37; --text: #d8dde4; --dim: #8b94a1;
-    --cyan: #5fd7e8; --warn: #e5c07b; --err: #ef6b73; --ok: #8fd19e; --user: #c6a0f6;
-    --grey: #8a8f98; --white: #ffffff; --blue: #4aa8ff; --sweat: #8be9fd; --red: #b8343c;
-  }
+  /* Layout only: colours, borders and fonts come from the theme (theme.ts). */
   * { box-sizing: border-box; }
-  html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
+  html, body { height: 100%; margin: 0;
     font: 14px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, "DejaVu Sans Mono", monospace; }
   body { display: flex; flex-direction: column; }
   header { display: flex; gap: 12px; align-items: baseline; padding: 6px 12px;
-    background: var(--panel); border-bottom: 1px solid var(--line); }
-  header .name { color: var(--cyan); font-weight: bold; }
-  header .where { margin-left: auto; color: var(--dim); white-space: nowrap; overflow: hidden;
+    border-bottom: 1px solid; }
+  header .where { margin-left: auto; white-space: nowrap; overflow: hidden;
     text-overflow: ellipsis; }
   #top { display: flex; gap: 14px; align-items: center; padding: 10px 12px;
-    border-bottom: 1px solid var(--line); }
+    border-bottom: 1px solid; }
   #bot { margin: 0; line-height: 1.15; white-space: pre; font-size: 15px; }
-  #bot .g { color: var(--grey); } #bot .w { color: var(--white); } #bot .b { color: var(--blue); }
-  #bot .s { color: var(--sweat); } #bot .r { color: var(--red); }
-  #bubble { flex: 1; position: relative; border: 1px solid var(--cyan); border-radius: 10px;
-    padding: 8px 12px; color: var(--cyan); max-height: 6.2em; overflow: hidden;
+  /* The bubble clips its words; its pointer sits on the wrapper, outside that. */
+  #speech { flex: 1; position: relative; display: flex; min-width: 0; }
+  #speech::before { content: ""; position: absolute; left: -9px; top: 50%; margin-top: -8px;
+    border: 8px solid transparent; border-left: 0; z-index: 1; }
+  #bubble { flex: 1; min-width: 0; padding: 8px 12px; max-height: 6.2em; overflow: hidden;
     display: flex; flex-direction: column; justify-content: flex-end; white-space: pre-wrap; }
-  #bubble::before { content: ""; position: absolute; left: -9px; top: 50%; margin-top: -8px;
-    border: 8px solid transparent; border-right-color: var(--cyan); border-left: 0; }
   #bubble.head { justify-content: flex-start; }
   #log { flex: 1; overflow-y: auto; padding: 8px 12px; white-space: pre-wrap;
     overflow-wrap: anywhere; }
   #log div { min-height: 1.45em; }
-  .dim, .info { color: var(--dim); } .warn { color: var(--warn); } .error { color: var(--err); }
-  .ok { color: var(--ok); } .bold { font-weight: bold; } .user { color: var(--user); }
-  .assistant { color: var(--text); } .assistant::before { content: "● "; color: var(--cyan); }
-  .user::before { content: "› "; }
-  #status { padding: 4px 12px; color: var(--dim); border-top: 1px solid var(--line);
+  #status { padding: 4px 12px; border-top: 1px solid;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-height: 1.9em; }
-  #status .spin { color: var(--cyan); }
-  #goal { padding: 5px 12px; color: var(--warn); border-bottom: 1px solid var(--line);
+  #goal { padding: 5px 12px; border-bottom: 1px solid;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   #goal:empty { display: none; }
-  #goal .step { color: var(--text); }
-  #goal .more { color: var(--dim); }
-  .a1 { font-weight: bold; } .a2 { opacity: .65; } .a31 { color: var(--err); }
-  .a32 { color: var(--ok); } .a33 { color: var(--warn); } .a34 { color: var(--blue); }
-  .a35 { color: #d38df0; } .a36 { color: var(--cyan); }
+  .a1 { font-weight: bold; } .a2 { opacity: .65; }
   form.asking #input { display: none; }
   #choices { display: inline-flex; gap: 8px; flex-wrap: wrap; }
-  button.choice u { text-decoration: none; color: var(--warn); font-weight: bold; }
-  form { display: flex; gap: 8px; align-items: center; padding: 8px 12px; background: var(--panel);
-    border-top: 1px solid var(--line); flex-wrap: wrap; }
-  #prompt { color: var(--cyan); white-space: pre-wrap; max-width: 100%; }
-  #input { flex: 1; min-width: 12em; background: var(--bg); color: var(--text);
-    border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; font: inherit;
+  button.choice u { text-decoration: none; }
+  form { display: flex; gap: 8px; align-items: center; padding: 8px 12px;
+    border-top: 1px solid; flex-wrap: wrap; }
+  #prompt { white-space: pre-wrap; max-width: 100%; }
+  #input { flex: 1; min-width: 12em; padding: 6px 8px; font: inherit;
     resize: none; line-height: 1.4; height: calc(1.4em + 14px);
     max-height: calc(5.6em + 14px); overflow-y: auto; box-sizing: border-box; }
   #input.secret { -webkit-text-security: disc; }
-  #input:focus { outline: none; border-color: var(--cyan); }
+  #input:focus { outline: none; }
   #input:disabled { opacity: .5; }
-  button { background: #242931; color: var(--text); border: 1px solid var(--line); border-radius: 6px;
-    padding: 5px 10px; font: inherit; cursor: pointer; }
-  button:hover { border-color: var(--cyan); }
-  button.choice { color: var(--cyan); }
-  #stop { color: var(--warn); }
-  #quit { color: var(--dim); }
-  .bye { color: var(--dim); padding: 20px; }
+  button { padding: 5px 10px; font: inherit; cursor: pointer; }
+  .bye { padding: 20px; opacity: .7; }
+</style>
+<style id="theme">
+${css}
 </style>
 </head>
 <body>
 <header><span class="name" id="name">lil boots</span><span id="title"></span><span class="where" id="where"></span></header>
 <div id="goal"></div>
-<div id="top"><pre id="bot"></pre><div id="bubble"></div></div>
+<div id="top"><pre id="bot"></pre><div id="speech"><div id="bubble"></div></div></div>
 <div id="log"></div>
 <div id="status"></div>
 <form id="form" autocomplete="off">
@@ -357,12 +339,51 @@ function connect() {
       }
       if (state) { state.speech = m.text; state.streaming = true; state.talkedAt = Date.now(); }
     } else if (m.t === "state") applyState(m.state);
+    else if (m.t === "theme") $("theme").textContent = m.css;
+    else if (m.t === "shot") {
+      capture().then(
+        (data) => send({ t: "shot", id: m.id, data }),
+        (e) => send({ t: "shot", id: m.id, error: String((e && e.message) || e) }),
+      );
+    }
     else if (m.t === "bye") {
       document.body.innerHTML = '<div class="bye">ai-bootstrap has finished. You can close this window.</div>';
       ws.onclose = null;
     }
   };
   ws.onclose = () => setTimeout(connect, 1000);
+}
+
+/**
+ * The window as a PNG (base64), for /screenshot: a copy of the page drawn
+ * through an SVG image onto a canvas, at the screen's pixel density.
+ */
+async function capture() {
+  const w = innerWidth, h = innerHeight, k = Math.max(1, devicePixelRatio || 1);
+  const copy = document.documentElement.cloneNode(true);
+  for (const s of copy.querySelectorAll("script")) s.remove();
+  // What a copy loses: the typed text and how far the transcript is scrolled.
+  copy.querySelector("#input").textContent = $("input").value;
+  const log = copy.querySelector("#log"), inner = document.createElement("div");
+  inner.style.transform = "translateY(" + -$("log").scrollTop + "px)";
+  while (log.firstChild) inner.appendChild(log.firstChild);
+  log.appendChild(inner);
+  log.style.overflow = "hidden";
+  copy.style.width = w + "px";
+  copy.style.height = h + "px";
+  const xml = new XMLSerializer().serializeToString(copy);
+  const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="' + w * k + '" height="' + h * k +
+    '" viewBox="0 0 ' + w + " " + h + '"><foreignObject x="0" y="0" width="' + w + '" height="' + h +
+    '">' + xml + "</foreignObject></svg>";
+  const img = new Image();
+  img.src = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg);
+  await img.decode();
+  const canvas = document.createElement("canvas");
+  canvas.width = w * k;
+  canvas.height = h * k;
+  canvas.getContext("2d").drawImage(img, 0, 0, w * k, h * k);
+  // Throws when the browser will not let a drawn page out (a tainted canvas).
+  return canvas.toDataURL("image/png").split(",")[1];
 }
 
 $("form").onsubmit = (e) => { e.preventDefault(); answer($("input").value); };

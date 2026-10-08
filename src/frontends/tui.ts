@@ -30,6 +30,7 @@ import {
 } from "../frontend.ts";
 
 import { bot, type Mood, moodOf, wrap } from "./bot.ts";
+import { onTheme, tuiTheme } from "../theme.ts";
 export { bot, wrap };
 
 const enc = new TextEncoder();
@@ -38,47 +39,36 @@ const ESC = "\x1b[";
 const ANSI = new RegExp(String.fromCharCode(27) + "\\[[0-9;?]*[A-Za-z]", "g");
 const FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
-const c = (code: string) => (s: string) => `${ESC}${code}m${s}${ESC}0m`;
-const COLOR = {
-  dim: c("2"),
-  bold: c("1"),
-  cyan: c("36"),
-  yellow: c("33"),
-  red: c("31"),
-  green: c("32"),
-  magenta: c("35"),
-  inverse: c("7"),
-  grey: c("90"),
-  white: c("97"),
-  brightBlue: c("94"),
-  sweat: c("96"),
-};
+/** Text in a theme role's style (theme.ts). */
+const paint = (role: string, s: string) => tuiTheme().paint(role, s);
 
 /**
- * The bot in colour: a grey body with white eyes and bright blue boots. The
- * antenna is grey while it is a plain line, dark red when it signals (? * .).
+ * The bot in the theme's colours (by default a grey body with white eyes and
+ * bright blue boots). The antenna is the body's colour while it is a plain
+ * line, the signal's (dark red) when it signals (? * .).
  */
 export function paintBot(art: string[]): string[] {
   const [antenna, top, face, mouth, legs, feet] = art;
+  const body = (s: string) => paint("bot.body", s);
   // Sweat drops sit in the outer columns of the head rows.
   const edges = (row: string, middle: (s: string) => string) => {
-    const tint = (ch: string) => (ch === " " ? ch : COLOR.sweat(ch));
+    const tint = (ch: string) => (ch === " " ? ch : paint("bot.sweat", ch));
     return tint(row[0]) + middle(row.slice(1, -1)) + tint(row.at(-1)!);
   };
   const eyesAt = face.indexOf("|");
   const eyesEnd = face.lastIndexOf("|");
   return [
-    antenna.trim() === "|" ? COLOR.grey(antenna) : COLOR.red(antenna),
-    edges(top, COLOR.grey),
+    antenna.trim() === "|" ? body(antenna) : paint("bot.signal", antenna),
+    edges(top, body),
     edges(
       face,
       (m) =>
-        COLOR.grey(m.slice(0, eyesAt)) + COLOR.white(m.slice(eyesAt, eyesEnd - 1)) +
-        COLOR.grey(m.slice(eyesEnd - 1)),
+        body(m.slice(0, eyesAt)) + paint("bot.eyes", m.slice(eyesAt, eyesEnd - 1)) +
+        body(m.slice(eyesEnd - 1)),
     ),
-    edges(mouth, COLOR.grey),
-    COLOR.grey(legs),
-    COLOR.brightBlue(feet),
+    edges(mouth, body),
+    body(legs),
+    paint("bot.boots", feet),
   ];
 }
 
@@ -143,10 +133,13 @@ export class TuiFrontend implements Frontend {
   private reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
   private restore = () => this.leave();
   private esc = doubleEsc();
+  private offTheme = () => {};
 
   constructor(private opts: { title: string; onInterrupt: () => void }) {}
 
   start(): void {
+    // A new theme (/theme) shows at once.
+    this.offTheme = onTheme(() => this.render());
     Deno.stdin.setRaw(true);
     this.out(`${ESC}?1049h${ESC}?25l${ESC}2J`);
     globalThis.addEventListener("unload", this.restore);
@@ -168,6 +161,7 @@ export class TuiFrontend implements Frontend {
     if (this.closed) return;
     this.closed = true;
     clearInterval(this.timer);
+    this.offTheme();
     this.leave();
     globalThis.removeEventListener("unload", this.restore);
   }
@@ -561,9 +555,9 @@ export class TuiFrontend implements Frontend {
       const head = chars.slice(0, p.length).join("");
       const rest = chars.slice(p.length).join("");
       if (steering && !text) {
-        return ` ${COLOR.dim(head)}${COLOR.dim("type to steer the model; Enter sends it")}`;
+        return ` ${paint("dim", head)}${paint("dim", "type to steer the model; Enter sends it")}`;
       }
-      return ` ${steering ? COLOR.dim(head) : COLOR.bold(head)}${rest}`;
+      return ` ${paint(steering ? "dim" : "prompt", head)}${rest}`;
     });
     return { rows, cursorRow: cursorLine - first, cursorCol: 2 + (at % width) };
   }
@@ -581,25 +575,7 @@ export class TuiFrontend implements Frontend {
   }
 
   private styled(kind: Kind, s: string): string {
-    switch (kind) {
-      case "dim":
-      case "info":
-        return COLOR.dim(s);
-      case "warn":
-        return COLOR.yellow(s);
-      case "error":
-        return COLOR.red(s);
-      case "ok":
-        return COLOR.green(s);
-      case "bold":
-        return COLOR.bold(s);
-      case "user":
-        return COLOR.bold(s);
-      case "assistant":
-        return COLOR.cyan(s);
-      default:
-        return s;
-    }
+    return kind === "plain" ? s : paint(kind, s);
   }
 
   render(): void {
@@ -610,9 +586,10 @@ export class TuiFrontend implements Frontend {
     // Header.
     const title = ` ${botName(this.status.full)} · ${this.opts.title}`;
     const right = [this.status.model, this.status.location].filter(Boolean).join("  ·  ") + " ";
-    rows.push(COLOR.inverse(fit(title, w - [...right].length) + right));
+    const theme = tuiTheme();
+    rows.push(paint("header", fit(title, w - [...right].length) + right));
     // The current goal, under the header.
-    for (const g of this.goalRows()) rows.push(` ${COLOR.yellow(fit(g, w - 2))}`);
+    for (const g of this.goalRows()) rows.push(` ${paint("goal", fit(g, w - 2))}`);
 
     // The bot and its speech bubble.
     const mood = this.currentMood();
@@ -628,28 +605,43 @@ export class TuiFrontend implements Frontend {
       ? [...words.slice(0, 2), words[2].slice(0, -1) + "…"]
       : ["…" + words.at(-3)!.slice(1), ...words.slice(-2)];
     while (shown.length < 3) shown.push("");
+    // The frame in the bubble's border colour, the words in its colour.
+    const frame = (s: string) => paint("bubble.frame", s);
     const bubble = [
       "",
-      `╭${"─".repeat(bw - 2)}╮`,
-      ...shown.map((l) => `│ ${fit(l, bw - 4)} │`),
-      `╰${"─".repeat(bw - 2)}╯`,
+      frame(`╭${"─".repeat(bw - 2)}╮`),
+      ...shown.map((l) => frame("│ ") + paint("bubble", fit(l, bw - 4)) + frame(" │")),
+      frame(`╰${"─".repeat(bw - 2)}╯`),
     ];
     for (let i = 0; i < 6; i++) {
-      const tail = i === 2 ? COLOR.cyan(" ◀ ") : "   ";
+      const tail = i === 2 ? ` ${paint("bubble.tail", "◀")} ` : "   ";
       const b = bubble[i] ?? "";
-      rows.push(` ${art[i]}${b ? tail : "   "}${COLOR.cyan(b)}`);
+      rows.push(` ${art[i]}${b ? tail : "   "}${b}`);
     }
-    rows.push(COLOR.dim("─".repeat(w)));
+    rows.push(paint("rule", "─".repeat(w)));
 
     // The transcript.
     const body = this.bodyHeight();
     const lines: string[] = [];
+    const marks = {
+      assistant: theme.content("assistant.mark", "● "),
+      user: theme.content("user.mark", "› "),
+    };
     for (const e of this.entries) {
-      const prefix = e.kind === "assistant" ? "● " : e.kind === "user" ? "› " : "";
-      // A line with its own colours keeps them; others take their kind's.
+      const mark = e.kind === "assistant" || e.kind === "user" ? e.kind : null;
+      const prefix = mark ? marks[mark] : "";
+      // A line with its own colours keeps them (in the theme's); others take their kind's.
       const own = e.text.includes(ESC_CHAR);
       const wrapped = own ? wrapAnsi(prefix + e.text, w - 2) : wrap(prefix + e.text, w - 2);
-      for (const l of wrapped) lines.push(own ? l : this.styled(e.kind, l));
+      wrapped.forEach((l, i) => {
+        if (own) lines.push(theme.remap(l));
+        else if (mark && i === 0 && l.startsWith(prefix)) {
+          // The mark in its own colour.
+          lines.push(
+            paint(`${mark}.mark`, prefix) + this.styled(e.kind, l.slice(prefix.length)),
+          );
+        } else lines.push(this.styled(e.kind, l));
+      });
     }
     this.scroll = Math.min(this.scroll, Math.max(0, lines.length - body));
     const end = lines.length - this.scroll;
@@ -658,34 +650,43 @@ export class TuiFrontend implements Frontend {
     for (const l of view) rows.push(` ${l}`);
 
     // Status: what runs now.
-    rows.push(COLOR.dim("─".repeat(w)));
-    const spin = COLOR.cyan(FRAMES[this.frame % FRAMES.length]);
+    rows.push(paint("rule", "─".repeat(w)));
+    const spin = paint("spinner", FRAMES[this.frame % FRAMES.length]);
     const p = [...this.progress.values()].at(-1);
     let status: string;
     if (p) {
       const bar = Math.max(10, Math.min(30, w - 80));
-      status = `${spin} ${COLOR.dim(fit(`${p.label}  ${progressText(p, bar)}`, w - 4))}`;
+      status = `${spin} ${paint("status", fit(`${p.label}  ${progressText(p, bar)}`, w - 4))}`;
     } else if (this.busy) {
-      status = `${spin} ${COLOR.dim(fit(busyText(this.busy), w - 4))}`;
+      status = `${spin} ${paint("status", fit(busyText(this.busy), w - 4))}`;
     } else {
-      status = COLOR.dim(fit(
-        `${
-          this.scroll ? `scrolled up ${this.scroll} lines · ` : ""
-        }PgUp/PgDn scroll · ↑↓ history · ^C or Esc Esc stop · ^D quit · /help`,
-        w - 2,
-      ));
+      status = paint(
+        "status",
+        fit(
+          `${
+            this.scroll ? `scrolled up ${this.scroll} lines · ` : ""
+          }PgUp/PgDn scroll · ↑↓ history · ^C or Esc Esc stop · ^D quit · /help`,
+          w - 2,
+        ),
+      );
     }
     rows.push(` ${status}`);
 
     // Input: wraps to at most INPUT_ROWS rows, scrolled to keep the cursor in view.
     const input = this.inputLayout(w);
     rows.push(...input.rows);
-    // One write per frame: home, each row cleared and drawn, cursor to the input.
-    let frame = `${ESC}H`;
+    // One write per frame: home, each row cleared and drawn, cursor to the
+    // input. A theme with a background clears each row in it (onBase).
+    let out = `${ESC}H`;
+    const base = theme.base ? `${ESC}${theme.base}m` : "";
     rows.slice(0, h).forEach((r, i) => {
-      frame += `${ESC}${i + 1};1H${ESC}2K${r}`;
+      out += `${ESC}${i + 1};1H${base}${ESC}2K${theme.onBase(r)}`;
     });
-    frame += `${ESC}${h - input.rows.length + 1 + input.cursorRow};${input.cursorCol}H${ESC}?25h`;
-    this.out(frame);
+    // Rows the screen has below what was drawn (none, normally).
+    for (let i = rows.length; i < h; i++) out += `${ESC}${i + 1};1H${base}${ESC}2K`;
+    out += `${ESC}0m${ESC}${
+      h - input.rows.length + 1 + input.cursorRow
+    };${input.cursorCol}H${ESC}?25h`;
+    this.out(out);
   }
 }

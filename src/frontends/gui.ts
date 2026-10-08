@@ -23,6 +23,7 @@ import {
 import type { Mood } from "./bot.ts";
 import { page } from "./gui_page.ts";
 import { isWindows, selfArgv } from "../platform.ts";
+import { guiCss, onTheme } from "../theme.ts";
 
 type Kind = Style | "user" | "assistant";
 type ProgressEv = Extract<EngineEvent, { type: "progress" }>;
@@ -63,6 +64,10 @@ export type ToPage =
   | { t: "entry"; kind: Kind; text: string }
   | { t: "stream"; text: string }
   | { t: "state"; state: GuiState }
+  /** A new theme's stylesheet. */
+  | { t: "theme"; css: string }
+  /** Asks the page for a picture of itself. */
+  | { t: "shot"; id: number }
   | { t: "bye" };
 
 /** Messages from the page. */
@@ -70,7 +75,9 @@ export type FromPage =
   | { t: "answer"; id: number; text: string }
   | { t: "steer"; text: string }
   | { t: "stop" }
-  | { t: "quit" };
+  | { t: "quit" }
+  /** The picture asked for: a PNG in base64, or why there is none. */
+  | { t: "shot"; id: number; data?: string; error?: string };
 
 const ANSI = new RegExp(String.fromCharCode(27) + "\\[[0-9;?]*[A-Za-z]", "g");
 const plain = (s: string) => s.replace(ANSI, "");
@@ -95,6 +102,9 @@ export class GuiFrontend implements Frontend {
   private window: Deno.ChildProcess | null = null;
   private closed = false;
   private stateTimer: ReturnType<typeof setTimeout> | undefined;
+  /** Pictures asked of the page (/screenshot), by id. */
+  private shots = new Map<number, (r: { data?: string; error?: string }) => void>();
+  private offTheme = () => {};
   readonly token = crypto.randomUUID();
   url = "";
 
@@ -107,6 +117,8 @@ export class GuiFrontend implements Frontend {
       (req) => this.handle(req),
     );
     const port = (this.server.addr as Deno.NetAddr).port;
+    // A new theme (/theme) shows at once.
+    this.offTheme = onTheme(() => this.broadcast({ t: "theme", css: guiCss() }));
     this.url = `http://127.0.0.1:${port}/?t=${this.token}`;
     return this.url;
   }
@@ -180,7 +192,7 @@ export class GuiFrontend implements Frontend {
       return response;
     }
     if (u.pathname === "/") {
-      return new Response(page(this.opts.title, this.token), {
+      return new Response(page(this.opts.title, this.token, guiCss()), {
         headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" },
       });
     }
@@ -213,6 +225,30 @@ export class GuiFrontend implements Frontend {
         this.finish(null, new EscInterrupted());
       } else interruptNow("esc");
     } else if (m.t === "quit") this.quit();
+    else if (m.t === "shot") this.shots.get(m.id)?.(m);
+  }
+
+  /**
+   * The window as a PNG, drawn by the page itself (the most recently opened
+   * one, when there are several). Throws when no page is open or it cannot.
+   */
+  async screenshot(timeoutMs = 20_000): Promise<Uint8Array> {
+    const socket = [...this.sockets].filter((s) => s.readyState === WebSocket.OPEN).at(-1);
+    if (!socket) throw new Error("the GUI has no window open");
+    const id = this.nextId++;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const r = await new Promise<{ data?: string; error?: string }>((ok) => {
+        this.shots.set(id, ok);
+        timer = setTimeout(() => ok({ error: "the window did not answer" }), timeoutMs);
+        this.sendTo(socket, { t: "shot", id });
+      });
+      if (!r.data) throw new Error(r.error || "the window sent no picture");
+      return Uint8Array.from(atob(r.data), (c) => c.charCodeAt(0));
+    } finally {
+      clearTimeout(timer);
+      this.shots.delete(id);
+    }
   }
 
   private quit(): void {
@@ -323,6 +359,7 @@ export class GuiFrontend implements Frontend {
     this.closed = true;
     this.broadcast({ t: "bye" });
     clearTimeout(this.stateTimer);
+    this.offTheme();
     for (const s of this.sockets) {
       try {
         s.close();

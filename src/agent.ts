@@ -6,6 +6,8 @@ import type { Message, Reply } from "./llm.ts";
 import { type ChatShape, type Endpoint, LLMError } from "./llm.ts";
 import { BASE_TOOLS, describe, renderGoal, type Session, TOOLS } from "./tools.ts";
 import { offerOffline } from "./setup.ts";
+import { themeCommand } from "./theme.ts";
+import { screenshotCommand } from "./screenshot.ts";
 import { currentTier, loadTemplates, systemPrompt, type Templates, tierOf } from "./prompts.ts";
 import { secrets } from "./secrets.ts";
 import { ask, bold, dim, Interrupted, plain, red, say, spinner, warn } from "./ui.ts";
@@ -855,6 +857,8 @@ const HELP = `commands:
                 settings used for thinking and not thinking (cached; editable)
   /thinking [on|off]  off: ask models to answer without thinking first
                 (faster, shallower); on: each model's default
+  /theme [name] list the themes, or switch to one (kept for next time)
+  /screenshot [file.png]  save the GUI window as a PNG (--gui)
   /exit         leave the current remote host
   /quit         quit`;
 
@@ -1030,6 +1034,16 @@ export async function repl(agent: Agent, setupNote: string | null = null): Promi
             say(await s.memory.sync());
           } catch (e) {
             say(red((e as Error).message));
+          }
+          break;
+        case "/theme":
+          say(await themeCommand(rest.join(" ")));
+          break;
+        case "/screenshot":
+          try {
+            say(await screenshotCommand(rest.join(" ")));
+          } catch (e) {
+            say(red(`no screenshot: ${(e as Error).message}`));
           }
           break;
         case "/exit":

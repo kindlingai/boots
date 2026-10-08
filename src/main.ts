@@ -38,6 +38,7 @@ import { emit, frontend, setFrontend, setInterruptHandler } from "./frontend.ts"
 import { TuiFrontend } from "./frontends/tui.ts";
 import { GuiFrontend } from "./frontends/gui.ts";
 import { windowMain } from "./frontends/window.ts";
+import { loadSavedTheme } from "./theme.ts";
 
 async function interactive(mode: UiMode, perms: Permissions = NO_PERMISSIONS): Promise<number> {
   // Binaries an upgrade on Windows renamed aside.
@@ -46,6 +47,8 @@ async function interactive(mode: UiMode, perms: Permissions = NO_PERMISSIONS): P
   let onInterrupt = () => {};
   // Closing the GUI window or its Quit button: stop what runs, then end.
   let onQuit = () => {};
+  // The theme picked last time (/theme), before anything is drawn.
+  await loadSavedTheme().catch(() => {});
   if (mode === "gui") {
     // The page draws the colours itself, terminal or not.
     setColor(true);
