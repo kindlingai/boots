@@ -11,7 +11,15 @@ import { screenshotCommand } from "./screenshot.ts";
 import { currentTier, loadTemplates, systemPrompt, type Templates, tierOf } from "./prompts.ts";
 import { secrets } from "./secrets.ts";
 import { ask, bold, dim, Interrupted, plain, red, say, spinner, warn } from "./ui.ts";
-import { emit, EscInterrupted, setPrefill, takeSteering, tidy } from "./frontend.ts";
+import {
+  emit,
+  EscInterrupted,
+  setCommandHandler,
+  setPrefill,
+  steer,
+  takeSteering,
+  tidy,
+} from "./frontend.ts";
 import { clipTools, compact, isContextError, SUMMARY_PROMPT } from "./compact.ts";
 import { Backoff } from "./backoff.ts";
 import { activeGoals, type Goal, normalizeGoals, parseGoals } from "./memory.ts";
@@ -876,6 +884,18 @@ const HELP = `commands:
   /quit         quit`;
 
 export async function repl(agent: Agent, setupNote: string | null = null): Promise<void> {
+  // A /command typed while the model works runs at once (busyCommand).
+  setCommandHandler((t) => void busyCommand(agent, t));
+  try {
+    await open(agent, setupNote);
+    await loop(agent);
+  } finally {
+    setCommandHandler(null);
+  }
+}
+
+/** The session's opening: the model speaks first, or the user is asked. */
+async function open(agent: Agent, setupNote: string | null): Promise<void> {
   const s = agent.s;
   if (setupNote) {
     // The offline setup the user just asked for comes first.
@@ -897,8 +917,18 @@ export async function repl(agent: Agent, setupNote: string | null = null): Promi
   } else {
     say(`\n${bold("What would you like to do?")} ${dim("(/help for commands)")}`);
   }
+}
+
+async function loop(agent: Agent): Promise<void> {
+  const s = agent.s;
   while (true) {
     let line: string | null;
+    // Commands typed while the model worked that waited for it.
+    for (const t of deferred.splice(0)) {
+      const r = await runCommand(agent, t);
+      if (r === "quit") return;
+      if (r) await agent.turn(r.turn);
+    }
     // Sent while the last turn was ending: that is the next turn. After a
     // stop, it goes back into the input box instead, to edit or send.
     const queued = takeSteering();
@@ -919,184 +949,231 @@ export async function repl(agent: Agent, setupNote: string | null = null): Promi
     const t = line.trim();
     if (!t) continue;
     if (t.startsWith("/")) {
-      const [cmd, ...rest] = t.split(/\s+/);
-      switch (cmd) {
-        case "/quit":
-        case "/q":
-          return;
-        case "/help":
-          say(HELP);
-          break;
-        case "/where":
-          say(
-            s.stack.map((l, i) => `${"  ".repeat(i)}${l.label}: ${describe(l.info)}`).join("\n"),
-          );
-          break;
-        case "/model":
-          say(
-            `bootstrap: ${s.router.bootstrap.label} (${
-              s.router.bootstrapUp()
-                ? s.router.bootstrap.baseUrl
-                : "stopped while the full model runs"
-            })`,
-          );
-          say(
-            `smart:     ${
-              s.router.smart ? `${s.router.smart.label} (${s.router.smart.baseUrl})` : "none"
-            }`,
-          );
-          say(`in use:    ${s.router.current().label}`);
-          break;
-        case "/mode": {
-          const want = rest[0];
-          if (want === "auto" || want === "ask") s.mode = want;
-          else if (want) {
-            say("usage: /mode [auto | ask]");
-            break;
-          }
-          say(
-            s.mode === "auto"
-              ? `mode: auto. Read-only commands and writes that are not sudo run without asking; anything dangerous, anything the check could not judge, sudo, and other actions still ask.${
-                currentTier(s.router) === "base"
-                  ? ` ${
-                    bold("Not while the small base model answers:")
-                  } it still asks for everything.`
-                  : ""
-              } /mode ask turns it off.`
-              : "mode: ask. Commands that change something ask first. /mode auto runs the safe ones without asking.",
-          );
-          break;
-        }
-        case "/goals": {
-          const sub = rest[0];
-          if (sub === "clear") {
-            say(await s.memory.clearGoals(), "dim");
-          } else if (sub === "restore") {
-            const r = await s.memory.restoreGoals();
-            say(
-              r
-                ? `restored ${r.titles.length} goal${
-                  r.titles.length > 1 ? "s" : ""
-                } from ${r.from}: ${r.titles.join("; ")}`
-                : "no earlier goals to restore",
-            );
-          } else if (sub) {
-            say("usage: /goals [clear | restore]");
-            break;
-          }
-          {
-            const goals = normalizeGoals(parseGoals(await s.memory.goals()));
-            const line = (g: Goal, d: number): string[] => [
-              `${"  ".repeat(d)}${g.done ? "✓" : g.active ? "◆" : "·"} ${g.title}`,
-              ...(g.children ?? []).flatMap((c) => line(c, d + 1)),
-            ];
-            say(goals.length ? goals.flatMap((g) => line(g, 0)).join("\n") : "(no goals)");
-          }
-          break;
-        }
-        case "/setup": {
-          // Offline AI on this machine: asked again, and set up if wanted.
-          const note = await offerOffline(s.router.current().label, true);
-          if (note) await agent.turn(note);
-          break;
-        }
-        case "/probe": {
-          // Probe the model in use again (its settings for thinking and not thinking).
-          const p = await s.attachProfile(s.router.current(), true);
-          if (!p) say("the small base model is not probed: its settings are fixed");
-          break;
-        }
-        case "/thinking": {
-          const want = rest[0];
-          if (want === "off" || want === "on") s.router.thinkingOff = want === "off";
-          else if (want) {
-            say("usage: /thinking [on | off]");
-            break;
-          }
-          const ep = s.router.current();
-          say(
-            s.router.thinkingOff
-              ? `thinking: off. Models are asked not to think before answering (faster, shallower).${
-                ep.alwaysThinks
-                  ? ` ${ep.label} always thinks: it gets its least thinking instead.`
-                  : ep.noTemplateKwargs
-                  ? ` ${ep.label} does not accept the setting, so it may still think.`
-                  : ""
-              } /thinking on turns it back on.`
-              : "thinking: on (each model's default). /thinking off asks models to answer without thinking first.",
-          );
-          break;
-        }
-        case "/plan": {
-          // The plan is the active goal's steps.
-          const goals = normalizeGoals(parseGoals(await s.memory.goals()));
-          const g = activeGoals(goals).find((x) => goals.includes(x)) ?? activeGoals(goals)[0];
-          say(g ? renderGoal(g) : dim("  (no plan: no active goal)"));
-          break;
-        }
-        case "/memory":
-          say(await s.memory.index());
-          break;
-        case "/playbook":
-        case "/playbooks": {
-          if (rest.length) {
-            say(await s.exec("run_playbook", { name: rest[0], args: rest.slice(1) }));
-            break;
-          }
-          const books = await s.memory.playbooks();
-          say(
-            books.length
-              ? books.map((b) => `${b.name}${b.about ? dim(`  ${b.about}`) : ""}`).join("\n")
-              : "(no playbooks yet: the model saves one as memory playbook/<path>)",
-          );
-          break;
-        }
-        case "/secrets":
-          say(secrets.keys().join("\n") || "(none)");
-          break;
-        case "/forget":
-          if (rest.length) say(`forgot ${secrets.forget(rest.join(" "))}`);
-          else {
-            secrets.clear();
-            say("forgot everything");
-          }
-          break;
-        case "/sync":
-          try {
-            say(await s.memory.sync());
-          } catch (e) {
-            say(red((e as Error).message));
-          }
-          break;
-        case "/theme":
-          say(await themeCommand(rest.join(" ")));
-          break;
-        case "/screenshot":
-          try {
-            say(await screenshotCommand(rest.join(" ")));
-          } catch (e) {
-            say(red(`no screenshot: ${(e as Error).message}`));
-          }
-          break;
-        case "/exit":
-          say(await s.exec("ssh_exit", {}));
-          break;
-        case "/compact": {
-          const busy = spinner("compacting the conversation");
-          try {
-            say((await agent.compact()) ?? "nothing to compact yet", "dim");
-          } catch (e) {
-            say(red((e as Error).message));
-          } finally {
-            busy.stop();
-          }
-          break;
-        }
-        default:
-          say(HELP);
-      }
+      const r = await runCommand(agent, t);
+      if (r === "quit") return;
+      if (r) await agent.turn(r.turn);
       continue;
     }
     await agent.turn(t);
   }
+}
+
+/** Commands that wait for the model to finish when typed while it works. */
+const WAIT_FOR_MODEL = new Set(["/setup", "/compact", "/probe", "/exit", "/quit", "/q"]);
+
+/** Commands typed while the model worked that waited for it (WAIT_FOR_MODEL). */
+const deferred: string[] = [];
+
+/**
+ * A /command typed while the model works: run now, unless it needs the
+ * model or changes where it works (then it waits for the turn to end). A
+ * playbook run now hands its result to the model after its current step.
+ */
+export async function busyCommand(agent: Agent, t: string): Promise<void> {
+  const [cmd, ...rest] = t.split(/\s+/);
+  try {
+    if (WAIT_FOR_MODEL.has(cmd)) {
+      deferred.push(t);
+      say(dim(`  (${cmd} runs when the model is done)`));
+      return;
+    }
+    const r = await runCommand(agent, t);
+    // A playbook's result: the model reads it after its current step.
+    if (r && r !== "quit") steer(r.turn, false);
+    void rest;
+  } catch (e) {
+    say(red(`${cmd}: ${(e as Error).message}`));
+  }
+}
+
+/**
+ * Runs a /command. "quit" to end the session, a turn for the model to take
+ * (/setup, /playbook NAME), or null when it is done.
+ */
+export async function runCommand(
+  agent: Agent,
+  t: string,
+): Promise<"quit" | { turn: string } | null> {
+  const s = agent.s;
+  const [cmd, ...rest] = t.split(/\s+/);
+  switch (cmd) {
+    case "/quit":
+    case "/q":
+      return "quit";
+    case "/help":
+      say(HELP);
+      break;
+    case "/where":
+      say(
+        s.stack.map((l, i) => `${"  ".repeat(i)}${l.label}: ${describe(l.info)}`).join("\n"),
+      );
+      break;
+    case "/model":
+      say(
+        `bootstrap: ${s.router.bootstrap.label} (${
+          s.router.bootstrapUp() ? s.router.bootstrap.baseUrl : "stopped while the full model runs"
+        })`,
+      );
+      say(
+        `smart:     ${
+          s.router.smart ? `${s.router.smart.label} (${s.router.smart.baseUrl})` : "none"
+        }`,
+      );
+      say(`in use:    ${s.router.current().label}`);
+      break;
+    case "/mode": {
+      const want = rest[0];
+      if (want === "auto" || want === "ask") s.mode = want;
+      else if (want) {
+        say("usage: /mode [auto | ask]");
+        break;
+      }
+      say(
+        s.mode === "auto"
+          ? `mode: auto. Read-only commands and writes that are not sudo run without asking; anything dangerous, anything the check could not judge, sudo, and other actions still ask.${
+            currentTier(s.router) === "base"
+              ? ` ${bold("Not while the small base model answers:")} it still asks for everything.`
+              : ""
+          } /mode ask turns it off.`
+          : "mode: ask. Commands that change something ask first. /mode auto runs the safe ones without asking.",
+      );
+      break;
+    }
+    case "/goals": {
+      const sub = rest[0];
+      if (sub === "clear") {
+        say(await s.memory.clearGoals(), "dim");
+      } else if (sub === "restore") {
+        const r = await s.memory.restoreGoals();
+        say(
+          r
+            ? `restored ${r.titles.length} goal${r.titles.length > 1 ? "s" : ""} from ${r.from}: ${
+              r.titles.join("; ")
+            }`
+            : "no earlier goals to restore",
+        );
+      } else if (sub) {
+        say("usage: /goals [clear | restore]");
+        break;
+      }
+      {
+        const goals = normalizeGoals(parseGoals(await s.memory.goals()));
+        const line = (g: Goal, d: number): string[] => [
+          `${"  ".repeat(d)}${g.done ? "✓" : g.active ? "◆" : "·"} ${g.title}`,
+          ...(g.children ?? []).flatMap((c) => line(c, d + 1)),
+        ];
+        say(goals.length ? goals.flatMap((g) => line(g, 0)).join("\n") : "(no goals)");
+      }
+      break;
+    }
+    case "/setup": {
+      // Offline AI on this machine: asked again, and set up if wanted.
+      const note = await offerOffline(s.router.current().label, true);
+      if (note) return { turn: note };
+      break;
+    }
+    case "/probe": {
+      // Probe the model in use again (its settings for thinking and not thinking).
+      const p = await s.attachProfile(s.router.current(), true);
+      if (!p) say("the small base model is not probed: its settings are fixed");
+      break;
+    }
+    case "/thinking": {
+      const want = rest[0];
+      if (want === "off" || want === "on") s.router.thinkingOff = want === "off";
+      else if (want) {
+        say("usage: /thinking [on | off]");
+        break;
+      }
+      const ep = s.router.current();
+      say(
+        s.router.thinkingOff
+          ? `thinking: off. Models are asked not to think before answering (faster, shallower).${
+            ep.alwaysThinks
+              ? ` ${ep.label} always thinks: it gets its least thinking instead.`
+              : ep.noTemplateKwargs
+              ? ` ${ep.label} does not accept the setting, so it may still think.`
+              : ""
+          } /thinking on turns it back on.`
+          : "thinking: on (each model's default). /thinking off asks models to answer without thinking first.",
+      );
+      break;
+    }
+    case "/plan": {
+      // The plan is the active goal's steps.
+      const goals = normalizeGoals(parseGoals(await s.memory.goals()));
+      const g = activeGoals(goals).find((x) => goals.includes(x)) ?? activeGoals(goals)[0];
+      say(g ? renderGoal(g) : dim("  (no plan: no active goal)"));
+      break;
+    }
+    case "/memory":
+      say(await s.memory.index());
+      break;
+    case "/playbook":
+    case "/playbooks": {
+      if (rest.length) {
+        // Run by the user, through the tool (it asks as usual); the result
+        // goes to the model, which takes it from there.
+        const result = await s.exec("run_playbook", { name: rest[0], args: rest.slice(1) });
+        say(result);
+        if (/^the user declined|^no playbook|^bad playbook name/.test(result)) break;
+        return {
+          turn: `(The user ran the playbook ${rest[0]}${
+            rest.length > 1 ? ` ${rest.slice(1).join(" ")}` : ""
+          } with /playbook. Its result:)\n${result}`,
+        };
+      }
+      const books = await s.memory.playbooks();
+      say(
+        books.length
+          ? books.map((b) => `${b.name}${b.about ? dim(`  ${b.about}`) : ""}`).join("\n")
+          : "(no playbooks yet: the model saves one as memory playbook/<path>)",
+      );
+      break;
+    }
+    case "/secrets":
+      say(secrets.keys().join("\n") || "(none)");
+      break;
+    case "/forget":
+      if (rest.length) say(`forgot ${secrets.forget(rest.join(" "))}`);
+      else {
+        secrets.clear();
+        say("forgot everything");
+      }
+      break;
+    case "/sync":
+      try {
+        say(await s.memory.sync());
+      } catch (e) {
+        say(red((e as Error).message));
+      }
+      break;
+    case "/theme":
+      say(await themeCommand(rest.join(" ")));
+      break;
+    case "/screenshot":
+      try {
+        say(await screenshotCommand(rest.join(" ")));
+      } catch (e) {
+        say(red(`no screenshot: ${(e as Error).message}`));
+      }
+      break;
+    case "/exit":
+      say(await s.exec("ssh_exit", {}));
+      break;
+    case "/compact": {
+      const busy = spinner("compacting the conversation");
+      try {
+        say((await agent.compact()) ?? "nothing to compact yet", "dim");
+      } catch (e) {
+        say(red((e as Error).message));
+      } finally {
+        busy.stop();
+      }
+      break;
+    }
+    default:
+      say(HELP);
+  }
+  return null;
 }

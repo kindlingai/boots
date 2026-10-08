@@ -88,7 +88,8 @@ Most themes start from another and change its custom properties:
   override them property by property. `default` is the usual start: its properties are
   `--text --bg --faint --dimming --accent --warn --error --ok --user --blue --magenta --body --eyes
   --boots --sweat --signal --header-fg --header-bg --header-inverse`,
-  and for the GUI also `--panel --line --button --font --radius`.
+  and for the GUI also `--panel --line --button --font --radius --say-gap` (the space around the
+  model's words).
 - **`@description "...";`** is what `/theme` shows.
 - **`@media tui { ... }`** and **`@media gui { ... }`** hold rules for one of them only. The line
   interface reads the `tui` rules too.

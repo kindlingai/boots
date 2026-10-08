@@ -188,6 +188,18 @@ Deno.test("read_file: range and pattern come back numbered; ask goes to a fresh 
     );
     assertEquals(bodies.length, 0, "no model for a plain read");
 
+    // A memory's name given as a path: no such file, so the memory.
+    await s.exec("memory_write", {
+      name: "glm53-cluster",
+      content: "## Restart\n- step one\nprose\n",
+    });
+    const mem = await s.exec("read_file", { path: "glm53-cluster", pattern: "^## |^- " });
+    assertStringIncludes(mem, "no file glm53-cluster here; this is the memory glm53-cluster");
+    assertStringIncludes(mem, "1| ## Restart\n2| - step one");
+    assert(!mem.includes("prose"));
+    let missing = "";
+    await s.exec("read_file", { path: "no-such-thing" }).catch((e) => missing = e.message);
+    assert(/No such file|not found/i.test(missing), missing);
     const asked = await s.exec("read_file", {
       path,
       ask: "where are the errors?",

@@ -153,7 +153,7 @@ ${shared}
 const TOKEN = ${JSON.stringify(token)};
 const FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const $ = (id) => document.getElementById(id);
-let state = null, frame = 0, blinkUntil = 0, ws = null, lastEsc = -1e9, history = [], hpos = -1;
+let state = null, frame = 0, blinkUntil = 0, ws = null, lastEsc = -1e9, history = [], hpos = -1, unsent = "";
 
 /** The bot's rows as coloured HTML, like the TUI's paintBot. */
 function paint(art) {
@@ -489,10 +489,13 @@ document.addEventListener("keydown", (e) => {
     const box = $("input");
     const line = parseFloat(getComputedStyle(box).lineHeight) || 20;
     if (!history.length || box.scrollHeight > line * 1.6 + 16) return;
+    if (e.key === "ArrowDown" && hpos < 0) return;
     e.preventDefault();
+    // What was typed is kept when ↑ leaves it, and comes back past the newest with ↓.
+    if (e.key === "ArrowUp" && hpos < 0) unsent = $("input").value;
     if (e.key === "ArrowUp") hpos = hpos < 0 ? history.length - 1 : Math.max(0, hpos - 1);
     else hpos = hpos < 0 ? -1 : hpos + 1 >= history.length ? -1 : hpos + 1;
-    $("input").value = hpos < 0 ? "" : history[hpos];
+    $("input").value = hpos < 0 ? unsent : history[hpos];
     grow();
   }
 });

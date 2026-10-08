@@ -305,10 +305,27 @@ export function wrapAnsi(text: string, w: number): string[] {
 /** Messages the user sent while the model was working, oldest first. */
 const steering: string[] = [];
 
-/** Queues a message typed while the model works: it reads it after its current step. */
-export function steer(text: string): void {
+/** Runs a /command typed while the model works (set by the REPL). */
+let commandHandler: ((text: string) => void) | null = null;
+
+export function setCommandHandler(h: ((text: string) => void) | null): void {
+  commandHandler = h;
+}
+
+/**
+ * Something typed while the model works: a /command runs at once ("command"),
+ * anything else is queued for the model, which reads it after its current
+ * step ("queued"). `commands` false: queued as it is.
+ */
+export function steer(text: string, commands = true): "queued" | "command" | "empty" {
   const t = text.trim();
-  if (t) steering.push(t);
+  if (!t) return "empty";
+  if (commands && commandHandler && /^\/[a-z]/i.test(t)) {
+    commandHandler(t);
+    return "command";
+  }
+  steering.push(t);
+  return "queued";
 }
 
 /** Takes the queued messages (and empties the queue). */

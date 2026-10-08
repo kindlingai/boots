@@ -1002,11 +1002,41 @@ export class Session {
     ].filter(Boolean).join(", ");
     say(`${cyan(this.where())} ${dim("read")} ${args.path}${bits ? dim(`  (${bits})`) : ""}`);
     // A narrower read can go through more of the file than one that comes back whole.
-    const r = await this.call("read", {
-      path: String(args.path),
-      maxBytes: narrowed || question ? READ_MAX_BYTES : undefined,
-    });
+    let r: any;
+    try {
+      r = await this.call("read", {
+        path: String(args.path),
+        maxBytes: narrowed || question ? READ_MAX_BYTES : undefined,
+      });
+    } catch (e) {
+      // A memory's name (glm53-cluster, playbook/..., docs/vllm) given as a
+      // path: no such file here, so the memory, read the same way.
+      const name = String(args.path ?? "").trim();
+      const memory = /no such file|not found|os error 2/i.test((e as Error).message) &&
+          /^(playbooks?\/|docs\/)?[A-Za-z0-9][\w./-]*$/.test(name) && !name.startsWith("/")
+        ? await this.memory.read(name).catch(() => null)
+        : null;
+      if (memory === null) throw e;
+      r = {
+        path: `memory ${name}`,
+        size: memory.length,
+        truncated: false,
+        content: memory,
+        note: `(no file ${name} here; this is the memory ${name}. memory_read reads memories.)\n`,
+      };
+    }
     if (r.binary) return `${r.path} is binary (${r.size} bytes)`;
+    return (r.note ?? "") + await this.readPicked(r, pick, question, narrowed, signal);
+  }
+
+  /** The rest of read_file, on what was read (a file, or a memory). */
+  private async readPicked(
+    r: any,
+    pick: Pick,
+    question: string,
+    narrowed: boolean,
+    signal: AbortSignal | undefined,
+  ): Promise<string> {
     const cut = r.truncated
       ? `\n[file is ${r.size} bytes; only the first ${
         narrowed || question ? `${READ_MAX_BYTES / 1024 / 1024} MB were` : "64 KB was"
@@ -1016,7 +1046,8 @@ export class Session {
           : "; read further with start_line/end_line or pattern, or ask about it"
       }]`
       : "";
-    if (!narrowed && !question) return this.clip(r.content) + cut;
+    // A memory comes whole (memories are kept small enough); a file is clipped.
+    if (!narrowed && !question) return r.note ? r.content : this.clip(r.content) + cut;
     let sel: Selection;
     try {
       sel = selectLines(r.content, pick);

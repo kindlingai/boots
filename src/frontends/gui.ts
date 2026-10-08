@@ -214,8 +214,10 @@ export class GuiFrontend implements Frontend {
       const v = String(m.text ?? "").trim();
       if (v) {
         this.push("user", v);
-        this.push("dim", "(queued: the model reads it after its current step)");
-        steer(v);
+        // A /command runs now; anything else waits for the model's next step.
+        if (steer(v) === "queued") {
+          this.push("dim", "(queued: the model reads it after its current step)");
+        }
       }
     } else if (m.t === "stop") {
       // The Stop button, Esc Esc or ^C in the page: stops like Esc Esc in the

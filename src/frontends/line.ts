@@ -62,8 +62,11 @@ export class LineFrontend implements Frontend {
       this.drawLive();
     };
     this.input.onSend = (text) => {
+      const command = /^\/[a-z]/i.test(text.trim());
       this.print(
-        `${STYLE.bold("›")} ${text}  ${dim("(queued: the model reads it after its current step)")}`,
+        `${STYLE.bold("›")} ${text}${
+          command ? "" : `  ${dim("(queued: the model reads it after its current step)")}`
+        }`,
       );
       steer(text);
     };

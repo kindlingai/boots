@@ -90,7 +90,8 @@ spinner { color: var(--accent); }
   goal.step { color: var(--text); }
   bubble { border: 1px solid var(--accent); border-radius: 10px; }
   user { color: var(--user); }
-  assistant { color: var(--text); }
+  /* The model's words, set apart from the commands around them. */
+  assistant { color: var(--text); margin: var(--say-gap, .7em) 0; }
   prompt, choice { color: var(--accent); }
   input {
     background: var(--bg); color: var(--text);

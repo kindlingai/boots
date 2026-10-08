@@ -128,6 +128,8 @@ export class TuiFrontend implements Frontend {
   private cursor = 0;
   private history: string[] = [];
   private historyAt = -1;
+  /** What was typed before ↑ went into the history; ↓ past the newest brings it back. */
+  private unsent = "";
   private dirty = false;
   private closed = false;
   private timer: ReturnType<typeof setInterval> | undefined;
@@ -443,6 +445,7 @@ export class TuiFrontend implements Frontend {
         break;
       case "A":
         if (!this.pending?.hidden && this.history.length) {
+          if (this.historyAt < 0) this.unsent = this.buf;
           this.historyAt = Math.min(this.history.length - 1, this.historyAt + 1);
           this.buf = this.history[this.history.length - 1 - this.historyAt];
           this.cursor = [...this.buf].length;
@@ -452,7 +455,7 @@ export class TuiFrontend implements Frontend {
         if (this.historyAt >= 0) {
           this.historyAt--;
           this.buf = this.historyAt < 0
-            ? ""
+            ? this.unsent
             : this.history[this.history.length - 1 - this.historyAt];
           this.cursor = [...this.buf].length;
         }
@@ -467,12 +470,14 @@ export class TuiFrontend implements Frontend {
       const v = this.buf.trim();
       if (!v) return;
       this.push("user", v);
-      this.push("dim", "  (queued: the model reads it after its current step)");
       if (v !== this.history.at(-1)) this.history.push(v);
       this.buf = "";
       this.cursor = 0;
       this.scroll = 0;
-      steer(v);
+      // A /command runs now; anything else waits for the model's next step.
+      if (steer(v) === "queued") {
+        this.push("dim", "  (queued: the model reads it after its current step)");
+      }
       return;
     }
     const v = this.buf;
@@ -584,8 +589,8 @@ export class TuiFrontend implements Frontend {
     const hit = this.mdCache.get(e);
     if (hit?.key === key) return hit.lines;
     const indent = " ".repeat([...mark].length);
-    const lines = markdownLines(e.text, width - indent.length, theme.sgr("assistant"))
-      .map((l, i) => (i === 0 ? theme.paint("assistant.mark", mark) : indent) + l);
+    const md = markdownLines(e.text.trim(), width - indent.length, theme.sgr("assistant"));
+    const lines = md.map((l, i) => (i === 0 ? theme.paint("assistant.mark", mark) : indent) + l);
     this.mdCache.set(e, { key, lines });
     return lines;
   }
@@ -646,8 +651,11 @@ export class TuiFrontend implements Frontend {
     };
     for (const e of this.entries) {
       if (e.kind === "assistant" && !e.text.includes(ESC_CHAR)) {
-        // The model's words as Markdown (tables, lists, ...), under its mark.
+        // The model's words as Markdown (tables, lists, ...), under its mark,
+        // with a blank line before and after to set them apart from commands.
+        if (lines.length && lines.at(-1) !== "") lines.push("");
         lines.push(...this.markdown(e, marks.assistant, w - 2));
+        lines.push("");
         continue;
       }
       const mark = e.kind === "assistant" || e.kind === "user" ? e.kind : null;
@@ -665,6 +673,7 @@ export class TuiFrontend implements Frontend {
         } else lines.push(this.styled(e.kind, l));
       });
     }
+    if (lines.at(-1) === "") lines.pop();
     this.scroll = Math.min(this.scroll, Math.max(0, lines.length - body));
     const end = lines.length - this.scroll;
     const view = lines.slice(Math.max(0, end - body), end);
