@@ -4,7 +4,7 @@
 // model that wrote them, to be split into smaller steps.
 
 import { chat, type Endpoint } from "./llm.ts";
-import { stageReadonly, stages } from "./readonly.ts";
+import { crontabList, stageReadonly, stages } from "./readonly.ts";
 
 /**
  * "unknown": it runs a script file (python3 check.py, ./setup.sh), whose
@@ -39,6 +39,7 @@ function writingStage(toks: string[]): boolean {
   if (i >= toks.length) return false;
   const head = toks[i].split(/[\\/]/).pop()!.replace(/\.exe$/i, "");
   const rest = toks.slice(i + 1).join(" ");
+  if (head === "crontab") return !crontabList(toks.slice(i));
   if (WRITE_PROGRAMS.has(head) || /^mkfs/.test(head)) return true;
   if (head === "sed" && /(^|\s)(-[a-zA-Z]*i|--in-place)/.test(rest)) return true;
   if (head === "curl" && CURL_WRITES.test(rest)) return true;

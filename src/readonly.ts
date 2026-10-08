@@ -473,6 +473,8 @@ export function stageReadonly(toks: string[]): boolean {
       /^(set|add|del|delete|flush|change|replace|append|exec|save|restore)$/.test(t)
     );
   }
+  // crontab -l (-u user): lists; anything else installs or removes a crontab.
+  if (head === "crontab") return crontabList(toks);
   // systemctl --user is-active x: harmless options before the verb.
   if (head === "systemctl") {
     const opts =
@@ -488,6 +490,21 @@ export function stageReadonly(toks: string[]): boolean {
     return subs.has(a) || subs.has(`${a} ${toks[2] ?? ""}`.trim());
   }
   return READONLY.has(head);
+}
+
+/** crontab -l, optionally for one user (-u name): only lists. */
+export function crontabList(toks: string[]): boolean {
+  const a = toks.slice(1);
+  if (!a.includes("-l")) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] === "-l") continue;
+    if (a[i] === "-u" && a[i + 1] && !a[i + 1].startsWith("-")) {
+      i++;
+      continue;
+    }
+    return false;
+  }
+  return true;
 }
 
 /** Names an arithmetic python -c may use. */

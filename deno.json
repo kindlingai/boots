@@ -1,6 +1,6 @@
 {
   "name": "@mmastrac/aiboot",
-  "version": "0.1.61",
+  "version": "0.1.62",
   "exports": "./src/main.ts",
   "tasks": {
     "dev": "deno run -A src/main.ts",

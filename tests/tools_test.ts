@@ -114,7 +114,7 @@ Deno.test("ssh targets in a command line", async () => {
   assertEquals(sshTargets("cat ~/.ssh/config | grep gx10"), []);
 });
 
-Deno.test("a second ssh by hand to the same machine is refused, pointing at the ssh tool", async () => {
+Deno.test("ssh by hand: reads as often as needed; changes a third time point at the ssh tool", async () => {
   const { Router } = await import("../src/llm.ts");
   const { Memory } = await import("../src/memory.ts");
   const { McpManager } = await import("../src/mcp.ts");
@@ -130,22 +130,28 @@ Deno.test("a second ssh by hand to the same machine is refused, pointing at the 
     await s.init();
     const ran: string[] = [];
     (s as any).always = { has: () => true, add() {} };
-    (s as any).check = () => Promise.resolve({ verdict: "writes", checked: true });
+    let verdict = "readonly";
+    (s as any).allowReadonly = true;
+    (s as any).check = () => Promise.resolve({ verdict, checked: true });
     (s as any).command = (_op: string, cmd: string) => {
       ran.push(cmd);
       return Promise.resolve({ code: 0, stdout: "ok\n", stderr: "", cmd });
     };
-    assertStringIncludes(await s.exec("run", { command: "ssh admin@gx10 nvidia-smi" }), "exit 0");
-    assertStringIncludes(await s.exec("run", { command: "ssh other@box uptime" }), "exit 0");
-    // Sweeps over several machines are surveys: never refused, and not counted.
+    // Reads: never refused.
+    for (const c of ["nvidia-smi", "df -h", "uptime", "ls ~"]) {
+      assertStringIncludes(await s.exec("run", { command: `ssh admin@gx10 ${c}` }), "exit 0");
+    }
+    // Sweeps over several machines are surveys: never refused.
     const sweep = (c: string) =>
       `for h in 10.0.0.1 10.0.0.2 gx10; do ssh -o BatchMode=yes admin@$h '${c}' 2>&1 | tail -3; done`;
-    assertStringIncludes(await s.exec("run", { command: sweep("pgrep -af sglang") }), "exit 0");
-    assertStringIncludes(await s.exec("run", { command: sweep("uptime") }), "exit 0");
-    const second = await s.exec("run", { command: "ssh -p 22 root@GX10 df -h" });
-    assertStringIncludes(second, "second command that connects to gx10");
-    assertStringIncludes(second, "ssh tool with destination root@gx10");
-    assertEquals(ran.length, 4);
+    verdict = "writes";
+    assertStringIncludes(await s.exec("run", { command: sweep("touch a") }), "exit 0");
+    assertStringIncludes(await s.exec("run", { command: "ssh other@box touch x" }), "exit 0");
+    // Changes on a machine already reached by hand twice or more: the ssh tool.
+    const no = await s.exec("run", { command: "ssh -p 22 root@GX10 touch y" });
+    assertStringIncludes(no, "Not run");
+    assertStringIncludes(no, "ssh tool with destination root@gx10");
+    assertEquals(ran.length, 6);
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
@@ -772,6 +778,37 @@ Deno.test("sudo inside run: running only the run half reminds once that the sudo
     assertStringIncludes(half, "`docker ps | head -5`");
     const again = await s.exec("run", { command: "uptime" });
     assert(!again.includes("root part"), "once");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("the ssh tool connects with a named key (ssh -i)", async () => {
+  const { Router } = await import("../src/llm.ts");
+  const { Memory } = await import("../src/memory.ts");
+  const { McpManager } = await import("../src/mcp.ts");
+  const { Session } = await import("../src/tools.ts");
+  const dir = await Deno.makeTempDir();
+  try {
+    const s = new Session(
+      new Router({ label: "m", baseUrl: "http://127.0.0.1:9/v1", model: "m", contextChars: 1e4 }),
+      new Memory(`${dir}/mem`),
+      new McpManager(`${dir}/mcp.json`),
+      () => Promise.resolve(null),
+    );
+    await s.init();
+    (s as any).skipPermissions = true;
+    const calls: any[] = [];
+    (s as any).call = (op: string, args: any) => {
+      calls.push({ op, args });
+      throw new Error("no network here");
+    };
+    await s.exec("ssh", { destination: "admin@10.0.0.70", identity: "~/.ssh/spark_ed25519" })
+      .catch(() => {});
+    assertEquals(calls[0], {
+      op: "ssh_open",
+      args: { dest: "admin@10.0.0.70", port: undefined, identity: "~/.ssh/spark_ed25519" },
+    });
   } finally {
     await Deno.remove(dir, { recursive: true });
   }

@@ -132,7 +132,11 @@ export class Host {
       case "git_clone":
         return await this.gitClone(String(args.url), args.ref ? String(args.ref) : undefined);
       case "ssh_open":
-        return await this.sshOpen(String(args.dest), args.port);
+        return await this.sshOpen(
+          String(args.dest),
+          args.port,
+          args.identity ? String(args.identity) : undefined,
+        );
       case "ssh_close":
         return await this.sshClose(String(args.id));
       default:
@@ -595,7 +599,7 @@ export class Host {
     return { path, files: files.sort(), readme };
   }
 
-  async sshOpen(dest: string, port?: number | string) {
+  async sshOpen(dest: string, port?: number | string, identity?: string) {
     // Whatever the new hop asks for is asked on behalf of `dest`.
     const childAsk: Asker = (req) => this.ask({ ...req, path: [dest, ...req.path] });
     const child = await openSsh(
@@ -604,6 +608,7 @@ export class Host {
       childAsk,
       this.log,
       (token, line) => this.onLine?.(token, line),
+      identity,
     );
     const id = String(this.nextChild++);
     this.children.set(id, child);

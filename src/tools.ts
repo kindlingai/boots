@@ -198,6 +198,21 @@ export function sshRootAdvice(cmd: string): string | null {
   return null;
 }
 
+/** The key an ssh command names with -i, if any. */
+function sshIdentity(cmd: string): string | null {
+  for (const w of commands(cmd)) {
+    if (w[0] !== "ssh") continue;
+    for (let i = 1; i < w.length; i++) {
+      if (w[i] === "-i") return w[i + 1] ?? null;
+      if (/^-i./.test(w[i])) return w[i].slice(2);
+    }
+  }
+  return null;
+}
+
+/** ssh commands by hand to one machine before changing things there by hand is refused. */
+const MANUAL_SSH = 2;
+
 export function refuseInRun(cmd: string): string | null {
   const advice = sshRootAdvice(cmd);
   if (advice) return `ssh with root: ${advice}`;
@@ -459,6 +474,9 @@ export const TOOLS: ToolDef[] = [
     {
       destination: str("user@host"),
       port: { type: "integer" },
+      identity: str(
+        "a key file to connect with (ssh -i), on the machine the connection goes out from, e.g. ~/.ssh/spark_ed25519; only when the default keys do not get in",
+      ),
       hop: {
         type: "boolean",
         description:
@@ -837,7 +855,8 @@ export class Session {
   }
 
   /** Machines already reached with ssh inside run, per location: the next one is refused. */
-  private manualSsh = new Set<string>();
+  /** Commands by hand (ssh inside run) to each machine, from each location. */
+  private manualSsh = new Map<string, number>();
   /** The root half of a split sudo-inside-run, until the sudo tool runs. */
   private pendingRoot: { loc: string; root: string } | null = null;
 
@@ -1036,23 +1055,26 @@ export class Session {
           }
           return `Not run: ${refused}`;
         }
-        // One ssh by hand to a machine is fine; a second means it should be a hop.
-        // A loop over hosts is checked host by host; a sweep over several
-        // machines is a survey, not work that belongs in a hop.
+        // A look by hand at a machine is fine, as often as it takes; changing
+        // things there by hand a third time means it should be a hop. A loop
+        // over hosts is checked host by host; a sweep over several machines is
+        // a survey, not work that belongs in a hop.
         const targets = [
           ...new Set(sshTargets(unrollLoops(unwrapShell(cmd))).filter((t) => !/[$`]/.test(t))),
         ];
         const single = new Set(targets.map(sshHost)).size === 1;
-        const again2 = single &&
-          targets.find((t) => this.manualSsh.has(`${loc}\0${sshHost(t)}`));
-        if (again2) {
-          say(commandLine(loc, "$", cmd));
-          say(yellow(`    not run: ssh to ${sshHost(again2)} again; use the ssh tool`));
-          return `Not run: this is the second command that connects to ${
-            sshHost(again2)
-          } with ssh inside run. To work on that machine, call the ssh tool with destination ${again2} instead: ai-bootstrap connects once, installs itself there, and run, read_file, write_file and sudo then work on that machine directly (no ssh in the command) until ssh_exit. Passwords are handled for you.`;
-        }
+        const sshKey = single ? `${loc}\0${sshHost(targets[0])}` : "";
         const { verdict, checked, culprit } = await this.check(cmd);
+        if (sshKey && verdict !== "readonly" && (this.manualSsh.get(sshKey) ?? 0) >= MANUAL_SSH) {
+          const dest = targets[0];
+          say(commandLine(loc, "$", cmd));
+          say(yellow(`    not run: changes on ${sshHost(dest)} by hand again; use the ssh tool`));
+          return `Not run: this command changes things on ${
+            sshHost(dest)
+          } through ssh inside run, after ${MANUAL_SSH} commands there already. Reading by hand is fine, but to work on that machine, call the ssh tool with destination ${dest}${
+            sshIdentity(cmd) ? ` and identity ${sshIdentity(cmd)}` : ""
+          }: ai-bootstrap connects once, installs itself there, and run, read_file, write_file and sudo then work on that machine directly (no ssh in the command) until ssh_exit. Passwords are handled for you.`;
+        }
         let accepted = false;
         if (verdict === "complex") {
           // The user may take it as it is, within a few seconds; otherwise
@@ -1086,7 +1108,7 @@ export class Session {
           );
           if (no) return no;
         }
-        if (single) this.manualSsh.add(`${loc}\0${sshHost(targets[0])}`);
+        if (sshKey) this.manualSsh.set(sshKey, (this.manualSsh.get(sshKey) ?? 0) + 1);
         const r = await this.command("exec", cmd, args, signal);
         this.show(r);
         // Only a read is pointless to repeat; anything else may have changed
@@ -1199,7 +1221,10 @@ export class Session {
           return `already on ${dest}. Location: ${this.where()}`;
         }
         const from = hop ? this.where() : this.stack[0].label;
+        const identity = args.identity ? String(args.identity) : undefined;
         const sshWhat = `${commandLine(from, ">>", bold(dest))}${
+          identity ? dim(` (key ${identity})`) : ""
+        }${
           hop ? ` ${yellow("(multi-hop, through " + this.here.label + ")")}` : ""
         } (ai-bootstrap installs itself there)`;
         if (this.hostAllowed(dest) && !this.skipPermissions) {
@@ -1220,7 +1245,7 @@ export class Session {
         }
         if (left.length) say(dim(`  left ${left.join(", ")}; connecting from ${this.where()}`));
         const connecting = spinner(`connecting to ${dest}`);
-        const r = await this.call("ssh_open", { dest, port: args.port }).catch((e) => {
+        const r = await this.call("ssh_open", { dest, port: args.port, identity }).catch((e) => {
           throw new Error(
             `${(e as Error).message}${
               left.length ? ` (left ${left.join(", ")} first: now on ${this.where()})` : ""

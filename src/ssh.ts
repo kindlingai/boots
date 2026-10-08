@@ -37,7 +37,7 @@ function controlDir(): string {
   return join(Deno.env.get("TMPDIR") ?? "/tmp", `ai-bootstrap-${Deno.uid() ?? "u"}`);
 }
 
-function sshBase(port?: string): string[] {
+function sshBase(port?: string, identity?: string): string[] {
   const a = [
     "-o",
     "ConnectTimeout=15",
@@ -54,19 +54,24 @@ function sshBase(port?: string): string[] {
     a.push("-o", "ControlPersist=60");
   }
   if (port) a.push("-p", port);
+  // A key file on the machine the connection goes out from; ~ is its home.
+  if (identity) {
+    const home = Deno.env.get("HOME") ?? Deno.env.get("USERPROFILE") ?? "";
+    a.push("-i", identity.replace(/^~(?=$|[\\/])/, home));
+  }
   for (const w of (Deno.env.get("AIBOOT_SSH_OPTS") ?? "").split(" ")) if (w) a.push(w);
   return a;
 }
 
 async function sshRun(
   dest: string,
-  port: string | undefined,
+  base: string[],
   env: Record<string, string>,
   remote: string,
   stdin?: ReadableStream<Uint8Array>,
 ): Promise<{ code: number; out: string; err: string }> {
   const p = new Deno.Command("ssh", {
-    args: [...sshBase(port), dest, "--", remote],
+    args: [...base, dest, "--", remote],
     env,
     stdin: stdin ? "piped" : "null",
     stdout: "piped",
@@ -258,7 +263,9 @@ export async function openSsh(
   ask: Asker,
   log: (s: string) => void,
   onLine?: (token: string, line: string) => void,
+  identity?: string,
 ): Promise<SshChild> {
+  const base = sshBase(port, identity);
   if (!isWindows) {
     await ensureDir(controlDir());
     await Deno.chmod(controlDir(), 0o700);
@@ -266,7 +273,7 @@ export async function openSsh(
   const askpass = await startAskpass(ask);
   try {
     const env = askpass.env;
-    const probe = await sshRun(dest, port, env, `sh -c '${PROBE}'`);
+    const probe = await sshRun(dest, base, env, `sh -c '${PROBE}'`);
     if (probe.code !== 0) {
       throw new Error(`ssh ${dest} failed: ${probe.err || `exit ${probe.code}`}`);
     }
@@ -279,7 +286,7 @@ export async function openSsh(
     const name = remote.slice(remote.lastIndexOf("/") + 1);
     const have = await sshRun(
       dest,
-      port,
+      base,
       env,
       `sh -c 'test -x "${remote}" && echo yes || echo no; ${
         pruneRemote(`${rcache}/bin`, name).replace(/'/g, `'"'"'`)
@@ -294,7 +301,7 @@ export async function openSsh(
       const unpack = zip ? "gunzip -c" : "cat";
       const put = await sshRun(
         dest,
-        port,
+        base,
         env,
         `sh -c 'mkdir -p "${rcache}/bin" && ${unpack} > "${remote}.tmp" && chmod 755 "${remote}.tmp" && mv "${remote}.tmp" "${remote}"'`,
         body,
@@ -303,7 +310,7 @@ export async function openSsh(
     }
 
     const proc = new Deno.Command("ssh", {
-      args: [...sshBase(port), dest, "--", `'${remote}' --far`],
+      args: [...base, dest, "--", `'${remote}' --far`],
       env,
       stdin: "piped",
       stdout: "piped",
