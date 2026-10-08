@@ -28,6 +28,7 @@ Some other ways to get started:
  - `OPENROUTER_API_KEY=xxx ai-bootstrap`: Use a free model from OpenRouter as your bootstrap intelligence
  - `OPENAI_API_KEY=xxx ai-bootstrap`: Use an OpenAI model as your bootstrap intelligence
  - `OPENAI_BASE_URL=https://... OPENAI_API_KEY=xxx OPENAI_MODEL=xxx ai-bootstrap`: Use an OpenAI-compatible model as your bootstrap intelligence
+ - `OPENAI_MODEL=GLM-5.3-Flash OPENAI_BASE_URL=https://api.z.ai/api/paas/v4/ OPENAI_API_KEY=XXX`: Use GLM 5.3 Flash on z.ai (~$1 to set up a model)
 
 ## What it knows
 
