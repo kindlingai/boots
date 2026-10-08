@@ -4,7 +4,7 @@
 import { languageRule } from "./platform.ts";
 import type { Message, Reply } from "./llm.ts";
 import { type ChatShape, type Endpoint, LLMError } from "./llm.ts";
-import { BASE_TOOLS, describe, renderGoal, type Session, TOOLS } from "./tools.ts";
+import { BASE_TOOLS, describe, renderGoal, type Session, TOOLS, withPlaybooks } from "./tools.ts";
 import { offerOffline } from "./setup.ts";
 import { themeCommand } from "./theme.ts";
 import { screenshotCommand } from "./screenshot.ts";
@@ -57,8 +57,13 @@ function shape(ep: Endpoint): ChatShape {
       toolChoice: Deno.env.get("AIBOOT_FORCE_TOOLS") === "0" ? undefined : "required",
     };
   }
-  return { tools: TOOLS };
+  return {
+    tools: TOOLS.map((t) => t.function.name === "run_playbook" ? withPlaybooks(t, playbooks) : t),
+  };
 }
+
+/** The playbooks as of the latest system prompt (shape lists them in run_playbook). */
+let playbooks: { name: string; about: string }[] = [];
 
 /**
  * Fits the history into the current model's budget: older tool output is
@@ -473,7 +478,7 @@ export class Agent {
   async system(): Promise<() => string> {
     this.templates ??= await loadTemplates();
     const t = this.templates;
-    const [index, fleet, goals, docs, memories, remote, fresh] = await Promise.all([
+    const [index, fleet, goals, docs, memories, remote, fresh, books] = await Promise.all([
       this.s.memory.index(),
       this.s.memory.fleet(),
       this.s.memory.goals(),
@@ -481,7 +486,9 @@ export class Agent {
       this.s.memory.list(),
       this.s.memory.remote(),
       this.s.memory.isEmpty(),
+      this.s.memory.playbooks?.() ?? [],
     ]);
+    playbooks = books;
     const extra = this.extraContext();
     const shownGoals = this.noteGoals(goals);
     // Rendered lazily: the router may fall back to the bootstrap model mid-request.
@@ -500,6 +507,7 @@ export class Agent {
         hardware: this.s.here.info.hardware,
         docs,
         memories,
+        playbooks: books,
         memory_sync: remote,
         other_sources: extra,
         index,
@@ -838,6 +846,10 @@ export class Agent {
   }
 }
 
+/** The first turn after a restart with open goals (main.md, Goals). */
+export const RESTART_GOALS =
+  "(New session: ai-bootstrap restarted, and goals.json has open goals from before. Open by reviewing them, as your instructions say under Goals.)";
+
 const HELP = `commands:
   /where        current location (hop stack)
   /model        models in use
@@ -845,6 +857,7 @@ const HELP = `commands:
   /goals [clear|restore]  show the goals (titles); clear them all, or put
                 back the last version that had goals
   /memory       show the memory INDEX
+  /playbook [name]  list the playbooks, or run one (it asks first)
   /secrets      list remembered secrets (names only)
   /forget [k]   forget remembered secrets (all, or a location prefix)
   /sync         sync memory with its git repository
@@ -876,6 +889,11 @@ export async function repl(agent: Agent, setupNote: string | null = null): Promi
     // their hardware (docs/prompts).
     say(dim("(/help for commands)"));
     await agent.turn("(New session. Open as your instructions say.)");
+  } else if (normalizeGoals(parseGoals(await s.memory.goals())).some((g) => !g.done)) {
+    // Goals from before: the model checks with the user that they still
+    // hold before anything else (main.md, Goals).
+    say(dim("(/help for commands)"));
+    await agent.turn(RESTART_GOALS);
   } else {
     say(`\n${bold("What would you like to do?")} ${dim("(/help for commands)")}`);
   }
@@ -1019,6 +1037,20 @@ export async function repl(agent: Agent, setupNote: string | null = null): Promi
         case "/memory":
           say(await s.memory.index());
           break;
+        case "/playbook":
+        case "/playbooks": {
+          if (rest.length) {
+            say(await s.exec("run_playbook", { name: rest[0], args: rest.slice(1) }));
+            break;
+          }
+          const books = await s.memory.playbooks();
+          say(
+            books.length
+              ? books.map((b) => `${b.name}${b.about ? dim(`  ${b.about}`) : ""}`).join("\n")
+              : "(no playbooks yet: the model saves one as memory playbook/<path>)",
+          );
+          break;
+        }
         case "/secrets":
           say(secrets.keys().join("\n") || "(none)");
           break;

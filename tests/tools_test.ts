@@ -147,11 +147,44 @@ Deno.test("ssh by hand: reads as often as needed; changes a third time point at 
     verdict = "writes";
     assertStringIncludes(await s.exec("run", { command: sweep("touch a") }), "exit 0");
     assertStringIncludes(await s.exec("run", { command: "ssh other@box touch x" }), "exit 0");
-    // Changes on a machine already reached by hand twice or more: the ssh tool.
-    const no = await s.exec("run", { command: "ssh -p 22 root@GX10 touch y" });
-    assertStringIncludes(no, "Not run");
-    assertStringIncludes(no, "ssh tool with destination root@gx10");
-    assertEquals(ran.length, 6);
+    // Changes on a machine already reached by hand twice or more: it runs, and
+    // the result points at the ssh tool.
+    const hinted = await s.exec("run", { command: "ssh -p 22 root@GX10 touch y" });
+    assertStringIncludes(hinted, "exit 0");
+    assertStringIncludes(hinted, "[hint: this changes things on gx10");
+    assertStringIncludes(hinted, "ssh tool with destination root@gx10");
+    assertEquals(ran.length, 7);
+
+    // Root over ssh runs too, approved as root work every time; on one machine
+    // the result points at the tools, over several it is left as it is.
+    const kinds: string[] = [];
+    (s as any).gate = (_w: string, _k: string, kind = "normal") => {
+      kinds.push(kind);
+      return Promise.resolve(null);
+    };
+    const one = await s.exec("run", { command: "ssh admin@spark1 'sudo systemctl restart x'" });
+    assertStringIncludes(one, "exit 0");
+    assertStringIncludes(one, 'then the sudo tool with command "systemctl restart x"');
+    const fleet = await s.exec("run", {
+      command: "for h in spark1 spark2 spark3; do ssh admin@$h sudo -n systemctl restart x; done",
+    });
+    assertStringIncludes(fleet, "exit 0");
+    assert(!fleet.includes("[hint"), fleet);
+    assertEquals(kinds, ["root", "root"]);
+    // A password sudo cannot be typed there: said so.
+    (s as any).command = (_op: string, cmd: string) =>
+      Promise.resolve({
+        code: 1,
+        stdout: "",
+        stderr: "sudo: a terminal is required to read the password\n",
+        cmd,
+      });
+    assertStringIncludes(
+      await s.exec("run", { command: "ssh a@b sudo ls; ssh a@c sudo ls" }),
+      "[hint: sudo on the other machine wanted a password",
+    );
+    // Root here inside run still goes to the sudo tool.
+    assertStringIncludes(await s.exec("run", { command: "sudo ls /root" }), "Not run");
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
@@ -851,9 +884,9 @@ Deno.test("scratch is per machine: a stale long path is moved here; a file writt
     assertStringIncludes(w, `${scratch}/mesh-check2.sh`);
     assertStringIncludes(w, "not this machine's scratch");
     assertEquals(await Deno.readTextFile(`${scratch}/mesh-check2.sh`), "hostname\n");
-    // Running a stale long path: not run, with the path here.
+    // Running a stale long path: it runs, and the result gives the path here.
     const stale = await s.exec("run", { command: "bash /tmp/boots-scratch-0ldc0nnect10n/x.sh" });
-    assertStringIncludes(stale, "Not run");
+    assertStringIncludes(stale, "[hint: /tmp/boots-scratch-0ldc0nnect10n is not the scratch");
     assertStringIncludes(stale, `$BOOTS_SCRATCH is ${scratch}`);
     // A file written here runs here.
     await s.exec("write_file", { path: "$BOOTS_SCRATCH/deploy-key.sh", content: "true\n" });
@@ -868,7 +901,7 @@ Deno.test("scratch is per machine: a stale long path is moved here; a file writt
       info: { ...s.here.info, scratch: "/tmp/boots-scratch-efcd" },
     });
     const there = await s.exec("run", { command: "bash $BOOTS_SCRATCH/deploy-key.sh" });
-    assertStringIncludes(there, "Not run");
+    assertStringIncludes(there, "[hint: ");
     assertStringIncludes(there, "deploy-key.sh was written to the scratch directory on local");
     assertStringIncludes(there, "write_file it here first");
     // Made by the command itself: fine.
@@ -877,6 +910,8 @@ Deno.test("scratch is per machine: a stale long path is moved here; a file writt
       "exit 0",
     );
     assertEquals(ran, [
+      "bash /tmp/boots-scratch-0ldc0nnect10n/x.sh",
+      "bash $BOOTS_SCRATCH/deploy-key.sh",
       "bash $BOOTS_SCRATCH/deploy-key.sh",
       "ls > $BOOTS_SCRATCH/deploy-key.sh; cat $BOOTS_SCRATCH/out",
     ]);

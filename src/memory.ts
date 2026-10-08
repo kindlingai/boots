@@ -9,6 +9,35 @@ import { dataDir, docsDir, ensureDir, exists } from "./platform.ts";
 
 export const INDEX_LIMIT = 4096;
 
+/**
+ * Any other memory (or playbook) is at most this big: memories are read
+ * whole, never cut, so a bigger one is split by topic instead.
+ */
+export const MEMORY_LIMIT = 10 * 1024;
+
+/**
+ * A playbook: a script for a common operation, kept in memory as
+ * playbook/<path> (e.g. playbook/models/glm53flash/up), in
+ * memory/playbook/<path>.sh, and run with run_playbook. The path, or null
+ * when the name is not a playbook's.
+ */
+export function playbookPath(name: string): string | null {
+  const m = name.trim().match(/^playbooks?\/(.+?)(\.sh)?$/);
+  if (!m) return null;
+  const parts = m[1].split("/");
+  if (
+    parts.length > 6 || !parts.every((p) => /^[A-Za-z0-9][A-Za-z0-9._-]{0,60}$/.test(p)) ||
+    parts.some((p) => p.endsWith("."))
+  ) {
+    throw new Error(
+      `bad playbook name ${
+        JSON.stringify(name)
+      }: playbook/ then up to 6 parts of letters, digits - _ . separated by /, e.g. playbook/models/glm53flash/up`,
+    );
+  }
+  return parts.join("/");
+}
+
 /** The fleet inventory: always in context, always a valid JSON object. */
 export const FLEET = "fleet.json";
 export const FLEET_LIMIT = 8192;
@@ -240,6 +269,8 @@ export class Memory {
   }
 
   private path(name: string): string {
+    const book = playbookPath(name);
+    if (book) return join(this.dir, "playbook", ...book.split("/")) + ".sh";
     const json = jsonMemory(name);
     if (json) return join(this.dir, json.file);
     const n = name.replace(/\.md$/, "");
@@ -302,6 +333,35 @@ export class Memory {
     return out.sort();
   }
 
+  /** The playbooks, as playbook/<path>, each with its description (its first comment line). */
+  async playbooks(): Promise<{ name: string; about: string }[]> {
+    const out: { name: string; about: string }[] = [];
+    const root = join(this.dir, "playbook");
+    const walk = async (dir: string, prefix: string, depth: number) => {
+      if (depth > 6) return;
+      try {
+        for await (const e of Deno.readDir(dir)) {
+          if (e.isDirectory) await walk(join(dir, e.name), `${prefix}${e.name}/`, depth + 1);
+          else if (e.isFile && e.name.endsWith(".sh")) {
+            const text = await Deno.readTextFile(join(dir, e.name)).catch(() => "");
+            const about = text.split("\n").find((l) => /^#(?!!)\s*\S/.test(l))?.replace(
+              /^#\s*/,
+              "",
+            ) ?? "";
+            out.push({
+              name: `playbook/${prefix}${e.name.slice(0, -3)}`,
+              about: about.slice(0, 120),
+            });
+          }
+        }
+      } catch {
+        // none yet
+      }
+    };
+    await walk(root, "", 0);
+    return out.sort((a, b) => a.name.localeCompare(b.name));
+  }
+
   async docNames(): Promise<string[]> {
     const out: string[] = [];
     try {
@@ -330,6 +390,10 @@ export class Memory {
       return await Deno.readTextFile(this.path(name));
     } catch (e) {
       if (e instanceof Deno.errors.NotFound) {
+        if (playbookPath(name)) {
+          const have = (await this.playbooks()).map((b) => b.name);
+          throw new Error(`no ${name}; playbooks: ${have.join(", ") || "none yet"}`);
+        }
         throw new Error(`no memory ${name}; have: ${(await this.list()).join(", ")}`);
       }
       throw e;
@@ -353,6 +417,18 @@ export class Memory {
         `INDEX would be ${bytes} bytes; the limit is ${INDEX_LIMIT}. Move detail into a separate memory file and keep INDEX to one-line pointers.`,
       );
     }
+    if (p !== this.indexPath() && bytes > MEMORY_LIMIT) {
+      throw new Error(
+        `${name} would be ${bytes} bytes; a ${
+          playbookPath(name) ? "playbook" : "memory"
+        } is at most ${MEMORY_LIMIT} (10 kB), so it can always be read whole. Nothing was written. Split it by topic into several (e.g. ${
+          name.replace(/\.md$/, "")
+        }-network, ${
+          name.replace(/\.md$/, "")
+        }-launch), each with what belongs together, and point to them from INDEX.`,
+      );
+    }
+    await Deno.mkdir(dirname(p), { recursive: true });
     await Deno.writeTextFile(p, next);
     return `${append ? "appended to" : "wrote"} ${name} (${bytes} bytes)`;
   }
@@ -547,6 +623,7 @@ export class Memory {
     );
     const files: [string, string][] = [];
     for (const n of await this.list()) files.push([n, join(this.dir, `${n}.md`)]);
+    for (const b of await this.playbooks()) files.push([b.name, this.path(b.name)]);
     for (const m of JSON_MEMORIES) {
       if (await this.json(m.file)) files.push([m.file, join(this.dir, m.file)]);
     }

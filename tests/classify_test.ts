@@ -218,12 +218,20 @@ Deno.test("run refuses root by any route: wrappers, xargs, find -exec, sh -c", a
       "su -c 'id' root",
       "pkexec visudo",
       "timeout 5 sudo -n true",
+    ]
+  ) {
+    assert(escalates(c), c);
+    assert(refuseInRun(c), c);
+  }
+  // Root on another machine over ssh runs (approved as root work, remoteRoot).
+  for (
+    const c of [
       "ssh admin@gx10 'sudo systemctl restart x'",
       "ssh -p 2222 -o BatchMode=yes gx10 sudo reboot",
     ]
   ) {
     assert(escalates(c), c);
-    assert(refuseInRun(c), c);
+    assertEquals(refuseInRun(c), null, c);
   }
   for (
     const c of [
@@ -301,7 +309,15 @@ Deno.test("ssh and root together get advice: ssh tool first, then sudo there", a
   const b = sshRootAdvice("sudo ssh -p 2222 root@10.0.0.5 uptime")!;
   assertStringIncludes(b, "root's ssh keys");
   assertStringIncludes(b, "destination root@10.0.0.5");
-  assertStringIncludes(refuseInRun("ssh gx10 sudo -n reboot")!, "ssh with root:");
+  assertStringIncludes(refuseInRun("sudo ssh gx10 uptime")!, "ssh with root:");
+  assertEquals(refuseInRun("ssh gx10 sudo -n reboot"), null, "runs, as root work");
+  const { remoteRoot } = await import("../src/tools.ts");
+  assertEquals(remoteRoot("ssh gx10 sudo -n reboot"), { hosts: ["gx10"], sshCount: 1 });
+  assertEquals(
+    remoteRoot("for h in a b; do ssh admin@$h 'sudo -n systemctl restart x'; done"),
+    { hosts: ["a", "b"], sshCount: 2 },
+  );
+  assertEquals(remoteRoot("ssh gx10 uptime; ssh gx11 uptime"), null);
   assertEquals(sshRootAdvice("ssh admin@gx10 uptime"), null);
   assertEquals(sshRootAdvice("sudo systemctl status ssh"), null);
 });

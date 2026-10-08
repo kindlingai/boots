@@ -6,7 +6,7 @@ import type { Transcript } from "./transcript.ts";
 import { join } from "@std/path";
 import { b64, DEFAULT_TIMEOUT_MS, type ExecResult, Host, type HostInfo } from "./host.ts";
 import { apiKey, chat, type Endpoint, reachable, type Router, type ToolDef } from "./llm.ts";
-import { type Goal, JSON_MEMORIES, jsonMemory, type Memory } from "./memory.ts";
+import { type Goal, JSON_MEMORIES, jsonMemory, type Memory, playbookPath } from "./memory.ts";
 import type { McpManager } from "./mcp.ts";
 import { addScratchDir, isReadonly, stages, unrollLoops, unwrapShell } from "./readonly.ts";
 import { describeEnvironment } from "./envinfo.ts";
@@ -142,7 +142,7 @@ const RUNS_ARGS = new Set(["xargs", "watch", "parallel", "flock", "chroot", "unb
  * shell script (sh -c '...', ssh host '...' runs on the other side and
  * is left alone).
  */
-export function escalates(cmd: string, depth = 0): boolean {
+export function escalates(cmd: string, depth = 0, remote = true): boolean {
   if (depth > 3) return false;
   for (const w of commands(cmd)) {
     const head = w[0];
@@ -152,10 +152,10 @@ export function escalates(cmd: string, depth = 0): boolean {
     }
     if (/^(sh|bash|zsh|dash|ksh|fish)$/.test(head)) {
       const c = w.indexOf("-c");
-      if (c > 0 && w[c + 1] && escalates(w[c + 1], depth + 1)) return true;
+      if (c > 0 && w[c + 1] && escalates(w[c + 1], depth + 1, remote)) return true;
     }
     // ssh host 'sudo ...': root on the other machine, past the sudo tool.
-    if (head === "ssh") {
+    if (head === "ssh" && remote) {
       const remote = sshRemote(w);
       if (remote && escalates(remote, depth + 1)) return true;
     }
@@ -183,6 +183,11 @@ function sshRemote(words: string[]): string {
  * for doing it the supported way, or null when the line has no such mix.
  */
 export function sshRootAdvice(cmd: string): string | null {
+  return sudoSshAdvice(cmd) ?? remoteRootAdvice(cmd);
+}
+
+/** `sudo ssh ...`: connects with root's keys, which is never what is meant. */
+export function sudoSshAdvice(cmd: string): string | null {
   for (const w of commands(cmd)) {
     // sudo ssh ...: connects with root's keys and known_hosts, not the user's.
     let i = 0;
@@ -196,6 +201,13 @@ export function sshRootAdvice(cmd: string): string | null {
         dest ?? "user@host"
       } (no sudo), then use run there, and the sudo tool for anything that needs root on it.`;
     }
+  }
+  return null;
+}
+
+/** `ssh host sudo ...`: how to do it through the tools instead (a hint, not a refusal). */
+export function remoteRootAdvice(cmd: string): string | null {
+  for (const w of commands(cmd)) {
     if (w[0] === "ssh") {
       const remote = sshRemote(w);
       if (remote && escalates(remote)) {
@@ -223,11 +235,29 @@ function sshIdentity(cmd: string): string | null {
 /** ssh commands by hand to one machine before changing things there by hand is refused. */
 const MANUAL_SSH = 2;
 
+/**
+ * Root on other machines through ssh in run (`ssh host sudo ...`, or a loop
+ * of them): the machines, and how many ssh commands the line has. It runs,
+ * as root work: the user approves it every time. null when there is none.
+ */
+export function remoteRoot(cmd: string): { hosts: string[]; sshCount: number } | null {
+  const cmds = commands(unrollLoops(unwrapShell(cmd)));
+  const ssh = cmds.filter((w) => w[0] === "ssh");
+  const root = ssh.filter((w) => {
+    const remote = sshRemote(w);
+    return !!remote && escalates(remote);
+  });
+  if (!root.length) return null;
+  const hosts = [...new Set(root.flatMap((w) => sshTargets(w.join(" "))).map(sshHost))];
+  return { hosts, sshCount: ssh.length };
+}
+
+/** Root on this machine inside run, which cannot work (no password there): sent to the sudo tool. */
 export function refuseInRun(cmd: string): string | null {
-  const advice = sshRootAdvice(cmd);
+  const advice = sudoSshAdvice(cmd);
   if (advice) return `ssh with root: ${advice}`;
   const cmds = commands(cmd);
-  if (cmds.some((w) => w[0] === "sudo") || escalates(cmd)) {
+  if (cmds.some((w) => w[0] === "sudo") || escalates(cmd, 0, false)) {
     // Lead with what to do: a model told only "no" tends to drop the root part.
     const split = sudoSplit(cmd);
     if (split) {
@@ -235,7 +265,7 @@ export function refuseInRun(cmd: string): string | null {
         split.rest ? `, then call run with \`${split.rest}\`` : ""
       }. (Root goes through the sudo tool, so the user sees and approves it.)`;
     }
-    return "running as root inside run (sudo, doas, su or pkexec, also inside xargs, find -exec, sh -c or ssh host '...'): use the sudo tool, with the command without the word sudo, so the user approves it; for another machine, connect with the ssh tool first. (Inspection rarely needs root: try it without first.)";
+    return "running as root inside run (sudo, doas, su or pkexec, also inside xargs, find -exec or sh -c): use the sudo tool, with the command without the word sudo, so the user approves it; for another machine, connect with the ssh tool first. (Inspection rarely needs root: try it without first.)";
   }
   if (cmds.some(startsServer)) {
     return "this starts a model server, which would block until it times out. Write the command into a start script instead: for the model ai-bootstrap should use, start-full.sh in the startup scripts folder, started with start_full_model. For another server, start-<name>.sh in that machine's startup scripts folder, run in the background with its output to a log: nohup sh <script> > <name>.log 2>&1 &";
@@ -338,6 +368,7 @@ const sshHost = (t: string) => t.slice(t.lastIndexOf("@") + 1);
 /** One line for each tool that does not announce itself. */
 const QUIET_TOOLS: Record<string, (a: any) => string> = {
   memory_read: (a) => `reading ${a.name}`,
+  run_playbook: (a) => `running playbook ${a.name}`,
   memory_search: (a) => `searching memory and docs for "${a.query}"`,
   history_search: (a) => `searching history for "${a.query}"`,
   mcp_list: (a) => a.server ? `listing MCP tools of ${a.server}` : "listing MCP servers",
@@ -458,6 +489,23 @@ const fn = (
 });
 const str = (description: string) => ({ type: "string", description });
 
+/**
+ * run_playbook as offered to the model: the playbooks there are now, with
+ * what each does, in its description, where the model looks when it decides
+ * how to do something.
+ */
+export function withPlaybooks(t: ToolDef, books: { name: string; about: string }[]): ToolDef {
+  const list = books.slice(0, 40).map((b) =>
+    `${b.name.replace(/^playbook\//, "")}${b.about ? ` (${b.about.slice(0, 80)})` : ""}`
+  );
+  const have = list.length
+    ? ` Playbooks now: ${list.join("; ")}${
+      books.length > 40 ? `; and ${books.length - 40} more` : ""
+    }. Prefer one of these to retyping its steps.`
+    : " There are none yet: save one with memory_write playbook/<path> once an operation works.";
+  return { ...t, function: { ...t.function, description: t.function.description + have } };
+}
+
 /** How much of a file a narrowed read (range, pattern, ask) goes through. */
 const READ_MAX_BYTES = 16 * 1024 * 1024;
 
@@ -572,13 +620,29 @@ export const TOOLS: ToolDef[] = [
   ),
   fn(
     "memory_write",
-    "Save durable facts about the user's setup. Write INDEX to update the always-visible index (4 kB limit; one line per memory file). Write fleet.json to update the always-visible fleet inventory: the content must be a complete, valid JSON object (it replaces the file; 8 kB limit). Write goals.json to replace the always-visible goals: a JSON list of {title, details?, done?, active?, children?}, and nothing else (8 kB limit; details are for you, never shown to the user). For small changes to either, json_eval is easier.",
+    "Save durable facts about the user's setup. A memory is at most 10 kB (read whole, never cut): split bigger ones by topic. Write playbook/<path> (e.g. playbook/models/glm53flash/up) to save a playbook: a shell script for an operation you will repeat, whose first comment line says what it does. Write INDEX to update the always-visible index (4 kB limit; one line per memory file). Write fleet.json to update the always-visible fleet inventory: the content must be a complete, valid JSON object (it replaces the file; 8 kB limit). Write goals.json to replace the always-visible goals: a JSON list of {title, details?, done?, active?, children?}, and nothing else (8 kB limit; details are for you, never shown to the user). For small changes to either, json_eval is easier.",
     {
-      name: str("memory name, letters digits - _ ."),
-      content: str("Markdown"),
+      name: str(
+        "memory name, letters digits - _ .; or playbook/<path> for a playbook (a script, see run_playbook)",
+      ),
+      content: str("Markdown (a playbook: the script)"),
       append: { type: "boolean", description: "append instead of replacing" },
     },
     ["name", "content"],
+  ),
+  fn(
+    "run_playbook",
+    "Run a playbook (a script saved with memory_write as playbook/<path>) on the current host. The user sees the script and approves it (yes, no, or always while it is unchanged). It runs as you, in the current directory; root inside it needs sudo -n (no password) or the sudo tool.",
+    {
+      name: str("the playbook, e.g. models/glm53flash/up (playbook/ is optional)"),
+      args: {
+        type: "array",
+        items: { type: "string" },
+        description: "arguments, as $1 $2 ... in the script",
+      },
+      timeout_s: { type: "integer", description: "seconds before it is stopped (default 600)" },
+    },
+    ["name"],
   ),
   fn(
     "memory_search",
@@ -827,6 +891,56 @@ export class Session {
 
   where(): string {
     return this.stack.map((l) => l.label).join(" > ");
+  }
+
+  /**
+   * run_playbook: a script from memory (playbook/<path>), shown to the user
+   * and approved like a command (always holds while the script is unchanged).
+   */
+  private async runPlaybook(args: any, signal?: AbortSignal): Promise<string> {
+    const raw = String(args.name ?? "").trim().replace(/^\/+/, "");
+    let book: string | null;
+    try {
+      book = playbookPath(/^playbooks?\//.test(raw) ? raw : `playbook/${raw}`);
+    } catch (e) {
+      return (e as Error).message;
+    }
+    let script: string;
+    try {
+      script = await this.memory.read(`playbook/${book}`);
+    } catch (e) {
+      return (e as Error).message;
+    }
+    const argv: string[] = Array.isArray(args.args) ? args.args.map(String) : [];
+    const loc = this.where();
+    const lines = script.split("\n").filter((l) => l.trim());
+    const preview = lines.slice(0, 16).map((l) => dim(`    ${l}`)).join("\n") +
+      (lines.length > 16 ? dim(`\n    ... (${lines.length - 16} more lines)`) : "");
+    const what = `${cyan(loc)} ${bold("playbook")} ${book}${
+      argv.length ? ` ${argv.join(" ")}` : ""
+    }`;
+    const no = await this.gate(
+      `${what}\n${preview}`,
+      `${loc}\0playbook\0${book}\0${JSON.stringify(argv)}\0${script}`,
+    );
+    if (no) return no;
+    const quote = (a: string) => `'${a.replace(/'/g, `'\\''`)}'`;
+    const posix = this.here.info.shell !== "powershell";
+    const cmd = (posix && argv.length ? `set -- ${argv.map(quote).join(" ")}\n` : "") + script;
+    const r = await this.command(
+      "exec",
+      cmd,
+      { timeout_s: Number(args.timeout_s) || 600, label: `playbook ${book}` },
+      signal,
+    );
+    this.show(r);
+    this.recent.clear();
+    const hint = /a terminal is required|a password is required|no tty present|askpass/i.test(
+        `${r.stdout}\n${r.stderr}`,
+      )
+      ? "\n[hint: sudo in the playbook wanted a password, which a playbook cannot type. Use sudo -n with a NOPASSWD rule for that command, or take the root step out and do it with the sudo tool.]"
+      : "";
+    return `playbook ${book}: ${this.render(r)}${hint}`;
   }
 
   /**
@@ -1189,7 +1303,7 @@ export class Session {
     try {
       const timeoutMs = (Number(args.timeout_s) || DEFAULT_TIMEOUT_MS / 1000) * 1000;
       // Something moves while it runs (the frontends add the seconds).
-      const short = cmd.replace(/\s+/g, " ");
+      const short = String(args.label ?? cmd).replace(/\s+/g, " ");
       const what = `running ${short.length > 50 ? `${short.slice(0, 47)}...` : short}`;
       const s = spin = spinner(what);
       this.lineListeners.set(token, (line) => s.update(`${what}  │ ${line.slice(0, 120)}`));
@@ -1241,12 +1355,9 @@ export class Session {
           say(yellow("    not run: the same command again"));
           return again;
         }
+        // A scratch file from another machine or connection: it runs (and
+        // likely fails), and the result says why.
         const elsewhere = this.scratchElsewhere(cmd);
-        if (elsewhere) {
-          say(commandLine(loc, "$", cmd));
-          say(yellow(`    not run: ${elsewhere.split(":")[0]}`));
-          return `Not run: ${elsewhere}`;
-        }
         const refused = refuseInRun(cmd);
         if (refused) {
           say(commandLine(loc, "$", cmd));
@@ -1271,15 +1382,28 @@ export class Session {
         const single = new Set(targets.map(sshHost)).size === 1;
         const sshKey = single ? `${loc}\0${sshHost(targets[0])}` : "";
         const { verdict, checked, culprit } = await this.check(cmd);
+        // Hints that come back with the result: they steer, they do not refuse.
+        const hints: string[] = elsewhere ? [elsewhere] : [];
         if (sshKey && verdict !== "readonly" && (this.manualSsh.get(sshKey) ?? 0) >= MANUAL_SSH) {
           const dest = targets[0];
-          say(commandLine(loc, "$", cmd));
-          say(yellow(`    not run: changes on ${sshHost(dest)} by hand again; use the ssh tool`));
-          return `Not run: this command changes things on ${
-            sshHost(dest)
-          } through ssh inside run, after ${MANUAL_SSH} commands there already. Reading by hand is fine, but to work on that machine, call the ssh tool with destination ${dest}${
-            sshIdentity(cmd) ? ` and identity ${sshIdentity(cmd)}` : ""
-          }: ai-bootstrap connects once, installs itself there, and run, read_file, write_file and sudo then work on that machine directly (no ssh in the command) until ssh_exit. Passwords are handled for you.`;
+          hints.push(
+            `this changes things on ${
+              sshHost(dest)
+            } through ssh inside run, after ${MANUAL_SSH} commands there already. To keep working on that machine, call the ssh tool with destination ${dest}${
+              sshIdentity(cmd) ? ` and identity ${sshIdentity(cmd)}` : ""
+            }: ai-bootstrap connects once, and run, read_file, write_file and sudo then work there directly (no ssh in the command, passwords handled) until ssh_exit.`,
+          );
+        }
+        // Root on other machines over ssh: it runs, and is approved as root
+        // work (every time). A single machine is better done through the
+        // tools; a line over several (a loop over the fleet) is fine as it is.
+        const remote = remoteRoot(cmd);
+        if (remote && remote.sshCount === 1) {
+          hints.push(
+            `for root work on one machine, ${
+              remoteRootAdvice(cmd) ?? "use the ssh tool, then the sudo tool there"
+            }`,
+          );
         }
         let accepted = false;
         if (verdict === "complex") {
@@ -1293,9 +1417,17 @@ export class Session {
             return Session.TOO_COMPLEX;
           }
         }
-        const label = Session.label(verdict, checked, culprit);
+        const label = Session.label(verdict, checked, culprit) +
+          (remote ? red(`  (root on ${remote.hosts.join(", ") || "another machine"})`) : "");
         if (accepted) {
           // Taken as it is by the user, just now.
+        } else if (remote) {
+          const no = await this.gate(
+            `${commandLine(loc, "$", cmd)}${label}`,
+            `${loc}\0${cmd}`,
+            "root",
+          );
+          if (no) return no;
         } else if (verdict === "readonly" && this.allowReadonly) {
           say(commandLine(loc, "$", cmd) + label);
         } else if (this.autoActive() && (verdict === "readonly" || verdict === "writes")) {
@@ -1319,12 +1451,23 @@ export class Session {
         this.show(r);
         // Only a read is pointless to repeat; anything else may have changed
         // what the next command sees.
-        if (r.cancelled) return this.render(r);
-        if (verdict !== "readonly" || accepted) {
-          this.recent.clear();
-          return this.render(r) + this.rootOwed(loc);
+        if (
+          remote &&
+          /a terminal is required|a password is required|no tty present|askpass/i.test(
+            `${r.stdout}\n${r.stderr}`,
+          )
+        ) {
+          hints.push(
+            "sudo on the other machine wanted a password, which cannot be typed through ssh inside run. Use sudo -n there to fail fast, or do it machine by machine with the ssh tool and then the sudo tool (which handle the password).",
+          );
         }
-        return this.remember(`${loc}\0${cmd}`, this.render(r)) + this.rootOwed(loc);
+        const hinted = hints.map((h) => `\n[hint: ${h}]`).join("");
+        if (r.cancelled) return this.render(r) + hinted;
+        if (verdict !== "readonly" || accepted || remote) {
+          this.recent.clear();
+          return this.render(r) + hinted + this.rootOwed(loc);
+        }
+        return this.remember(`${loc}\0${cmd}`, this.render(r)) + hinted + this.rootOwed(loc);
       }
       case "sudo": {
         this.pendingRoot = null;
@@ -1511,7 +1654,10 @@ export class Session {
         return `${describeProfile(p)}. Saved to ${await profilePath(ep)}; the user can edit it.`;
       }
       case "memory_read":
-        return this.clip(await this.memory.read(String(args.name)));
+        // Whole: memories are kept to 10 kB so they never need cutting.
+        return await this.memory.read(String(args.name));
+      case "run_playbook":
+        return await this.runPlaybook(args, signal);
       case "memory_write": {
         const r = await this.memory.write(
           String(args.name),

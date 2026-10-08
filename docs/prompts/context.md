@@ -19,6 +19,7 @@
 
 - Knowledge base (memory_search, or memory_read docs/<name>): {{docs}}
 - Memory files: {{memories}}
+- Playbooks (run_playbook): {{playbooks}}
 - Memory sync: {{memory_sync}}
 {{other_sources}}
 Memory INDEX (memory/INDEX.md):

@@ -68,6 +68,8 @@ export interface PromptVars {
   hardware: string;
   docs: string[];
   memories: string[];
+  /** The playbooks (run_playbook), with what each does. */
+  playbooks?: { name: string; about: string }[];
   memory_sync: string | null;
   other_sources: string;
   index: string;
@@ -148,6 +150,8 @@ function basePrompt(t: Templates, router: Router, v: PromptVars): string {
     shell_note: v.shell === "powershell" ? "Commands here run in PowerShell.\n" : "",
     docs: v.docs.join(", ") || "none",
     memories: v.memories.join(", ") || "none",
+    playbooks: (v.playbooks ?? []).map((b) => (b.about ? `${b.name} (${b.about})` : b.name))
+      .join("; ") || "none yet",
     memory_sync: v.memory_sync ?? "not set up",
     other_sources: v.other_sources,
     index: v.index.trim(),

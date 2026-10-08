@@ -49,6 +49,7 @@ would you like to do?" prompt, so the model can ask its opening question.
 | `shell_note`        | a line when commands run in PowerShell, else empty                                                    |
 | `docs`              | the knowledge-base docs, comma separated                                                              |
 | `memories`          | memory file names                                                                                     |
+| `playbooks`         | the playbooks (memory playbook/...), each with its first comment line, or "none yet"                 |
 | `memory_sync`       | the git remote memory syncs to, or `not set up`                                                       |
 | `other_sources`     | other AI sources seen at boot, or empty                                                               |
 | `index`             | memory INDEX.md (4 kB at most)                                                                        |
