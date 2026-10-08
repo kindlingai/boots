@@ -726,7 +726,7 @@ export const TOOLS: ToolDef[] = [
   }, ["base_url"]),
   fn(
     "use_model",
-    "Connect ai-bootstrap itself to a model at an OpenAI-compatible URL (another machine, a mentat router at http://<node>:6381/v1, a hosted API) and use it from now on (asks the user). This is how to switch or reconnect to any model not started by start-full.sh on this machine: check the id with models_at first. It is remembered and reconnected at the next start, so no script is needed; never edit start-full.sh for it. The bootstrap model stays as the fallback.",
+    "Connect ai-bootstrap itself to a model at an OpenAI-compatible URL (another machine, a mentat router at http://<node>:6381/v1, a hosted API) and use it from now on (asks the user). This is how to switch or reconnect to any model not started by start-full.sh on this machine: check the id with models_at first. It is remembered and reconnected at the next start, so no script is needed; never edit start-full.sh for it. The bootstrap model stays as the fallback. Call it as the only tool call in its reply (update_status aside): alongside others it is not run.",
     {
       base_url: str("OpenAI-compatible base URL ending in /v1"),
       model: str("model id"),
@@ -768,7 +768,7 @@ export const TOOLS: ToolDef[] = [
   ),
   fn(
     "start_full_model",
-    "(Re)start the full model with the start-full script in this machine's startup scripts folder, wait until it answers, and switch to it. The script must run the server in the foreground and contain a line `# endpoint: <base_url> <model>`. If it fails, returns the end of its log and its error lines.",
+    "(Re)start the full model with the start-full script in this machine's startup scripts folder, wait until it answers, and switch to it. The script must run the server in the foreground and contain a line `# endpoint: <base_url> <model>`. If it fails, returns the end of its log and its error lines. Call it as the only tool call in its reply (update_status aside): alongside others it is not run.",
     {},
     [],
   ),
@@ -809,7 +809,7 @@ export const BASE_TOOLS = [
   ),
   fn(
     "set_up_model",
-    "Set up a catalog model as the full model on this machine and switch to it. The user is asked to confirm. It installs the GPU build of llama.cpp, writes start-full.sh, downloads the model (several GB: this can take many minutes) and starts it. Returns what happened, or the end of the log if it failed.",
+    "Set up a catalog model as the full model on this machine and switch to it. The user is asked to confirm. It installs the GPU build of llama.cpp, writes start-full.sh, downloads the model (several GB: this can take many minutes) and starts it. Returns what happened, or the end of the log if it failed. Call it as the only tool call in its reply (update_status aside): alongside others it is not run.",
     { model: str("a model id from list_models") },
     ["model"],
   ),

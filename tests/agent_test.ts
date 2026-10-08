@@ -722,3 +722,34 @@ Deno.test("a message typed while the model works is read after the latest tool r
     await done();
   }
 });
+
+Deno.test("a model switch runs only as the reply's only call", async () => {
+  const { switchesHeld } = await import("../src/agent.ts");
+  const c = (name: string) => ({ function: { name } });
+  const [s1, u, r] = [c("use_model"), c("update_status"), c("run")];
+  assertEquals(switchesHeld([s1]).size, 0);
+  assertEquals(switchesHeld([u, s1]).size, 0, "update_status aside");
+  assertEquals([...switchesHeld([r, s1])], [s1]);
+  const s2 = c("start_full_model");
+  assertEquals(switchesHeld([s1, s2]).size, 2, "two switches: neither");
+
+  const { m, agent, done } = await session("gpt-oss-120b", [
+    {
+      calls: [
+        { name: "memory_read", args: { name: "INDEX" } },
+        { name: "use_model", args: { base_url: "http://127.0.0.1:9/v1", model: "other" } },
+      ],
+    },
+    { content: "ok" },
+  ]);
+  try {
+    await agent.turn("switch");
+    const results = m.seen.filter((b) => b.tools)[1].messages.filter((x: any) => x.role === "tool");
+    assertEquals(results.length, 2);
+    assert(!results[0].content.startsWith("not run"), "the other call ran");
+    assertStringIncludes(results[1].content, "not run: use_model switches the model");
+    assertEquals(agent.s.router.current().model, "gpt-oss-120b", "no switch");
+  } finally {
+    await done();
+  }
+});

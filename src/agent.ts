@@ -757,8 +757,19 @@ export class Agent {
       let replied = false;
       // Only what the answering model was offered (the base model is on rails).
       const offered = new Set(shape(this.s.router.current()).tools.map((t) => t.function.name));
+      const held = switchesHeld(reply.toolCalls);
       for (const [n, tc] of reply.toolCalls.entries()) {
         let result: string;
+        if (held.has(tc)) {
+          say(dim(`  ${tc.function.name} not run: a model switch must be the only call`));
+          this.push({
+            role: "tool",
+            tool_call_id: tc.id,
+            content:
+              `not run: ${tc.function.name} switches the model, so it must be the only tool call in a reply (update_status aside). The other calls in this reply ran; when you are ready, call ${tc.function.name} again, alone.`,
+          });
+          continue;
+        }
         if (!offered.has(tc.function.name)) {
           this.push({
             role: "tool",
@@ -852,6 +863,20 @@ export class Agent {
       }
     }
   }
+}
+
+/** Tools that switch the model in use. */
+export const SWITCHES = new Set(["use_model", "set_up_model", "start_full_model"]);
+
+/**
+ * The model-switching calls in a reply that must not run: a switch runs
+ * only when it is the reply's only call (update_status aside), so nothing
+ * meant for one model lands on another.
+ */
+export function switchesHeld<T extends { function: { name: string } }>(calls: T[]): Set<T> {
+  const real = calls.filter((c) => c.function.name !== "update_status");
+  const switches = real.filter((c) => SWITCHES.has(c.function.name));
+  return new Set(switches.length && real.length > 1 ? switches : []);
 }
 
 /** The first turn after a restart with open goals (main.md, Goals). */
