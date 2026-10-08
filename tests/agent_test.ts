@@ -46,6 +46,10 @@ Deno.test("base model: on rails, tool calls required, reply ends the turn", asyn
       "list_models",
       "set_up_model",
       "start_full_model",
+      "models_at",
+      "use_model",
+      "environment",
+      "saved_models",
       "read_log",
       "remove_downloads",
     ]);

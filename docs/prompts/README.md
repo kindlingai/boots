@@ -6,7 +6,7 @@ its behaviour without touching code. They are compiled into the binary along wit
 
 | file            | used when                                                                                                                                                                  |
 | --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `base.md`       | the model answering is the small base intelligence (the Qwen 4B, or any model of 8B parameters or fewer by its name). On rails: its only tools are reply, list_models, set_up_model and start_full_model, and every step must be a tool call. |
+| `base.md`       | the model answering is the small base intelligence (the Qwen 4B, or any model of 8B parameters or fewer by its name). On rails: its only tools are reply, list_models, set_up_model, start_full_model, read_log, remove_downloads, environment, models_at, use_model and saved_models, and every step must be a tool call. |
 | `main.md`       | a capable model is answering (registered with `use_model`, or a large bootstrap such as an API model). The full harness behaviour.                                         |
 | `diagnose.md`   | the full model's startup script (`start-full.sh`) failed at boot and a capable model is answering (the base model gets a short version inside base.md). Hands it the end of the log and the error lines, and asks it to diagnose and fix.|
 | `onboarding.md` | inserted into either while memory is empty (nothing recorded but the automatic `local-setup`): find out what AI hardware the user has access to and record it.             |

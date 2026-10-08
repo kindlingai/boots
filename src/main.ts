@@ -23,6 +23,7 @@ import { downloadSize } from "./rails.ts";
 import { Agent, repl } from "./agent.ts";
 import { boot } from "./boot.ts";
 import { pinnedEndpoint } from "./discover.ts";
+import { offerOffline } from "./setup.ts";
 import {
   cacheDir,
   currentTarget,
@@ -214,8 +215,15 @@ async function interactive(mode: UiMode, perms: Permissions = NO_PERMISSIONS): P
   } catch {
     // not supported here
   }
+  // Started with a key or an endpoint: asked once about offline use too.
+  const setupNote = booted.hosted && !hasFull
+    ? await offerOffline(router.current().label).catch((e) => {
+      warn(`offline setup: ${(e as Error).message}`);
+      return null;
+    })
+    : null;
   try {
-    await repl(agent);
+    await repl(agent, setupNote);
   } finally {
     await session.closeAll();
     llama?.stop();

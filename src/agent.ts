@@ -5,6 +5,7 @@ import { languageRule } from "./platform.ts";
 import type { Message, Reply } from "./llm.ts";
 import { type ChatShape, type Endpoint, LLMError } from "./llm.ts";
 import { BASE_TOOLS, describe, renderGoal, type Session, TOOLS } from "./tools.ts";
+import { offerOffline } from "./setup.ts";
 import { currentTier, loadTemplates, systemPrompt, type Templates, tierOf } from "./prompts.ts";
 import { secrets } from "./secrets.ts";
 import { ask, bold, dim, Interrupted, plain, red, say, spinner, warn } from "./ui.ts";
@@ -848,6 +849,8 @@ const HELP = `commands:
   /compact      summarise older turns to free context (keeps the last 2)
   /mode [auto|ask]  auto: run read-only commands and non-sudo writes without
                 asking (never dangerous ones, never sudo, never on the base model)
+  /setup        set up AI on this machine for offline use (a small local
+                model, then a full one for the GPU), or decline it
   /probe        probe the model in use (30s at most): how it thinks, and the
                 settings used for thinking and not thinking (cached; editable)
   /thinking [on|off]  off: ask models to answer without thinking first
@@ -855,9 +858,15 @@ const HELP = `commands:
   /exit         leave the current remote host
   /quit         quit`;
 
-export async function repl(agent: Agent): Promise<void> {
+export async function repl(agent: Agent, setupNote: string | null = null): Promise<void> {
   const s = agent.s;
-  if (s.fullFailure || currentTier(s.router) === "base" || (await s.memory.isEmpty())) {
+  if (setupNote) {
+    // The offline setup the user just asked for comes first.
+    say(dim("(/help for commands)"));
+    await agent.turn(setupNote);
+  } else if (
+    s.fullFailure || currentTier(s.router) === "base" || (await s.memory.isEmpty())
+  ) {
     // The model speaks first: it reports a full model that failed to start, the
     // base model asks to set up a smarter one, and a new user is asked about
     // their hardware (docs/prompts).
@@ -961,6 +970,12 @@ export async function repl(agent: Agent): Promise<void> {
             ];
             say(goals.length ? goals.flatMap((g) => line(g, 0)).join("\n") : "(no goals)");
           }
+          break;
+        }
+        case "/setup": {
+          // Offline AI on this machine: asked again, and set up if wanted.
+          const note = await offerOffline(s.router.current().label, true);
+          if (note) await agent.turn(note);
           break;
         }
         case "/probe": {

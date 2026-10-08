@@ -9,6 +9,7 @@ import { apiKey, chat, type Endpoint, reachable, type Router, type ToolDef } fro
 import { type Goal, JSON_MEMORIES, jsonMemory, type Memory } from "./memory.ts";
 import type { McpManager } from "./mcp.ts";
 import { addScratchDir, isReadonly, stages, unrollLoops, unwrapShell } from "./readonly.ts";
+import { describeEnvironment } from "./envinfo.ts";
 import {
   describeFailure,
   type FullFailure,
@@ -595,6 +596,7 @@ export const TOOLS: ToolDef[] = [
   ),
   fn("models_at", "List the models an OpenAI-compatible endpoint serves (GET /models).", {
     base_url: str("e.g. http://10.0.0.5:8000/v1"),
+    api_key_env: str("environment variable holding the key, for a hosted API"),
   }, ["base_url"]),
   fn(
     "use_model",
@@ -603,6 +605,9 @@ export const TOOLS: ToolDef[] = [
       base_url: str("OpenAI-compatible base URL ending in /v1"),
       model: str("model id"),
       api_key_env: str("environment variable holding the key, if any"),
+      api_key: str(
+        "the key itself, when the user gave it to you in the conversation; kept in memory only (never on disk), so it is gone at the next start. Prefer api_key_env",
+      ),
       ask_user_for_key: {
         type: "boolean",
         description: "prompt the user for a key, kept in memory only",
@@ -614,6 +619,26 @@ export const TOOLS: ToolDef[] = [
       },
     },
     ["base_url", "model"],
+  ),
+  fn(
+    "environment",
+    "What this machine's environment says about AI: OPENAI_BASE_URL, OPENAI_MODEL and similar settings, which provider keys are set (never their values), and for each a ready use_model call. Use it before asking the user for a key or a URL.",
+    {},
+    [],
+  ),
+  fn(
+    "saved_models",
+    "The model connections ai-bootstrap remembers (from use_model and set_up_model; the first that answers is reconnected at each start). list them; remove one; or update one's fields (label, model, base_url, api_key_env, sampling, context_tokens). Removing or updating asks the user.",
+    {
+      action: { type: "string", enum: ["list", "remove", "update"] },
+      index: { type: "integer", description: "which one, as list numbers them (from 1)" },
+      set: {
+        type: "object",
+        description:
+          'for update: the fields to change, e.g. {"api_key_env": "OPENROUTER_API_KEY"} or {"sampling": {"temperature": 0.6}}; null removes a field',
+      },
+    },
+    ["action"],
   ),
   fn(
     "start_full_model",
@@ -663,6 +688,10 @@ export const BASE_TOOLS = [
     ["model"],
   ),
   ...TOOLS.filter((t) => t.function.name === "start_full_model"),
+  // A hosted model or a server of the user's: found in the environment, or given.
+  ...TOOLS.filter((t) =>
+    ["environment", "models_at", "use_model", "saved_models"].includes(t.function.name)
+  ),
   READ_LOG_TOOL,
   fn(
     "remove_downloads",
@@ -1397,7 +1426,11 @@ export class Session {
       }
       case "models_at": {
         const base = String(args.base_url).replace(/\/$/, "");
-        const r = await fetch(`${base}/models`, { signal: AbortSignal.timeout(8000) });
+        const key = args.api_key_env ? Deno.env.get(String(args.api_key_env)) : undefined;
+        const r = await fetch(`${base}/models`, {
+          headers: key ? { authorization: `Bearer ${key}` } : {},
+          signal: AbortSignal.timeout(8000),
+        });
         if (!r.ok) return `HTTP ${r.status}`;
         const j = await r.json();
         const ids = (j.data ?? j.models ?? []).filter((m: any) => m.id ?? m.name).map((m: any) => {
@@ -1408,6 +1441,11 @@ export class Session {
       }
       case "use_model":
         return await this.useModel(args);
+      case "environment":
+        say(dim("  looked at the environment (key values are never shown)"));
+        return describeEnvironment();
+      case "saved_models":
+        return await this.savedModels(args);
       case "list_models": {
         if (this.stack.length > 1) return "models are set up on the local machine only";
         say(dim("  checking the GPU and the model catalog"));
@@ -1548,7 +1586,13 @@ export class Session {
         ? args.sampling
         : undefined,
     };
-    if (args.ask_user_for_key) {
+    if (args.api_key_env && !Deno.env.get(String(args.api_key_env))) {
+      return `${args.api_key_env} is not set in this environment; the environment tool lists the keys that are. Pass the key as api_key, or ask_user_for_key.`;
+    }
+    if (args.api_key && !args.api_key_env) {
+      secrets.set([baseUrl], "apikey", String(args.api_key));
+      ep.keyInMemory = true;
+    } else if (args.ask_user_for_key) {
       const k = await askSecret(`API key for ${baseUrl} (kept in memory only): `);
       if (!k) return "no key given";
       secrets.set([baseUrl], "apikey", k);
@@ -1583,6 +1627,73 @@ export class Session {
       green(`  now using ${model}; ${this.router.bootstrap.label} stays as the fallback`),
     );
     return `switched to ${model}. The bootstrap model remains the fallback.`;
+  }
+
+  /** saved_models: list, remove or update the remembered model connections. */
+  private async savedModels(args: any): Promise<string> {
+    const all = await loadSmart();
+    const show = (e: Endpoint, i: number) =>
+      `${i + 1}. ${e.label}: ${e.model} at ${e.baseUrl}${
+        e.keyEnv ? `, key from ${e.keyEnv}${Deno.env.get(e.keyEnv) ? "" : " (not set now)"}` : ""
+      }${e.keyInMemory ? ", key typed in (not kept: skipped at start)" : ""}${
+        e.sampling ? `, sampling ${JSON.stringify(e.sampling)}` : ""
+      }, context ${Math.round(e.contextChars / CHARS_PER_TOKEN)} tokens${
+        this.router.smart?.baseUrl === e.baseUrl && this.router.smart?.model === e.model
+          ? " (in use)"
+          : ""
+      }`;
+    const action = String(args.action ?? "list");
+    if (action === "list") {
+      return all.length
+        ? `${all.map(show).join("\n")}\n(At each start the first that answers is used.)`
+        : "no saved model connections";
+    }
+    const i = Number(args.index) - 1;
+    const e = all[i];
+    if (!e) return `no saved model ${args.index}; there are ${all.length}`;
+    if (action === "remove") {
+      const no = await this.gate(
+        `forget the saved model ${show(e, i)}`,
+        `forget\0${e.baseUrl}\0${e.model}`,
+      );
+      if (no) return no;
+      all.splice(i, 1);
+    } else if (action === "update") {
+      const set = args.set && typeof args.set === "object" ? args.set : {};
+      const next: any = { ...e };
+      const FIELDS: Record<string, string> = {
+        label: "label",
+        model: "model",
+        base_url: "baseUrl",
+        api_key_env: "keyEnv",
+        sampling: "sampling",
+        context_tokens: "contextChars",
+      };
+      for (const [k, v] of Object.entries(set)) {
+        const f = FIELDS[k];
+        if (!f) return `cannot set ${k}; the fields are ${Object.keys(FIELDS).join(", ")}`;
+        if (v === null) delete next[f];
+        else if (f === "contextChars") next[f] = Number(v) * CHARS_PER_TOKEN;
+        else if (f === "baseUrl") next[f] = String(v).replace(/\/$/, "");
+        else next[f] = v;
+      }
+      if (!next.baseUrl || !next.model) return "a saved model needs a base_url and a model";
+      if (next.keyEnv) delete next.keyInMemory;
+      const no = await this.gate(
+        `change the saved model ${i + 1}: ${JSON.stringify(set)}`,
+        `remodel\0${e.baseUrl}\0${e.model}\0${JSON.stringify(set)}`,
+      );
+      if (no) return no;
+      all[i] = next;
+      // The one in use takes the change now.
+      const cur = this.router.smart;
+      if (cur && cur.baseUrl === e.baseUrl && cur.model === e.model) Object.assign(cur, next);
+    } else return `unknown action ${action}: list, remove or update`;
+    await writeSmart(all);
+    say(green(`  saved models: ${action === "remove" ? "forgot" : "updated"} ${e.label}`));
+    return `${action === "remove" ? "removed" : "updated"}. Now:\n${
+      all.length ? all.map(show).join("\n") : "no saved model connections"
+    }`;
   }
 
   async closeAll(): Promise<void> {
@@ -1638,11 +1749,14 @@ export async function saveSmart(ep: Endpoint): Promise<void> {
     !(e.baseUrl === ep.baseUrl && e.model === ep.model)
   );
   all.unshift({ ...ep });
+  await writeSmart(all);
+}
+
+async function writeSmart(all: Endpoint[]): Promise<void> {
+  // A probed profile is cached on its own (probes/); typed-in keys never are.
+  const clean = all.slice(0, 10).map(({ profile: _p, ...e }) => e);
   await ensureDir(dataDir());
-  await Deno.writeTextFile(
-    modelsPath(),
-    JSON.stringify({ smart: all.slice(0, 10) }, null, 2) + "\n",
-  );
+  await Deno.writeTextFile(modelsPath(), JSON.stringify({ smart: clean }, null, 2) + "\n");
 }
 
 /** Re-attaches the most recent smart model that needs no typed-in key. */

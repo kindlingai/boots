@@ -16,6 +16,8 @@ export interface Booted {
   llama: Running | null;
   /** The installed llama-server for the bootstrap, when it was left unstarted (deferLocal). */
   deferred: string | null;
+  /** The bootstrap is a hosted model or the endpoint given (a key, OPENAI_BASE_URL). */
+  hosted: boolean;
   facts: string;
 }
 
@@ -68,10 +70,12 @@ export async function boot(
   let bootstrap: Endpoint;
   let llama: Running | null = null;
   let deferred: string | null = null;
+  let hosted = false;
 
   if (pinned) {
     // Given on the command line: no choosing, nothing downloaded or started.
     bootstrap = pinned;
+    hosted = true;
   } else if (!sources.length) {
     if (!installed) {
       info("no bootstrap intelligence found (no local model servers, no API keys)");
@@ -116,6 +120,7 @@ export async function boot(
       bootstrap = llama.endpoint;
     } else {
       bootstrap = sources[pick].endpoint;
+      hosted = sources[pick].kind === "api";
     }
   }
   if (!deferred) say(`${bold("bootstrap:")} ${bootstrap.label} ${dim(bootstrap.baseUrl)}`);
@@ -130,5 +135,5 @@ export async function boot(
       deferred ? " (started only if the full model is not up)" : ` (${bootstrap.baseUrl})`
     }${llama ? `, started by ${llama.script}` : ""}`;
   await memory.recordLocalSetup(allFacts);
-  return { bootstrap, sources, llama, deferred, facts: allFacts };
+  return { bootstrap, sources, llama, deferred, hosted, facts: allFacts };
 }
