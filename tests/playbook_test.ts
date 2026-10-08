@@ -116,9 +116,21 @@ Deno.test("playbooks: written as memory, listed with what they do, searched, and
     // Arguments as $1 $2 where the shell is POSIX (PowerShell hosts take the script as it is).
     assertEquals(
       ran[0].cmd,
-      Deno.build.os === "windows" ? script : `set -- 'a' 'b'\\''c'\n${script}`,
+      Deno.build.os === "windows"
+        ? `$env:MEMORY_DIR = '${join(dir, "mem")}'\n${script}`
+        : `MEMORY_DIR='${join(dir, "mem")}'; export MEMORY_DIR\nset -- 'a' 'b'\\''c'\n${script}`,
     );
     assertEquals(ran[0].args.timeout_s, 600);
+    assertEquals(ran[0].args.local, true, "always on the local machine");
+    // Even from a hop: still local, still asked about as local.
+    (s as any).stack.push({ label: "admin@gx10", via: ["1"], info: { ...s.here.info } });
+    await s.exec("run_playbook", { name: "models/glm53flash/up" });
+    assertEquals(ran[1].args.local, true);
+    assertStringIncludes(asked[1].what, "local");
+    assert(!asked[1].what.includes("admin@gx10"), asked[1].what);
+    (s as any).stack.pop();
+    ran.length = 1;
+    asked.length = 1;
     assertEquals(ran[0].args.label, "playbook models/glm53flash/up");
 
     answer = "the user declined to run this";

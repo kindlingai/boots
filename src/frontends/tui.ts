@@ -31,6 +31,7 @@ import {
 
 import { bot, type Mood, moodOf, wrap } from "./bot.ts";
 import { onTheme, tuiTheme } from "../theme.ts";
+import { markdownLines, markdownPlain } from "../markdown.ts";
 export { bot, wrap };
 
 const enc = new TextEncoder();
@@ -574,6 +575,21 @@ export class TuiFrontend implements Frontend {
     return [`◆ ${goal}${step ? ` › ${step}` : ""}${more}`];
   }
 
+  /** Rendered Markdown per entry, while its text, width and theme stay the same. */
+  private mdCache = new WeakMap<Entry, { key: string; lines: string[] }>();
+
+  private markdown(e: Entry, mark: string, width: number): string[] {
+    const theme = tuiTheme();
+    const key = `${width}\0${theme.name}\0${mark}\0${e.text}`;
+    const hit = this.mdCache.get(e);
+    if (hit?.key === key) return hit.lines;
+    const indent = " ".repeat([...mark].length);
+    const lines = markdownLines(e.text, width - indent.length, theme.sgr("assistant"))
+      .map((l, i) => (i === 0 ? theme.paint("assistant.mark", mark) : indent) + l);
+    this.mdCache.set(e, { key, lines });
+    return lines;
+  }
+
   private styled(kind: Kind, s: string): string {
     return kind === "plain" ? s : paint(kind, s);
   }
@@ -596,7 +612,8 @@ export class TuiFrontend implements Frontend {
     const art = paintBot(bot(mood, this.frame, Date.now() < this.blinkUntil));
     const bw = Math.max(10, w - 16);
     const doing = this.busy && !this.streaming;
-    const said = tidy(doing ? this.activity ?? `${this.busy!.label}...` : this.speech) || "...";
+    const said =
+      tidy(doing ? this.activity ?? `${this.busy!.label}...` : markdownPlain(this.speech)) || "...";
     const words = wrap(said, bw - 4);
     // Speech as it streams shows its end; a status or summary its start.
     const shown = words.length <= 3
@@ -628,6 +645,11 @@ export class TuiFrontend implements Frontend {
       user: theme.content("user.mark", "› "),
     };
     for (const e of this.entries) {
+      if (e.kind === "assistant" && !e.text.includes(ESC_CHAR)) {
+        // The model's words as Markdown (tables, lists, ...), under its mark.
+        lines.push(...this.markdown(e, marks.assistant, w - 2));
+        continue;
+      }
       const mark = e.kind === "assistant" || e.kind === "user" ? e.kind : null;
       const prefix = mark ? marks[mark] : "";
       // A line with its own colours keeps them (in the theme's); others take their kind's.

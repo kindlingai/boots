@@ -637,7 +637,7 @@ export const TOOLS: ToolDef[] = [
   ),
   fn(
     "run_playbook",
-    "Run a playbook (a script saved with memory_write as playbook/<path>) on the current host. The user sees the script and approves it (yes, no, or always while it is unchanged). It runs as you, in the current directory; root inside it needs sudo -n (no password) or the sudo tool.",
+    "Run a playbook (a script saved with memory_write as playbook/<path>) on the current host. The user sees the script and approves it (yes, no, or always while it is unchanged). It always runs on the local machine (where ai-bootstrap started), wherever you are, as the user, with $MEMORY_DIR set to the memory folder; it reaches other machines with ssh (sudo -n there). Write it for the local shell: on macOS that is bash 3.2 (no mapfile, declare -A or ${x,,}). Root on the local machine needs sudo -n or the sudo tool.",
     {
       name: str("the playbook, e.g. models/glm53flash/up (playbook/ is optional)"),
       args: {
@@ -917,7 +917,8 @@ export class Session {
       return (e as Error).message;
     }
     const argv: string[] = Array.isArray(args.args) ? args.args.map(String) : [];
-    const loc = this.where();
+    // Always from the local machine (where memory is); it reaches others with ssh.
+    const loc = this.stack[0].label;
     const lines = script.split("\n").filter((l) => l.trim());
     const preview = lines.slice(0, 16).map((l) => dim(`    ${l}`)).join("\n") +
       (lines.length > 16 ? dim(`\n    ... (${lines.length - 16} more lines)`) : "");
@@ -930,12 +931,18 @@ export class Session {
     );
     if (no) return no;
     const quote = (a: string) => `'${a.replace(/'/g, `'\\''`)}'`;
-    const posix = this.here.info.shell !== "powershell";
-    const cmd = (posix && argv.length ? `set -- ${argv.map(quote).join(" ")}\n` : "") + script;
+    const posix = this.stack[0].info.shell !== "powershell";
+    // $MEMORY_DIR: the memory folder.
+    const memoryDir = this.memory.dir;
+    const env = posix
+      ? `MEMORY_DIR=${quote(memoryDir)}; export MEMORY_DIR\n`
+      : `$env:MEMORY_DIR = '${memoryDir.replace(/'/g, "''")}'\n`;
+    const cmd = env + (posix && argv.length ? `set -- ${argv.map(quote).join(" ")}\n` : "") +
+      script;
     const r = await this.command(
       "exec",
       cmd,
-      { timeout_s: Number(args.timeout_s) || 600, label: `playbook ${book}` },
+      { timeout_s: Number(args.timeout_s) || 600, label: `playbook ${book}`, local: true },
       signal,
     );
     this.show(r);
@@ -1298,7 +1305,8 @@ export class Session {
 
   private async command(op: "exec" | "sudo", cmd: string, args: any, signal?: AbortSignal) {
     const token = crypto.randomUUID();
-    const via = this.here.via;
+    // args.local: on the machine ai-bootstrap started on, wherever the session is.
+    const via = args.local ? [] : this.here.via;
     const cancel = () => this.host.handle("cancel", { token }, via).catch(() => {});
     signal?.addEventListener("abort", cancel);
     let spin: ReturnType<typeof spinner> | undefined;

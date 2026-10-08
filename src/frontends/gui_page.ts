@@ -5,6 +5,7 @@
 import { bot, DROP, moodOf, sweat } from "./bot.ts";
 import { faviconHref } from "./icon.ts";
 import { QUESTION_GUARD_MS, tidy } from "../frontend.ts";
+import { markdownHtml, markdownPlain } from "../markdown.ts";
 
 /**
  * A line with terminal colour codes as HTML: each run of text in a span
@@ -55,6 +56,8 @@ export function page(title: string, token: string, css = ""): string {
     bot.toString(),
     moodOf.toString(),
     ansiHtml.toString(),
+    markdownHtml.toString(),
+    markdownPlain.toString(),
     tidy.toString(),
   ].join("\n");
   return `<!doctype html>
@@ -107,6 +110,25 @@ export function page(title: string, token: string, css = ""): string {
   #input:disabled { opacity: .5; }
   button { padding: 5px 10px; font: inherit; cursor: pointer; }
   .bye { padding: 20px; opacity: .7; }
+  /* The model's words as Markdown: blocks flow under the mark. */
+  .md { white-space: normal; }
+  .md::before { float: left; white-space: pre; }
+  .md > div, .md li, .md blockquote, .md td, .md th { white-space: pre-wrap; }
+  .md .gap { height: .6em; }
+  .md .h { font-weight: bold; }
+  .md .h1, .md .h2 { text-decoration: underline; }
+  .md ul { margin: 0; padding-left: 1.6em; clear: left; }
+  .md ol { margin: 0; padding-left: 2.2em; clear: left; }
+  .md blockquote { margin: 0; padding-left: .8em; border-left: 2px solid; opacity: .8;
+    font-style: italic; }
+  .md pre { margin: .2em 0 .2em 1.2em; white-space: pre-wrap; opacity: .85; clear: left; }
+  .md code { opacity: .85; }
+  .md table { border-collapse: collapse; margin: .3em 0; clear: left; }
+  .md th, .md td { border: 1px solid rgba(128, 128, 128, .45); padding: 2px 8px;
+    text-align: left; vertical-align: top; }
+  .md hr { border: 0; border-top: 1px solid; opacity: .4; clear: left; }
+  .md .url { opacity: .6; }
+  .md .link { text-decoration: underline; }
 </style>
 <style id="theme">
 ${css}
@@ -166,7 +188,7 @@ function drawBot() {
   if (!state) return;
   const said = tidy(state.busy && !state.streaming
     ? (state.activity || state.busy.label + "...")
-    : (state.speech || "")) || "...";
+    : markdownPlain(state.speech || "")) || "...";
   if ($("bubble").textContent !== said) $("bubble").textContent = said;
   // Speech as it streams shows its end; a status or summary its start.
   $("bubble").classList.toggle("head", !!(state.busy && !state.streaming));
@@ -183,13 +205,20 @@ function drawBot() {
   $("status").innerHTML = status;
 }
 
+/** The model's words as Markdown (tables, lists, ...), escaped first. */
+function setMarkdown(el, text) {
+  el.classList.add("md");
+  el.innerHTML = markdownHtml(text);
+}
+
 function addEntry(kind, text) {
   const log = $("log");
   const atEnd = log.scrollHeight - log.scrollTop - log.clientHeight < 40;
   const d = document.createElement("div");
   d.className = kind;
-  // Colour codes become spans; the user's and the assistant's words stay text.
-  if (kind === "user" || kind === "assistant") d.textContent = text;
+  // Colour codes become spans; the user's words stay text; the model's are Markdown.
+  if (kind === "assistant") setMarkdown(d, text);
+  else if (kind === "user") d.textContent = text;
   else d.innerHTML = ansiHtml(text);
   log.appendChild(d);
   while (log.childElementCount > 2000) log.firstChild.remove();
@@ -331,10 +360,10 @@ function connect() {
     } else if (m.t === "entry") addEntry(m.kind, m.text);
     else if (m.t === "stream") {
       const last = $("log").lastElementChild;
-      if (last && last.className === "assistant") {
+      if (last && last.classList.contains("assistant")) {
         const log = $("log");
         const atEnd = log.scrollHeight - log.scrollTop - log.clientHeight < 40;
-        last.textContent = m.text;
+        setMarkdown(last, m.text);
         if (atEnd) log.scrollTop = log.scrollHeight;
       }
       if (state) { state.speech = m.text; state.streaming = true; state.talkedAt = Date.now(); }

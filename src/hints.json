@@ -2,13 +2,17 @@
   "$comment": "Hints that come back with a command's result when its output matches. Edit freely: each entry needs output (a regular expression, case-insensitive, matched against stdout and stderr) and hint (what the model is told, as [hint: ...]). Optional: tools (which tools it applies to: run, sudo, run_playbook; default all three) and command (a regular expression the command must match too). Checked by tests/hints_test.ts.",
   "hints": [
     {
-      "tools": ["run"],
+      "tools": [
+        "run"
+      ],
       "command": "\\bssh\\b[\\s\\S]*\\b(sudo|doas)\\b",
       "output": "a terminal is required|a password is required|no tty present|askpass",
       "hint": "sudo on the other machine wanted a password, which cannot be typed through ssh inside run. Use sudo -n there to fail fast, or do it machine by machine with the ssh tool and then the sudo tool (which handle the password)."
     },
     {
-      "tools": ["run_playbook"],
+      "tools": [
+        "run_playbook"
+      ],
       "output": "a terminal is required|a password is required|no tty present|askpass",
       "hint": "sudo in the playbook wanted a password, which a playbook cannot type. Use sudo -n with a NOPASSWD rule for that command, or take the root step out and do it with the sudo tool."
     },
@@ -27,6 +31,10 @@
     {
       "output": "CUDA out of memory|cudaMalloc failed|out of memory allocating|failed to allocate .* (on device|buffer)",
       "hint": "the GPU ran out of memory. Check what else holds it (nvidia-smi), then use a smaller quantization, a shorter context, fewer layers on the GPU, or a lower --gpu-memory-utilization."
+    },
+    {
+      "output": "mapfile: command not found|readarray: command not found|declare: -A: invalid option|bad substitution",
+      "hint": "this bash is too old for that (macOS ships bash 3.2): no mapfile/readarray, no declare -A, no ${x,,}. Use while IFS= read -r line; do ...; done < <(cmd), plain arrays or separate variables, and tr for case."
     }
   ]
 }

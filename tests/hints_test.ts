@@ -28,5 +28,9 @@ Deno.test("hints: by tool, command and output", () => {
   }
   assert(outputHints("run", "x", "listen tcp :8080: bind: address already in use").length);
   assert(outputHints("run", "x", "torch.OutOfMemoryError: CUDA out of memory.").length);
+  assert(
+    outputHints("run_playbook", "x", "/bin/bash: line 14: mapfile: command not found")[0]
+      .includes("bash 3.2"),
+  );
   assertEquals(outputHints("run", "x", "all fine"), []);
 });
